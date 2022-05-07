@@ -2,7 +2,6 @@
 extern crate rocket;
 
 use rocket_okapi::openapi_get_routes;
-use rocket_okapi::swagger_ui::{make_swagger_ui, SwaggerUIConfig};
 
 mod db;
 mod models;
@@ -17,7 +16,7 @@ async fn rocket() -> _ {
         .mount(
             "/api-rust",
             openapi_get_routes![
-                routes::dayly_leaders::get_dayly_leaders_by_date,
+                routes::daily_leaders::get_daily_leaders_by_date,
             ]
         )
 }

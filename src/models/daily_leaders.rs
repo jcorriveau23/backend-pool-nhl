@@ -1,17 +1,15 @@
-use mongodb::bson::oid::ObjectId;
-use mongodb::bson::DateTime;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive( Debug, Deserialize, Serialize, JsonSchema )]
-pub struct DaylyLeaders {
+pub struct DailyLeaders {
     pub date: String,
-    pub goalies: Vec<DaylyGoaly>,
-    pub skaters: Vec<DaylySkater>,
+    pub goalies: Vec<DailyGoaly>,
+    pub skaters: Vec<DailySkater>,
 }
 
 #[derive( Debug, Deserialize, Serialize, JsonSchema )]
-pub struct DaylyGoaly {
+pub struct DailyGoaly {
     pub name: String,
     pub id: i32,
     pub team: String,
@@ -19,7 +17,7 @@ pub struct DaylyGoaly {
 }
 
 #[derive( Debug, Deserialize, Serialize, JsonSchema )]
-pub struct DaylySkater {
+pub struct DailySkater {
     pub name: String,
     pub id: i32,
     pub team: String,

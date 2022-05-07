@@ -2,7 +2,7 @@ use mongodb::options::ClientOptions;
 use mongodb::{Client, Database};
 use rocket::fairing::AdHoc;
 
-pub mod dayly_leaders;
+pub mod daily_leaders;
 
 pub fn init() -> AdHoc {
     AdHoc::on_ignite("Connecting to MongoDB", |rocket| async {

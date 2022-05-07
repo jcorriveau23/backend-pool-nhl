@@ -1,1 +1,1 @@
-pub mod dayly_leaders;
+pub mod daily_leaders;
