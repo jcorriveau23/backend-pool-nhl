@@ -39,11 +39,11 @@ pub struct GoalyStats {
     pub shortHandedShotsAgainst: u8,
     pub evenShotsAgainst:u8,
     pub powerPlayShotsAgainst: u8,
-    //pub decision: String,
+    pub decision: Option<String>,
     pub savePercentage: f32,
-    //pub powerPlaySavePercentage: f32,
-    //pub shortHandedSavePercentage: f32,
-    //pub evenStrengthSavePercentage: f32,
+    pub powerPlaySavePercentage: Option<f32>,
+    pub shortHandedSavePercentage: Option<f32>,
+    pub evenStrengthSavePercentage: Option<f32>,
 }
 
 #[allow(non_snake_case)]
@@ -57,7 +57,7 @@ pub struct SkaterStats {
     pub powerPlayGoals: u8,
     pub powerPlayAssists: u8,
     pub penaltyMinutes: u8,
-    //pub faceOffPct: f32,
+    pub faceOffPct: Option<f32>,
     pub faceOffWins: u8,
     pub faceoffTaken: u8,
     pub takeaways: u8,

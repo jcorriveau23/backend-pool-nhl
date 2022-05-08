@@ -17,6 +17,8 @@ async fn rocket() -> _ {
             "/api-rust",
             openapi_get_routes![
                 routes::daily_leaders::get_daily_leaders_by_date,
+                routes::user::get_user_by_name,
+                routes::user::get_users,
             ]
         )
 }
