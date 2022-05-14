@@ -59,24 +59,6 @@ pub fn bad_request_response(gen: &mut OpenApiGenerator) -> okapi::openapi3::Resp
     }
 }
 
-pub fn unauthorized_response(gen: &mut OpenApiGenerator) -> okapi::openapi3::Response {
-    let schema = gen.json_schema::<MyError>();
-    okapi::openapi3::Response {
-        description: "\
-        # 401 Unauthorized\n\
-        The authentication given was incorrect or insufficient. \
-        "
-        .to_owned(),
-        content: okapi::map! {
-            "application/json".to_owned() => MediaType {
-                schema: Some(schema),
-                ..Default::default()
-            }
-        },
-        ..Default::default()
-    }
-}
-
 impl<'r> rocket::response::Responder<'r, 'static> for MyError {
     fn respond_to(self, _: &'r rocket::Request<'_>) -> rocket::response::Result<'static> {
         // Convert object to json

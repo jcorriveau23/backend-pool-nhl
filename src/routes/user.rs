@@ -1,24 +1,19 @@
-use mongodb::bson::doc;
 use mongodb::Database;
 
-use rocket::serde::json::Json;
 use rocket::State;
-use rocket_okapi::openapi;
 
-use crate::models::user::User;
 use crate::db::user;
 use crate::errors::response::MyError;
 
-/// get user document by _name
-//  http://127.0.0.1:8000/user/_name
-#[openapi(tag = "User")]
+/// Get user by _name
+//  http://127.0.0.1:8000/api-rust/user/_name
 #[get("/user/<_name>")]
 pub async fn get_user_by_name(
     db: &State<Database>,
     _name: String,
 ) -> Result<String, MyError> {
 
-    match user::find_user(db, _name).await {
+    match user::find_user_with_name(db, _name).await {
         Ok(data) => {
             if data.is_none() {
                 return Err(MyError::build(
@@ -26,8 +21,8 @@ pub async fn get_user_by_name(
                     Some(format!("User not found with name")),
                 ));
             }
-            let string = serde_json::to_string(&data.unwrap()).unwrap();
-            Ok(string)
+            let user_string = serde_json::to_string(&data.unwrap()).unwrap();
+            Ok(user_string)
         }
         Err(e) => {
             println!("{}", e);
@@ -39,9 +34,8 @@ pub async fn get_user_by_name(
     }
 }
 
-/// get all users
+/// Get all users
 //  http://127.0.0.1:8000/users
-#[openapi(tag = "User")]
 #[get("/users")]
 pub async fn get_users(
     db: &State<Database>
