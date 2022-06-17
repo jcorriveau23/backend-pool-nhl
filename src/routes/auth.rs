@@ -18,9 +18,9 @@ use rocket::serde::json::{Json, Value, json};
 #[post("/register", format = "json", data = "<body>")]
 pub async fn register_user(
     db: &State<Database>,
-    mut body: Json<RegisterRequest>
+    body: Json<RegisterRequest>
 ) -> Result<Value, MyError> {
-    let user = user::find_user_with_name(db, body.name.clone()).await.unwrap();
+    let user = user::find_user_with_name(db, &body.name).await.unwrap();
 
     // the username provided is already registered.
 
@@ -34,20 +34,15 @@ pub async fn register_user(
     // hash password before sending it to the function that create the document.
 
     let password_hash = bcrypt::hash(body.password.clone(), 4).unwrap();
-    body.password = password_hash;
 
-    let register_request = body.clone();
-
-    let new_user = user::create_user_from_login(db, register_request).await.unwrap();
+    let new_user = user::create_user_from_login(db, body.0, &password_hash).await.unwrap();
 
     let new_user_unwrap = new_user.unwrap();
 
-    let new_user_unwrap_copy = new_user_unwrap.clone();
-
     // create the token before sending the response (might need to change the string returned value)
-    let token = jwt::generate_token_register(new_user_unwrap);
+    let token = jwt::generate_token_register(&new_user_unwrap);
 
-    let user_json = json! ({"user": new_user_unwrap_copy, "token": token});
+    let user_json = json! ({"user": new_user_unwrap, "token": token});
 
     Ok(user_json)
 }
@@ -58,7 +53,7 @@ pub async fn login_user(
     db: &State<Database>,
     body: Json<LoginRequest>
 ) -> Result<Value, MyError> {
-    let user = user::find_user_with_name(db, body.name.clone()).await.unwrap();
+    let user = user::find_user_with_name(db, &body.name).await.unwrap();
 
     if user.is_none() {
         return Err(MyError::build(
@@ -70,7 +65,6 @@ pub async fn login_user(
     let user_unwrap = user.unwrap();
 
     let user_unwrap_copy = user_unwrap.clone();
-    let user_unwrap_copy2 = user_unwrap.clone();
 
     if user_unwrap.password.is_none(){
         return Err(MyError::build(
@@ -81,9 +75,7 @@ pub async fn login_user(
 
     let password_unwrap = user_unwrap.password.unwrap();
 
-    println!("psw: {}", password_unwrap);
-
-    let is_valid_password = bcrypt::verify(body.password.clone(), &password_unwrap).unwrap();
+    let is_valid_password = bcrypt::verify(&body.password, &password_unwrap).unwrap();
     
     if !is_valid_password {
         return Err(MyError::build(
@@ -94,9 +86,9 @@ pub async fn login_user(
 
     // create the token before sending the response
 
-    let token = jwt::generate_token(user_unwrap_copy);
+    let token = jwt::generate_token(&user_unwrap_copy);
 
-    let user_json = json! ({"user": user_unwrap_copy2, "token": token});
+    let user_json = json! ({"user": user_unwrap_copy, "token": token});
     
         
     Ok(user_json)
@@ -108,14 +100,14 @@ pub async fn wallet_login_user(
     db: &State<Database>,
     body: Json<WalletLoginRegisterRequest>
 ) -> Result<Value, MyError> {
-    if !verify_message(body.addr.clone(), body.sig.clone()).await {
+    if !verify_message(&body.addr, &body.sig).await {
         return Err(MyError::build(
             400,
             Some(format!("The signature provided is not valid.")),
         ));
     }
 
-    let mut user = user::find_user_with_address(db, body.addr.clone()).await.unwrap();
+    let mut user = user::find_user_with_address(db, &body.addr).await.unwrap();
 
     if user.is_none() {
         // create the account if it does not exist 
@@ -124,12 +116,10 @@ pub async fn wallet_login_user(
 
     let user_unwrap = user.unwrap();
 
-    let user_copy = user_unwrap.clone();
-
     // create the token before sending the response (might need to change the string returned value)
-    let token = jwt::generate_token(user_unwrap);
+    let token = jwt::generate_token(&user_unwrap);
 
-    let user_json = json! ({"user": user_copy, "token": token});
+    let user_json = json! ({"user": user_unwrap, "token": token});
     
         
     Ok(user_json)
@@ -138,22 +128,8 @@ pub async fn wallet_login_user(
 /// validate the token received in the header.
 #[post("/validate-token")]
 pub async fn validate_token(token: Result<UserToken, ApiKeyError>,) -> Result<Value, MyError> {
-
     if let Err(e) = token {
-        match e {
-            ApiKeyError::Invalid => return Err(MyError::build(
-                                        400,
-                                        Some(format!("The token provided is not valid.")),
-                                    )),
-            ApiKeyError::Missing =>  return Err(MyError::build(
-                                        400,
-                                        Some(format!("The token was not provided.")),
-                                    )),
-            ApiKeyError::Expired =>  return Err(MyError::build(
-                                        400,
-                                        Some(format!("The token has expired.")),
-                                    )),
-        }        
+        return Err(jwt::return_token_error(e));      
     }
 
     let token_json = json! ({"token": token.unwrap()});
@@ -161,8 +137,8 @@ pub async fn validate_token(token: Result<UserToken, ApiKeyError>,) -> Result<Va
     Ok(token_json)
 }
 
-async fn verify_message(addr: String, sig: String) -> bool {
+async fn verify_message(addr: &String, sig: &String) -> bool {
     let signer_addr = web3::signing::recover("Unlock wallet to access nhl-pool-ethereum.".to_string().as_bytes(), sig.as_bytes(), 1).unwrap();
 
-    signer_addr.to_string() == addr
+    signer_addr.to_string() == *addr
 }

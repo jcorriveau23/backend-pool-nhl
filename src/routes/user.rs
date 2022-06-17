@@ -13,7 +13,7 @@ pub async fn get_user_by_name(
     _name: String,
 ) -> Result<String, MyError> {
 
-    match user::find_user_with_name(db, _name).await {
+    match user::find_user_with_name(db, &_name).await {
         Ok(data) => {
             if data.is_none() {
                 return Err(MyError::build(
@@ -25,10 +25,9 @@ pub async fn get_user_by_name(
             Ok(user_string)
         }
         Err(e) => {
-            println!("{}", e);
             return Err(MyError::build(
                 400, 
-                Some(format!("User not found with name")))
+                Some(e.to_string()))
             );
         }
     }
@@ -48,10 +47,9 @@ pub async fn get_users(
             Ok(string)
         }
         Err(e) => {
-            println!("{}", e);
             return Err(MyError::build(
                 400, 
-                Some(format!("User not found with name")))
+                Some(e.to_string()))
             );
         }
     }

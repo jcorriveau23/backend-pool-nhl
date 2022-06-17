@@ -1,16 +1,13 @@
 use mongodb::bson::{doc, Document};
 use mongodb::Database;
-use mongodb::options::FindOneAndUpdateOptions;
-use mongodb::options::ReturnDocument;
+use mongodb::options::{FindOneAndUpdateOptions, ReturnDocument};
 use futures::stream::TryStreamExt;
 
-use crate::models::user::User;
-use crate::models::user::RegisterRequest;
-use crate::models::user::WalletLoginRegisterRequest;
+use crate::models::user::{User, RegisterRequest, WalletLoginRegisterRequest};
 
 pub async fn find_user_with_name(
     db: &Database,
-    _name: String,
+    _name: &String,
 ) -> mongodb::error::Result<Option<User>> {
     let collection = db.collection::<User>("users");
 
@@ -21,7 +18,7 @@ pub async fn find_user_with_name(
 
 pub async fn find_user_with_address(
     db: &Database,
-    _addr: String,
+    _addr: &String,
 ) -> mongodb::error::Result<Option<User>> {
     let collection = db.collection::<User>("users");
 
@@ -46,7 +43,7 @@ pub async fn find_users(
     Ok(users)
 }
 
-pub async fn create_user_from_login(db: &Database, user: RegisterRequest) -> mongodb::error::Result<Option<User>>{
+pub async fn create_user_from_login(db: &Database, user: RegisterRequest, password_hash: &String) -> mongodb::error::Result<Option<User>>{
     // this function needd to be call after calling find_user() and validate a user does not exist
     let collection = db.collection::<Document>("users");
 
@@ -101,25 +98,21 @@ pub async fn create_user_from_wallet_login(db: &Database, user: WalletLoginRegis
     Ok(Some(new_user))
 }
 
-pub async fn update_user(
+// TODO: use this function to let the user edit their name.
+pub async fn update_user_name(
     db: &Database,
-    _user: User,
+    _user: &User,
+    _new_name: &String,
 ) -> mongodb::error::Result<Option<User>> {
     let collection = db.collection::<User>("users");
     let find_one_and_update_options = FindOneAndUpdateOptions::builder()
         .return_document(ReturnDocument::After)
         .build();
 
-
     let filter = doc!{"_id": _user._id};
     //let doc = doc! _user;
     let doc = doc! {
-        "name": _user.name.clone(),
-        "password": _user.password.clone(),
-        "email": _user.email.clone(),
-        "phone": _user.phone.clone(),
-        "pool_list": _user.pool_list.clone(),
-        "addr": _user.addr.clone()
+        "name": _new_name,
     };
 
     let user = collection.find_one_and_update(filter, doc, find_one_and_update_options).await.unwrap();

@@ -7,12 +7,12 @@ use jsonwebtoken::TokenData;
 use jsonwebtoken::{Header, Validation};
 use jsonwebtoken::{EncodingKey, DecodingKey};
 use mongodb::bson::oid::ObjectId;
-use crate::models::user::{ User };
 use rocket::http::Status;
 use rocket::outcome::Outcome;
 use rocket::request::{self, FromRequest, Request};
 
-
+use crate::models::user::{ User };
+use crate::errors::response::MyError;
 
 static ONE_WEEK: i64 = 60 * 60 * 24 * 7; // in seconds
 
@@ -48,7 +48,24 @@ impl<'r> FromRequest<'r> for UserToken {
     }
 }
 
-pub fn generate_token_register(_user: User) -> String {
+pub fn return_token_error(e: ApiKeyError) -> MyError {
+    match e {
+        ApiKeyError::Invalid => return MyError::build(
+                                    400,
+                                    Some(format!("The token provided is not valid.")),
+                                ),
+        ApiKeyError::Missing =>  return MyError::build(
+                                    400,
+                                    Some(format!("The token was not provided.")),
+                                ),
+        ApiKeyError::Expired =>  return MyError::build(
+                                    400,
+                                    Some(format!("The token has expired.")),
+                                ),
+    }  
+}
+
+pub fn generate_token_register(_user: &User) -> String {
     let now = Utc::now().timestamp_nanos() / 1_000_000_000; // nanosecond -> second
     let payload = UserToken {
         iat: now,
@@ -59,7 +76,7 @@ pub fn generate_token_register(_user: User) -> String {
     jsonwebtoken::encode(&Header::default(), &payload, &EncodingKey::from_secret(include_bytes!("secret.key"))).unwrap()
 }
 
-pub fn generate_token(_user: User) -> String {
+pub fn generate_token(_user: &User) -> String {
     let now = Utc::now().timestamp_nanos() / 1_000_000_000; // nanosecond -> second
     let payload = UserToken {
         iat: now,

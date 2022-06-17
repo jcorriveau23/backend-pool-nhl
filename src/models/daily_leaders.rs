@@ -40,7 +40,7 @@ pub struct GoalyStats {
     pub evenShotsAgainst:u8,
     pub powerPlayShotsAgainst: u8,
     pub decision: Option<String>,
-    pub savePercentage: f32,
+    pub savePercentage: Option<f32>,
     pub powerPlaySavePercentage: Option<f32>,
     pub shortHandedSavePercentage: Option<f32>,
     pub evenStrengthSavePercentage: Option<f32>,
