@@ -6,9 +6,7 @@ use web3;
 
 use crate::db::user;
 use crate::errors::response::MyError;
-use crate::models::user::LoginRequest;
-use crate::models::user::RegisterRequest;
-use crate::models::user::WalletLoginRegisterRequest;
+use crate::models::user::{LoginRequest, RegisterRequest, WalletLoginRegisterRequest, SetUsernameRequest};
 use crate::routes::jwt::{UserToken, ApiKeyError};
 use crate::routes::jwt;
 
@@ -125,6 +123,24 @@ pub async fn wallet_login_user(
     Ok(user_json)
 }
 
+/// Set Username
+#[post("/set-username", format = "json", data = "<body>")]
+pub async fn set_username(
+    db: &State<Database>,
+    token: Result<UserToken, ApiKeyError>,
+    body: Json<SetUsernameRequest>
+) -> Result<Value, MyError> {
+    if let Err(e) = token {
+        return Err(jwt::return_token_error(e));      
+    }
+
+    let user = user::update_user_name(db, &token.unwrap()._id.to_string(), &body.new_username).await.unwrap();
+
+    let user_json = json! ({"user": user.unwrap()});
+         
+    Ok(user_json)
+}
+
 /// validate the token received in the header.
 #[post("/validate-token")]
 pub async fn validate_token(token: Result<UserToken, ApiKeyError>,) -> Result<Value, MyError> {
@@ -142,3 +158,4 @@ async fn verify_message(addr: &String, sig: &String) -> bool {
 
     signer_addr.to_string() == *addr
 }
+

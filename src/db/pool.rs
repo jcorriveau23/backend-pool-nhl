@@ -236,8 +236,9 @@ pub async fn select_player(
     }
 
     // First, validate that the player selected is not picked by any of the other poolers.
+    let participants = pool_unwrap.participants.clone().unwrap();
 
-    for participant in pool_unwrap.participants.unwrap().iter() {
+    for participant in participants.iter() {
         if participant == _user_id {
             continue;
         }
@@ -296,11 +297,11 @@ pub async fn select_player(
     let status = if pool_context.draft_order.len() == 0 { PoolState::InProgress } else { pool_unwrap.status };
 
     // TODO: generate the list of tradable_picks for the next season
-
+    
     for pick_round in 0..pool_unwrap.tradable_picks {
         let mut round = HashMap::new();
 
-        for participant in pool_unwrap.participants.unwrap().iter() {
+        for participant in participants.iter() {
 
             round.insert(participant.clone(), participant.clone());
         }

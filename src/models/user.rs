@@ -35,3 +35,9 @@ pub struct LoginRequest {
     pub name: String,
     pub password: String,
 }
+
+// payload to set a username.
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+pub struct SetUsernameRequest {
+    pub new_username: String,
+}

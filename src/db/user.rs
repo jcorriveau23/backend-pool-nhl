@@ -101,7 +101,7 @@ pub async fn create_user_from_wallet_login(db: &Database, user: WalletLoginRegis
 // TODO: use this function to let the user edit their name.
 pub async fn update_user_name(
     db: &Database,
-    _user: &User,
+    _user_id: &String,
     _new_name: &String,
 ) -> mongodb::error::Result<Option<User>> {
     let collection = db.collection::<User>("users");
@@ -109,8 +109,8 @@ pub async fn update_user_name(
         .return_document(ReturnDocument::After)
         .build();
 
-    let filter = doc!{"_id": _user._id};
-    //let doc = doc! _user;
+    let filter = doc!{"_id": _user_id};
+
     let doc = doc! {
         "name": _new_name,
     };
