@@ -5,7 +5,7 @@ use rocket::serde::json::{Json};
 use rocket::State;
 
 use crate::models::pool::{Pool, PoolCreationRequest, PoolDeletionRequest, StartDraftRequest, SelectPlayerRequest, CreateTradeRequest, CancelTradeRequest, RespondTradeRequest, FillSpotRequest, ProtectPlayersRequest};
-use crate::models::response::{MessageResponse, PoolMessageResponse};
+use crate::models::response::{PoolMessageResponse};
 use crate::routes::jwt::{UserToken, ApiKeyError};
 use crate::db::pool;
 use crate::errors::response::MyError;
@@ -28,17 +28,17 @@ pub async fn get_pool_by_name(
             if data.is_none() {
                 return Err(MyError::build(
                     400,
-                    Some(format!("Pool not found with name")),
+                    Some("Pool not found with name".to_string()),
                 ));
             }
             
             Ok(Json(data.unwrap()))
         }
         Err(e) => {
-            return Err(MyError::build(
+            Err(MyError::build(
                 400, 
                 Some(e.to_string()))
-            );
+            )
         }
     }
 }
@@ -60,10 +60,10 @@ pub async fn get_pools(
             Ok(Json(data))
         }
         Err(e) => {
-            return Err(MyError::build(
+            Err(MyError::build(
                 400, 
                 Some(e.to_string()))
-            );
+            )
         }
     }
 }
@@ -85,10 +85,10 @@ pub async fn create_pool (
             Ok(Json(data))
         }
         Err(e) => {
-            return Err(MyError::build(
+            Err(MyError::build(
                 400, 
                 Some(e.to_string()))
-            );
+            )
         }
     }
 }
@@ -110,10 +110,10 @@ pub async fn delete_pool (
             Ok(Json(data))
         }
         Err(e) => {
-            return Err(MyError::build(
+            Err(MyError::build(
                 400, 
                 Some(e.to_string()))
-            );
+            )
         }
     }
 }
@@ -135,10 +135,10 @@ pub async fn start_draft (
             Ok(Json(data))
         }
         Err(e) => {
-            return Err(MyError::build(
+            Err(MyError::build(
                 400, 
                 Some(e.to_string()))
-            );
+            )
         }
     }
 }
@@ -160,10 +160,10 @@ pub async fn select_player (
             Ok(Json(data))
         }
         Err(e) => {
-            return Err(MyError::build(
+            Err(MyError::build(
                 400, 
                 Some(e.to_string()))
-            );
+            )
         }
     }
 }
@@ -187,10 +187,10 @@ pub async fn create_trade (
             Ok(Json(data))
         }
         Err(e) => {
-            return Err(MyError::build(
+            Err(MyError::build(
                 400, 
                 Some(e.to_string()))
-            );
+            )
         }
     }
 }
@@ -212,10 +212,10 @@ pub async fn cancel_trade (
             Ok(Json(data))
         }
         Err(e) => {
-            return Err(MyError::build(
+            Err(MyError::build(
                 400, 
                 Some(e.to_string()))
-            );
+            )
         }
     }
 }
@@ -237,10 +237,10 @@ pub async fn respond_trade (
             Ok(Json(data))
         }
         Err(e) => {
-            return Err(MyError::build(
+            Err(MyError::build(
                 400, 
                 Some(e.to_string()))
-            );
+            )
         }
     }
 }
@@ -262,10 +262,10 @@ pub async fn fill_spot (
             Ok(Json(data))
         }
         Err(e) => {
-            return Err(MyError::build(
+            Err(MyError::build(
                 400, 
                 Some(e.to_string()))
-            );
+            )
         }
     }
 }
@@ -287,10 +287,10 @@ pub async fn protect_players (
             Ok(Json(data))
         }
         Err(e) => {
-            return Err(MyError::build(
+            Err(MyError::build(
                 400, 
                 Some(e.to_string()))
-            );
+            )
         }
     }
 }

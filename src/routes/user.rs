@@ -18,17 +18,17 @@ pub async fn get_user_by_name(
             if data.is_none() {
                 return Err(MyError::build(
                     400,
-                    Some(format!("User not found with name")),
+                    Some("User not found with name".to_string()),
                 ));
             }
             let user_string = serde_json::to_string(&data.unwrap()).unwrap();
             Ok(user_string)
         }
         Err(e) => {
-            return Err(MyError::build(
+            Err(MyError::build(
                 400, 
                 Some(e.to_string()))
-            );
+            )
         }
     }
 }
@@ -47,10 +47,10 @@ pub async fn get_users(
             Ok(string)
         }
         Err(e) => {
-            return Err(MyError::build(
+            Err(MyError::build(
                 400, 
                 Some(e.to_string()))
-            );
+            )
         }
     }
 }

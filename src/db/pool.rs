@@ -5,8 +5,8 @@ use futures::stream::TryStreamExt;
 use std::collections::HashMap;
 
 
-use crate::models::pool::{Pool, PoolCreationRequest, PoolState, PoolContext, PoolerRoster, Player, Position, Trade, TradeStatus, TradeItems, Pick};
-use crate::models::response::{MessageResponse, PoolMessageResponse};
+use crate::models::pool::{Pool, PoolCreationRequest, PoolState, PoolContext, PoolerRoster, Player, Position, Trade, TradeStatus, TradeItems};
+use crate::models::response::{PoolMessageResponse};
 
 pub async fn find_pool_with_name(
     db: &Database,
@@ -46,7 +46,7 @@ pub async fn create_pool(
 ) -> mongodb::error::Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
-    if !find_pool_with_name(db, _pool_info.name.clone()).await?.is_none() {
+    if find_pool_with_name(db, _pool_info.name.clone()).await?.is_some() {
         return Ok(create_error_response("pool name already exist.".to_string()).await);
     }
     else{
@@ -127,7 +127,7 @@ pub async fn start_draft(
             return Ok(create_error_response("The pool is not in a valid state to start.".to_string()).await);
         }
     
-        if _poolInfo.owner != _user_id.to_string() {
+        if _poolInfo.owner != *_user_id {
             return Ok(create_error_response("Only the owner of the pool can delete the pool.".to_string()).await);
         }
         
@@ -222,7 +222,7 @@ pub async fn select_player(
         return Ok(create_error_response("The user is not in the pool.".to_string()).await);
     }
 
-    if !(pool_context.draft_order[0] == _user_id.to_string()) {
+    if pool_context.draft_order[0] != *_user_id {
         return Ok(create_error_response("Not your turn.".to_string()).await);
     }
 
@@ -237,7 +237,7 @@ pub async fn select_player(
         if participant == _user_id {
             continue;
         }
-        if validate_player_possession(_player, &pool_context, &participant ).await {
+        if validate_player_possession(_player, &pool_context, participant ).await {
             return Ok(create_error_response("This player is already picked.".to_string()).await);
         }
     }
@@ -289,13 +289,13 @@ pub async fn select_player(
 
     // the status change to InProgress when the draft is completed.
 
-    let status = if pool_context.draft_order.len() == 0 { PoolState::InProgress } else { pool_unwrap.status };
+    let status = if pool_context.draft_order.is_empty() { PoolState::InProgress } else { pool_unwrap.status };
 
     // generate the list of tradable_picks for the next season
     
     let mut vect = vec![];
 
-    for pick_round in 0..pool_unwrap.tradable_picks {
+    for _pick_round in 0..pool_unwrap.tradable_picks {
         let mut round = HashMap::new();
 
         for participant in participants.iter() {
@@ -826,7 +826,7 @@ async fn remove_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) ->
     true
 }
 
-async fn remove_roster_player(_pool_context: &mut PoolContext, _player: &Player, _participant: &String) -> () {
+async fn remove_roster_player(_pool_context: &mut PoolContext, _player: &Player, _participant: &String) {
     match _player.position {
         Position::F => {
             if let Some(x) = _pool_context.pooler_roster.get_mut(_participant){
@@ -897,22 +897,22 @@ async fn validate_player_possession(_player: &Player, _pool_context: &PoolContex
 }
 
 async fn create_error_response(_message: String) -> PoolMessageResponse {
-    let err = PoolMessageResponse {
+    
+
+    PoolMessageResponse {
         success: false,
         message: _message,
         pool: None,
-    };
-
-    err
+    }
 }
 
 async fn create_success_response(_pool: &Option<Pool>) -> PoolMessageResponse {
-    let err = PoolMessageResponse {
+    
+
+    PoolMessageResponse {
         success: true,
         message: "".to_string(),
         pool: _pool.clone(),
-    };
-
-    err
+    }
 }
 

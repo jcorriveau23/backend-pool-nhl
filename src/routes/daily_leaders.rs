@@ -21,7 +21,7 @@ pub async fn get_daily_leaders_by_date(
             if data.is_none() {
                 return Err(MyError::build(
                     400,
-                    Some(format!("Data not found with date")),
+                    Some("Data not found with date".to_string()),
                 ));
             }
             
@@ -29,10 +29,10 @@ pub async fn get_daily_leaders_by_date(
         }
         Err(e) => {
             println!("{}", e);
-            return Err(MyError::build(
+            Err(MyError::build(
                 400, 
-                Some(format!("Data not found with date")))
-            );
+                Some("Data not found with date".to_string()))
+            )
         }
     }
 }

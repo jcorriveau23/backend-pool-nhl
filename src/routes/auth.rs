@@ -22,10 +22,10 @@ pub async fn register_user(
 
     // the username provided is already registered.
 
-    if !user.is_none() {
+    if user.is_some() {
         return Err(MyError::build(
             400,
-            Some(format!("this username is not available.")),
+            Some("this username is not available.".to_string()),
         ));
     }
 
@@ -56,7 +56,7 @@ pub async fn login_user(
     if user.is_none() {
         return Err(MyError::build(
             400,
-            Some(format!("This account does not exist.")),
+            Some("This account does not exist.".to_string()),
         ));
     }
 
@@ -67,7 +67,7 @@ pub async fn login_user(
     if user_unwrap.password.is_none(){
         return Err(MyError::build(
             400,
-            Some(format!("This account does not store any password.")), // happens when someone loging with a wallet (no password stored)
+            Some("This account does not store any password.".to_string()), // happens when someone loging with a wallet (no password stored)
         ));
     }
 
@@ -78,7 +78,7 @@ pub async fn login_user(
     if !is_valid_password {
         return Err(MyError::build(
             400,
-            Some(format!("The password provided is not valid.")),
+            Some("The password provided is not valid.".to_string()),
         ));
     }
 
@@ -101,7 +101,7 @@ pub async fn wallet_login_user(
     if !verify_message(&body.addr, &body.sig).await {
         return Err(MyError::build(
             400,
-            Some(format!("The signature provided is not valid.")),
+            Some("The signature provided is not valid.".to_string()),
         ));
     }
 

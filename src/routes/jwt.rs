@@ -1,6 +1,6 @@
 use chrono::Utc;
-use rocket_okapi::JsonSchema;
-use rocket_okapi::request::OpenApiFromRequest;
+
+
 use serde::{Deserialize, Serialize};
 use jsonwebtoken::errors::Result;
 use jsonwebtoken::TokenData;
@@ -50,17 +50,17 @@ impl<'r> FromRequest<'r> for UserToken {
 
 pub fn return_token_error(e: ApiKeyError) -> MyError {
     match e {
-        ApiKeyError::Invalid => return MyError::build(
+        ApiKeyError::Invalid => MyError::build(
                                     400,
-                                    Some(format!("The token provided is not valid.")),
+                                    Some("The token provided is not valid.".to_string()),
                                 ),
-        ApiKeyError::Missing =>  return MyError::build(
+        ApiKeyError::Missing =>  MyError::build(
                                     400,
-                                    Some(format!("The token was not provided.")),
+                                    Some("The token was not provided.".to_string()),
                                 ),
-        ApiKeyError::Expired =>  return MyError::build(
+        ApiKeyError::Expired =>  MyError::build(
                                     400,
-                                    Some(format!("The token has expired.")),
+                                    Some("The token has expired.".to_string()),
                                 ),
     }  
 }
