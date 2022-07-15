@@ -62,7 +62,7 @@ pub struct PoolContext {
     pub pooler_roster: HashMap<String, PoolerRoster>,
     pub draft_order: Vec<String>,
     pub score_by_day: Option<HashMap<String, HashMap<String, DailyRosterPoints>>>,
-    pub tradable_picks: Vec<HashMap<String, String>>
+    pub tradable_picks: Option<Vec<HashMap<String, String>>>
 }
 
 #[derive( Debug, Deserialize, Serialize, JsonSchema, Clone )]   // Copy
@@ -217,8 +217,7 @@ pub struct PoolDeletionRequest {
 // payload to sent when deleting a pool.
 #[derive(Debug, Deserialize, JsonSchema, Clone)]
 pub struct StartDraftRequest {
-    pub name: String,
-    pub participants: Vec<String>,
+    pub poolInfo: Pool,
 }
 
 // payload to sent when selecting a player.

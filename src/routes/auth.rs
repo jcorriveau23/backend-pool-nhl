@@ -33,7 +33,7 @@ pub async fn register_user(
 
     let password_hash = bcrypt::hash(body.password.clone(), 4).unwrap();
 
-    let new_user = user::create_user_from_login(db, body.0, &password_hash).await.unwrap();
+    let new_user = user::create_user_from_login(db, &body.0, &password_hash).await.unwrap();
 
     let new_user_unwrap = new_user.unwrap();
 

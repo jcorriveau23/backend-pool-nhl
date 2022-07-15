@@ -116,89 +116,84 @@ pub async fn delete_pool(
 pub async fn start_draft(
     db: &Database,
     _user_id: &String,
-    _pool_name: &String,
-    _participants: &Vec<String>,
+    _poolInfo: &mut Pool,
 ) -> mongodb::error::Result<PoolMessageResponse> {
-    let collection = db.collection::<Pool>("pools");
-
-    let pool = find_pool_with_name(db, _pool_name.clone()).await?;
-
-    if pool.is_none() {
-        return Ok(create_error_response("Pool name does not exist.".to_string()).await);
-    }
-
-    let pool_unwrap = pool.unwrap();
-
-    if pool_unwrap.number_poolers != _participants.len() as u8 {
-        return Ok(create_error_response("The number of participants is not good.".to_string()).await);
-    }
-
-    if !matches!(pool_unwrap.status, PoolState::Created) {
-        return Ok(create_error_response("The pool is not in a valid state to start.".to_string()).await);
-    }
-
-    if pool_unwrap.owner != _user_id.to_string() {
-        return Ok(create_error_response("Only the owner of the pool can delete the pool.".to_string()).await);
-    }
-    
-    // create pool context
-    let mut pool_context = PoolContext {
-        pooler_roster: HashMap::new(),
-        draft_order: Vec::new(),
-        score_by_day: Some(HashMap::new()),
-        tradable_picks : Vec::new()
-    };
-
-    // Initialize all participants roster object.
-    for participant in _participants.iter() {
-        
-        let pooler_roster = PoolerRoster { 
-            chosen_forwards: Vec::new(), 
-            chosen_defenders: Vec::new(), 
-            chosen_goalies: Vec::new(), 
-            chosen_reservists: Vec::new(), 
-        };
-
-        pool_context.pooler_roster.insert(
-            participant.to_string(), 
-            pooler_roster
-        );
-    }
-
-    // TODO: randomize the list of participants and fill up the draft_order members like before.
-    //thread_rng().shuffle(&mut _participants);
-
-    let number_picks: u16 = pool_unwrap.number_poolers as u16 *( pool_unwrap.number_forwards as u16 + pool_unwrap.number_defenders as u16 + pool_unwrap.number_goalies as u16 + pool_unwrap.number_reservists as u16);
-
-    // fill up the draft list.
-
-    for i in 0..number_picks {
-        let index = i as usize % pool_unwrap.number_poolers as usize;
-        pool_context.draft_order.push(_participants[index].clone())
-    }
-
-    // updated fields.
-    let updated_fields = doc!{
-        "$set": doc!{
-            "status": to_bson(&PoolState::Draft).unwrap(),
-            "participants": _participants,
-            "context": to_bson(&pool_context).unwrap(),
-            "number_picks": to_bson(&number_picks).unwrap(),
+    if let Some(participants) = &_poolInfo.participants {
+        if _poolInfo.number_poolers != participants.len() as u8 {
+            return Ok(create_error_response("The number of participants is not good.".to_string()).await);
         }
-    };
+    
+        if !matches!(_poolInfo.status, PoolState::Created) {
+            return Ok(create_error_response("The pool is not in a valid state to start.".to_string()).await);
+        }
+    
+        if _poolInfo.owner != _user_id.to_string() {
+            return Ok(create_error_response("Only the owner of the pool can delete the pool.".to_string()).await);
+        }
+        
+        let collection = db.collection::<Pool>("pools");
 
-    // Update the fields in the mongoDB pool document.
-    let find_one_and_update_options = FindOneAndUpdateOptions::builder()
-    .return_document(ReturnDocument::After)
-    .build();
+        // create pool context
+        let mut pool_context = PoolContext {
+            pooler_roster: HashMap::new(),
+            draft_order: Vec::new(),
+            score_by_day: Some(HashMap::new()),
+            tradable_picks : Some(Vec::new())
+        };
+    
+        // Initialize all participants roster object.
+        for participant in participants.iter() {
+            
+            let pooler_roster = PoolerRoster { 
+                chosen_forwards: Vec::new(), 
+                chosen_defenders: Vec::new(), 
+                chosen_goalies: Vec::new(), 
+                chosen_reservists: Vec::new(), 
+            };
+    
+            pool_context.pooler_roster.insert(
+                participant.to_string(), 
+                pooler_roster
+            );
+        }
+    
+        // TODO: randomize the list of participants and fill up the draft_order members like before.
+        //thread_rng().shuffle(&mut _participants);
+    
+        let number_picks: u16 = _poolInfo.number_poolers as u16 *( _poolInfo.number_forwards as u16 + _poolInfo.number_defenders as u16 + _poolInfo.number_goalies as u16 + _poolInfo.number_reservists as u16);
+    
+        // fill up the draft list.
+    
+        for i in 0..number_picks {
+            let index = i as usize % _poolInfo.number_poolers as usize;
+            pool_context.draft_order.push(participants[index].clone())
+        }
+    
+        _poolInfo.status = PoolState::Draft;
+        _poolInfo.context = Some(pool_context);
 
-    let new_pool = collection.find_one_and_update(doc! {"name": pool_unwrap.name}, updated_fields, find_one_and_update_options).await.unwrap();
-
-    if new_pool.is_none() {
-        return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+        // updated fields.
+        let updated_fields = doc!{
+            "$set": to_bson(&_poolInfo).unwrap()
+        };
+    
+        // Update the fields in the mongoDB pool document.
+        let find_one_and_update_options = FindOneAndUpdateOptions::builder()
+        .return_document(ReturnDocument::After)
+        .build();
+    
+        let new_pool = collection.find_one_and_update(doc! {"name": &_poolInfo.name}, updated_fields, find_one_and_update_options).await.unwrap();
+    
+        if new_pool.is_none() {
+            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+        }
+    
+        Ok(create_success_response(&new_pool).await)
+    }
+    else {
+        return Ok(create_error_response("There is no participants added in the pool.".to_string()).await);
     }
 
-    Ok(create_success_response(&new_pool).await)
 }
 
 pub async fn select_player(
@@ -296,8 +291,10 @@ pub async fn select_player(
 
     let status = if pool_context.draft_order.len() == 0 { PoolState::InProgress } else { pool_unwrap.status };
 
-    // TODO: generate the list of tradable_picks for the next season
+    // generate the list of tradable_picks for the next season
     
+    let mut vect = vec![];
+
     for pick_round in 0..pool_unwrap.tradable_picks {
         let mut round = HashMap::new();
 
@@ -306,8 +303,10 @@ pub async fn select_player(
             round.insert(participant.clone(), participant.clone());
         }
 
-        pool_context.tradable_picks.push(round);
+        vect.push(round);
     } 
+
+    pool_context.tradable_picks = Some(vect);
 
     // updated fields.
 
@@ -755,10 +754,12 @@ pub async fn protect_players(
 
         let total_round = pool_unwrap.number_forwards + pool_unwrap.number_defenders + pool_unwrap.number_goalies + pool_unwrap.number_reservists;
 
+        let tradable_picks = pooler_context.tradable_picks.unwrap();
+
         for round in 0..pool_unwrap.tradable_picks {
             for participant in final_rank.iter() {
                 if total_round < pool_unwrap.tradable_picks {
-                    pooler_context.draft_order.push(pooler_context.tradable_picks[round  as usize][participant].clone());
+                    pooler_context.draft_order.push(tradable_picks[round  as usize][participant].clone());
                 }
                 else {
                     pooler_context.draft_order.push(participant.clone());
@@ -806,14 +807,19 @@ async fn remove_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) ->
     }
 
     for pick in _trade.from_items.picks.iter() {
-        if let Some(x) = _pool_context.tradable_picks[pick.rank as usize].get_mut(&pick.pooler) {
-            *x = _trade.ask_to.clone();
-        } 
+        if let Some(tradable_picks) = &mut _pool_context.tradable_picks {
+            if let Some(owner) = tradable_picks[pick.rank as usize].get_mut(&pick.pooler) {
+                *owner = _trade.ask_to.clone();
+            } 
+        }
+        
     }
 
     for pick in _trade.to_items.picks.iter() {
-        if let Some(x) = _pool_context.tradable_picks[pick.rank as usize].get_mut(&pick.pooler) {
-            *x = _trade.proposed_by.clone();
+        if let Some(tradable_picks) = &mut _pool_context.tradable_picks {
+            if let Some(owner) = tradable_picks[pick.rank as usize].get_mut(&pick.pooler) {
+                *owner = _trade.proposed_by.clone();
+            } 
         }
     }
     
@@ -856,10 +862,13 @@ async fn validate_trade_possession(_trading_list: &TradeItems, _pool_context: &P
         }
     }
 
-    for pick in _trading_list.picks.iter() {
-        if _pool_context.tradable_picks[pick.rank as usize][&pick.pooler] != *_participant{
-            return false;
+    if let Some(tradable_picks) = & _pool_context.tradable_picks {
+        for pick in _trading_list.picks.iter() {
+            if tradable_picks[pick.rank as usize][&pick.pooler] != *_participant{
+                return false;
+            }
         }
+    
     }
 
     true

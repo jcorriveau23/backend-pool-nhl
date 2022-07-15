@@ -43,13 +43,13 @@ pub async fn find_users(
     Ok(users)
 }
 
-pub async fn create_user_from_login(db: &Database, user: RegisterRequest, password_hash: &String) -> mongodb::error::Result<Option<User>>{
+pub async fn create_user_from_login(db: &Database, user: &RegisterRequest, password_hash: &String) -> mongodb::error::Result<Option<User>>{
     // this function needd to be call after calling find_user() and validate a user does not exist
     let collection = db.collection::<Document>("users");
 
     let d = doc! {
         "name": user.name.clone(),
-        "password": user.password.clone(),
+        "password": password_hash,
         "email": user.email.clone(),
         "phone": user.phone.clone()
     };

@@ -122,7 +122,7 @@ pub async fn delete_pool (
 pub async fn start_draft (
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
-    body: Json<StartDraftRequest>,
+    mut body: Json<StartDraftRequest>,
 ) -> Result<Json<PoolMessageResponse>, MyError> {
     if let Err(e) = token {
         return Err(jwt::return_token_error(e));      
@@ -130,7 +130,7 @@ pub async fn start_draft (
 
     let user_id = token.unwrap()._id;
 
-    match pool::start_draft(db, &user_id.to_string(), &body.name, &body.participants).await {
+    match pool::start_draft(db, &user_id.to_string(), &mut body.poolInfo).await {
         Ok(data) => {
             Ok(Json(data))
         }
