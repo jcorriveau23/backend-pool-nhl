@@ -4,8 +4,8 @@ use rocket::fairing::AdHoc;
 
 // collection library.
 pub mod daily_leaders;
-pub mod user;
 pub mod pool;
+pub mod user;
 
 pub fn init() -> AdHoc {
     AdHoc::on_ignite("Connecting to MongoDB", |rocket| async {
@@ -19,7 +19,9 @@ pub fn init() -> AdHoc {
 }
 
 async fn connect() -> mongodb::error::Result<Database> {
-    let client_options = ClientOptions::parse("mongodb://localhost:27017").await.unwrap();
+    let client_options = ClientOptions::parse("mongodb://localhost:27017")
+        .await
+        .unwrap();
 
     // mongoDB client
     let client = Client::with_options(client_options).unwrap();

@@ -1,18 +1,17 @@
 use chrono::Utc;
 
-
-use serde::{Deserialize, Serialize};
 use jsonwebtoken::errors::Result;
 use jsonwebtoken::TokenData;
+use jsonwebtoken::{DecodingKey, EncodingKey};
 use jsonwebtoken::{Header, Validation};
-use jsonwebtoken::{EncodingKey, DecodingKey};
 use mongodb::bson::oid::ObjectId;
 use rocket::http::Status;
 use rocket::outcome::Outcome;
 use rocket::request::{self, FromRequest, Request};
+use serde::{Deserialize, Serialize};
 
-use crate::models::user::{ User };
 use crate::errors::response::MyError;
+use crate::models::user::User;
 
 static ONE_WEEK: i64 = 60 * 60 * 24 * 7; // in seconds
 
@@ -29,7 +28,7 @@ pub struct UserToken {
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for UserToken {
     type Error = ApiKeyError;
-    async fn from_request(req: &'r Request<'_>,) -> request::Outcome<Self, Self::Error> {
+    async fn from_request(req: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
         //let conn = req.guard::<Database>().unwrap();
         if let Some(authen_header) = req.headers().get_one("Authorization") {
             let authen_str = authen_header.to_string();
@@ -37,9 +36,8 @@ impl<'r> FromRequest<'r> for UserToken {
                 let token = authen_str[6..authen_str.len()].trim();
                 if let Ok(token_data) = decode_token(token.to_string()) {
                     return verify_token(token_data.claims);
-                } 
-                else {
-                    return Outcome::Failure((Status::BadRequest, ApiKeyError::Invalid))
+                } else {
+                    return Outcome::Failure((Status::BadRequest, ApiKeyError::Invalid));
                 }
             }
         }
@@ -50,19 +48,14 @@ impl<'r> FromRequest<'r> for UserToken {
 
 pub fn return_token_error(e: ApiKeyError) -> MyError {
     match e {
-        ApiKeyError::Invalid => MyError::build(
-                                    400,
-                                    Some("The token provided is not valid.".to_string()),
-                                ),
-        ApiKeyError::Missing =>  MyError::build(
-                                    400,
-                                    Some("The token was not provided.".to_string()),
-                                ),
-        ApiKeyError::Expired =>  MyError::build(
-                                    400,
-                                    Some("The token has expired.".to_string()),
-                                ),
-    }  
+        ApiKeyError::Invalid => {
+            MyError::build(400, Some("The token provided is not valid.".to_string()))
+        }
+        ApiKeyError::Missing => {
+            MyError::build(400, Some("The token was not provided.".to_string()))
+        }
+        ApiKeyError::Expired => MyError::build(400, Some("The token has expired.".to_string())),
+    }
 }
 
 pub fn generate_token_register(_user: &User) -> String {
@@ -73,7 +66,12 @@ pub fn generate_token_register(_user: &User) -> String {
         _id: _user._id,
     };
 
-    jsonwebtoken::encode(&Header::default(), &payload, &EncodingKey::from_secret(include_bytes!("secret.key"))).unwrap()
+    jsonwebtoken::encode(
+        &Header::default(),
+        &payload,
+        &EncodingKey::from_secret(include_bytes!("secret.key")),
+    )
+    .unwrap()
 }
 
 pub fn generate_token(_user: &User) -> String {
@@ -84,18 +82,27 @@ pub fn generate_token(_user: &User) -> String {
         _id: _user._id,
     };
 
-    jsonwebtoken::encode(&Header::default(), &payload, &EncodingKey::from_secret(include_bytes!("secret.key"))).unwrap()
+    jsonwebtoken::encode(
+        &Header::default(),
+        &payload,
+        &EncodingKey::from_secret(include_bytes!("secret.key")),
+    )
+    .unwrap()
 }
 
 fn decode_token(token: String) -> Result<TokenData<UserToken>> {
-    jsonwebtoken::decode::<UserToken>(&token, &DecodingKey::from_secret(include_bytes!("secret.key")), &Validation::default())
+    jsonwebtoken::decode::<UserToken>(
+        &token,
+        &DecodingKey::from_secret(include_bytes!("secret.key")),
+        &Validation::default(),
+    )
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ApiKeyError {
     Missing,
     Invalid,
-    Expired
+    Expired,
 }
 
 fn verify_token(token: UserToken) -> request::Outcome<UserToken, ApiKeyError> {

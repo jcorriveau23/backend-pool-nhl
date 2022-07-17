@@ -2,13 +2,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive( Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct Pool {
     pub name: String, // the name of the pool.
     pub owner: String,
     pub number_poolers: u8, // the number of participants in the pool.
 
-    pub participants: Option<Vec<String>>,    // The mongoDB ID of each participants.
+    pub participants: Option<Vec<String>>, // The mongoDB ID of each participants.
 
     // Roster configuration.
     pub number_forwards: u8,
@@ -40,13 +40,13 @@ pub struct Pool {
     pub final_rank: Option<Vec<String>>,
 
     pub nb_player_drafted: u8,
-    
+
     // Trade information.
     pub nb_trade: u32,
-    pub trades: Option<Vec<Trade>>, 
+    pub trades: Option<Vec<Trade>>,
 
     // context of the pool.
-    pub context: Option<PoolContext>, 
+    pub context: Option<PoolContext>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
@@ -54,18 +54,18 @@ pub enum PoolState {
     InProgress,
     Dynastie,
     Draft,
-    Created
+    Created,
 }
 
-#[derive( Debug, Deserialize, Serialize, JsonSchema, Clone )]   // Copy
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)] // Copy
 pub struct PoolContext {
     pub pooler_roster: HashMap<String, PoolerRoster>,
     pub draft_order: Vec<String>,
     pub score_by_day: Option<HashMap<String, HashMap<String, DailyRosterPoints>>>,
-    pub tradable_picks: Option<Vec<HashMap<String, String>>>
+    pub tradable_picks: Option<Vec<HashMap<String, String>>>,
 }
 
-#[derive( Debug, Deserialize, Serialize, JsonSchema, Clone )]   // Copy
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)] // Copy
 pub struct PoolerRoster {
     pub chosen_forwards: Vec<Player>,
     pub chosen_defenders: Vec<Player>,
@@ -73,7 +73,7 @@ pub struct PoolerRoster {
     pub chosen_reservists: Vec<Player>,
 }
 
-#[derive( Debug, Deserialize, Serialize, JsonSchema, Clone )]  
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct DailyRosterPoints {
     pub roster: Roster,
     pub F_tot: Option<SkaterPoolPoints>,
@@ -83,28 +83,28 @@ pub struct DailyRosterPoints {
     pub cumulate: Option<DailyCumulate>,
 }
 
-#[derive( Debug, Deserialize, Serialize, JsonSchema, Clone )]  
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct Roster {
     pub F: HashMap<String, Option<SkaterPoints>>,
     pub D: HashMap<String, Option<SkaterPoints>>,
     pub G: HashMap<String, Option<GoalyPoints>>,
 }
 
-#[derive( Debug, Deserialize, Serialize, JsonSchema, Clone )]  
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct SkaterPoints {
     pub G: u8,
     pub A: u8,
 }
 
-#[derive( Debug, Deserialize, Serialize, JsonSchema, Clone )]  
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct GoalyPoints {
     pub G: u8,
     pub A: u8,
-    pub W: bool, 
-    pub SO: bool, 
+    pub W: bool,
+    pub SO: bool,
 }
 
-#[derive( Debug, Deserialize, Serialize, JsonSchema, Clone )]  
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct SkaterPoolPoints {
     pub G: u8,
     pub A: u8,
@@ -112,7 +112,7 @@ pub struct SkaterPoolPoints {
     pub pts: u8,
 }
 
-#[derive( Debug, Deserialize, Serialize, JsonSchema, Clone )]  
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct GoalyPoolPoints {
     pub G: u8,
     pub A: u8,
@@ -121,7 +121,7 @@ pub struct GoalyPoolPoints {
     pub pts: u8,
 }
 
-#[derive( Debug, Deserialize, Serialize, JsonSchema, Clone )]  
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct DailyCumulate {
     // Forwards
     pub G_F: u16,
@@ -139,7 +139,7 @@ pub struct DailyCumulate {
     pub W_G: u16,
     pub SO_G: u8,
     pub P_G: u16,
-    pub P: u16
+    pub P: u16,
 }
 
 impl PartialEq<Player> for Player {
@@ -148,19 +148,19 @@ impl PartialEq<Player> for Player {
     }
 }
 
-#[derive( Debug, Deserialize, Serialize, JsonSchema, Clone )]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct Player {
-    pub id: u32,    // ID from the NHL API.
+    pub id: u32, // ID from the NHL API.
     pub name: String,
     pub team: String,
     pub position: Position,
 }
 
-#[derive( Debug, Deserialize, Serialize, JsonSchema, Clone )]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub enum Position {
     F,
     D,
-    G
+    G,
 }
 
 impl PartialEq<Pick> for Pick {
@@ -169,13 +169,13 @@ impl PartialEq<Pick> for Pick {
     }
 }
 
-#[derive( Debug, Deserialize, Serialize, JsonSchema, Clone )]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct Pick {
     pub rank: u8,
-    pub pooler: String
+    pub pooler: String,
 }
 
-#[derive( Debug, Deserialize, Serialize, JsonSchema, Clone )]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct Trade {
     pub proposed_by: String,
     pub ask_to: String,
@@ -183,16 +183,16 @@ pub struct Trade {
     pub to_items: TradeItems,
     pub status: TradeStatus,
     pub id: u32,
-    pub date_accepted: String,    
+    pub date_accepted: String,
 }
 
-#[derive( Debug, Deserialize, Serialize, JsonSchema, Clone )]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct TradeItems {
     pub players: Vec<Player>,
     pub picks: Vec<Pick>,
 }
 
-#[derive( Debug, Deserialize, Serialize, JsonSchema, Clone )]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub enum TradeStatus {
     NEW,
     ACCEPTED,
