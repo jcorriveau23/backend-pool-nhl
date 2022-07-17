@@ -814,7 +814,7 @@ pub async fn protect_players(
 
         if !is_selected_players_valid {
             return Ok(create_error_response(
-                "The pooler does not possess one on the selected forwards".to_string(),
+                "The pooler does not poccess  one of the selected forwards".to_string(),
             )
             .await);
         }
@@ -826,7 +826,7 @@ pub async fn protect_players(
 
         if !is_selected_players_valid {
             return Ok(create_error_response(
-                "The pooler does not possess one on the selected defenders".to_string(),
+                "The pooler does not poccess  one of the selected defenders".to_string(),
             )
             .await);
         }
@@ -838,7 +838,7 @@ pub async fn protect_players(
 
         if !is_selected_players_valid {
             return Ok(create_error_response(
-                "The pooler does not possess one on the selected goalies".to_string(),
+                "The pooler does not poccess  one of the selected goalies".to_string(),
             )
             .await);
         }
@@ -850,7 +850,7 @@ pub async fn protect_players(
 
         if !is_selected_players_valid {
             return Ok(create_error_response(
-                "The pooler does not possess one on the selected reservisists".to_string(),
+                "The pooler does not poccess  one of the selected reservisists".to_string(),
             )
             .await);
         }
@@ -877,10 +877,10 @@ pub async fn protect_players(
                 .chosen_defenders
                 .len()
             + pooler_context.pooler_roster[participant]
-                .chosen_forwards
+                .chosen_goalies
                 .len()
             + pooler_context.pooler_roster[participant]
-                .chosen_forwards
+                .chosen_reservists
                 .len()) as u8
             != pool_unwrap.next_season_number_players_protected
         {
@@ -891,6 +891,8 @@ pub async fn protect_players(
     // Fill up the draft list, we need to use the tradable_picks with the final_rank, so the draft list take the last season into account.
 
     let mut status = PoolState::Dynastie;
+
+    let mut updated_fields = doc!{};
 
     if is_all_participants_ready {
         status = PoolState::Draft;
@@ -915,16 +917,28 @@ pub async fn protect_players(
                 }
             }
         }
+            // Update fields with the new trade
+    
+            updated_fields = doc! {
+                "$set": doc!{
+                    "context.pooler_roster": to_bson(&pooler_context.pooler_roster).unwrap(),
+                    "context.draft_order": to_bson(&pooler_context.draft_order).unwrap(),
+                    "status": to_bson(&status).unwrap()
+                }
+            };
+    }
+    else{
+        // Update fields with the new trade
+
+        updated_fields = doc! {
+            "$set": doc!{
+                "context.pooler_roster": to_bson(&pooler_context.pooler_roster).unwrap(),
+                "status": to_bson(&status).unwrap()
+            }
+        };
     }
 
-    // Update fields with the new trade
-
-    let updated_fields = doc! {
-        "$set": doc!{
-            "context.pooler_roster": to_bson(&pooler_context.pooler_roster).unwrap(),
-            "status": to_bson(&status).unwrap()
-        }
-    };
+    
 
     // Update the fields in the mongoDB pool document.
     let find_one_and_update_options = FindOneAndUpdateOptions::builder()
@@ -1055,7 +1069,7 @@ async fn validate_player_possession(
         }
         Position::D => {
             if !_pool_context.pooler_roster[_participant]
-                .chosen_forwards
+                .chosen_defenders
                 .contains(_player)
                 && !_pool_context.pooler_roster[_participant]
                     .chosen_reservists
@@ -1066,7 +1080,7 @@ async fn validate_player_possession(
         }
         Position::G => {
             if !_pool_context.pooler_roster[_participant]
-                .chosen_forwards
+                .chosen_goalies
                 .contains(_player)
                 && !_pool_context.pooler_roster[_participant]
                     .chosen_reservists
