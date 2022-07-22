@@ -1,6 +1,7 @@
 use mongodb::Database;
 
 use bcrypt;
+use hex;
 use rocket::State;
 use web3;
 
@@ -61,9 +62,7 @@ pub async fn login_user(db: &State<Database>, body: Json<LoginRequest>) -> Resul
         ));
     }
 
-    let user_unwrap = user.unwrap();
-
-    let user_unwrap_copy = user_unwrap.clone();
+    let user_unwrap = &user.unwrap();
 
     if user_unwrap.password.is_none() {
         return Err(MyError::build(
@@ -72,22 +71,23 @@ pub async fn login_user(db: &State<Database>, body: Json<LoginRequest>) -> Resul
         ));
     }
 
-    let password_unwrap = user_unwrap.password.unwrap();
+    if user_unwrap.password.is_some() {
+        let psw = &user_unwrap.password.clone().unwrap();
+        let is_valid_password = bcrypt::verify(&body.password, psw).unwrap();
 
-    let is_valid_password = bcrypt::verify(&body.password, &password_unwrap).unwrap();
-
-    if !is_valid_password {
-        return Err(MyError::build(
-            400,
-            Some("The password provided is not valid.".to_string()),
-        ));
+        if !is_valid_password {
+            return Err(MyError::build(
+                400,
+                Some("The password provided is not valid.".to_string()),
+            ));
+        }
     }
 
     // create the token before sending the response
 
-    let token = jwt::generate_token(&user_unwrap_copy);
+    let token = jwt::generate_token(user_unwrap);
 
-    let user_json = json! ({"user": user_unwrap_copy, "token": token});
+    let user_json = json! ({"user": user_unwrap, "token": token});
 
     Ok(user_json)
 }
@@ -157,14 +157,21 @@ pub async fn validate_token(token: Result<UserToken, ApiKeyError>) -> Result<Val
 }
 
 async fn verify_message(addr: &String, sig: &String) -> bool {
-    let signer_addr = web3::signing::recover(
-        "Unlock wallet to access nhl-pool-ethereum."
-            .to_string()
-            .as_bytes(),
-        sig.as_bytes(),
-        1,
-    )
-    .unwrap();
+    let message = "Unlock wallet to access nhl-pool-ethereum.".to_string();
+    let signature = hex::decode(sig.strip_prefix("0x").unwrap()).unwrap();
+    let signer_addr = web3::signing::recover(&eth_message(message), &signature[..64], 0).unwrap();
 
-    signer_addr.to_string() == *addr
+    format!("{:02X?}", signer_addr) == *addr.to_lowercase()
+}
+
+pub fn eth_message(message: String) -> [u8; 32] {
+    web3::signing::keccak256(
+        format!(
+            "{}{}{}",
+            "\x19Ethereum Signed Message:\n",
+            message.len(),
+            message
+        )
+        .as_bytes(),
+    )
 }

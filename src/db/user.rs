@@ -1,5 +1,7 @@
+use std::str::FromStr;
+
 use futures::stream::TryStreamExt;
-use mongodb::bson::{doc, Document};
+use mongodb::bson::{doc, oid::ObjectId, Document};
 use mongodb::options::{FindOneAndUpdateOptions, ReturnDocument};
 use mongodb::Database;
 
@@ -118,10 +120,12 @@ pub async fn update_user_name(
         .return_document(ReturnDocument::After)
         .build();
 
-    let filter = doc! {"_id": _user_id};
+    let filter = doc! {"_id": ObjectId::from_str(_user_id).unwrap()};
 
     let doc = doc! {
-        "name": _new_name,
+        "$set":  doc!{
+            "name": _new_name
+        }
     };
 
     let user = collection
