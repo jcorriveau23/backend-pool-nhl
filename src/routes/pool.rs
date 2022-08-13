@@ -12,8 +12,7 @@ use crate::models::pool::{
     StartDraftRequest,
 };
 use crate::models::response::PoolMessageResponse;
-use crate::routes::jwt;
-use crate::routes::jwt::{ApiKeyError, UserToken};
+use crate::routes::jwt::{return_token_error, ApiKeyError, UserToken};
 
 /// get Pool document by _name
 //  http://127.0.0.1:8000/rust-api/pool/test4
@@ -24,7 +23,7 @@ pub async fn get_pool_by_name(
     _name: String,
 ) -> Result<Json<Pool>, MyError> {
     if let Err(e) = token {
-        return Err(jwt::return_token_error(e));
+        return Err(return_token_error(e));
     }
 
     match pool::find_pool_with_name(db, _name).await {
@@ -50,7 +49,7 @@ pub async fn get_pools(
     token: Result<UserToken, ApiKeyError>,
 ) -> Result<Json<Vec<Pool>>, MyError> {
     if let Err(e) = token {
-        return Err(jwt::return_token_error(e));
+        return Err(return_token_error(e));
     }
 
     match pool::find_pools(db).await {
@@ -66,7 +65,7 @@ pub async fn create_pool(
     body: Json<PoolCreationRequest>,
 ) -> Result<Json<PoolMessageResponse>, MyError> {
     if let Err(e) = token {
-        return Err(jwt::return_token_error(e));
+        return Err(return_token_error(e));
     }
 
     let owner = token.unwrap()._id;
@@ -84,7 +83,7 @@ pub async fn delete_pool(
     body: Json<PoolDeletionRequest>,
 ) -> Result<Json<PoolMessageResponse>, MyError> {
     if let Err(e) = token {
-        return Err(jwt::return_token_error(e));
+        return Err(return_token_error(e));
     }
 
     let user_id = token.unwrap()._id;
@@ -102,7 +101,7 @@ pub async fn start_draft(
     mut body: Json<StartDraftRequest>,
 ) -> Result<Json<PoolMessageResponse>, MyError> {
     if let Err(e) = token {
-        return Err(jwt::return_token_error(e));
+        return Err(return_token_error(e));
     }
 
     let user_id = token.unwrap()._id;
@@ -120,7 +119,7 @@ pub async fn select_player(
     body: Json<SelectPlayerRequest>,
 ) -> Result<Json<PoolMessageResponse>, MyError> {
     if let Err(e) = token {
-        return Err(jwt::return_token_error(e));
+        return Err(return_token_error(e));
     }
 
     let user_id = token.unwrap()._id;
@@ -138,7 +137,7 @@ pub async fn create_trade(
     body: Json<CreateTradeRequest>,
 ) -> Result<Json<PoolMessageResponse>, MyError> {
     if let Err(e) = token {
-        return Err(jwt::return_token_error(e));
+        return Err(return_token_error(e));
     }
 
     let user_id = token.unwrap()._id;
@@ -158,7 +157,7 @@ pub async fn cancel_trade(
     body: Json<CancelTradeRequest>,
 ) -> Result<Json<PoolMessageResponse>, MyError> {
     if let Err(e) = token {
-        return Err(jwt::return_token_error(e));
+        return Err(return_token_error(e));
     }
 
     let user_id = token.unwrap()._id;
@@ -176,7 +175,7 @@ pub async fn respond_trade(
     body: Json<RespondTradeRequest>,
 ) -> Result<Json<PoolMessageResponse>, MyError> {
     if let Err(e) = token {
-        return Err(jwt::return_token_error(e));
+        return Err(return_token_error(e));
     }
 
     let user_id = token.unwrap()._id;
@@ -202,7 +201,7 @@ pub async fn fill_spot(
     body: Json<FillSpotRequest>,
 ) -> Result<Json<PoolMessageResponse>, MyError> {
     if let Err(e) = token {
-        return Err(jwt::return_token_error(e));
+        return Err(return_token_error(e));
     }
 
     let user_id = token.unwrap()._id;
@@ -220,7 +219,7 @@ pub async fn protect_players(
     body: Json<ProtectPlayersRequest>,
 ) -> Result<Json<PoolMessageResponse>, MyError> {
     if let Err(e) = token {
-        return Err(jwt::return_token_error(e));
+        return Err(return_token_error(e));
     }
 
     let user_id = token.unwrap()._id;

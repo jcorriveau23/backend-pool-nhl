@@ -1,3 +1,4 @@
+use chrono::offset::Utc;
 use futures::stream::TryStreamExt;
 use mongodb::bson::{doc, to_bson};
 use mongodb::options::{FindOneAndUpdateOptions, ReturnDocument};
@@ -413,10 +414,7 @@ pub async fn create_trade(
     // Make sure that user can only have 1 active trade at a time. return an error if already one trade active in this pool. (Active trade = NEW, ACCEPTED, )
 
     for trade in trades.iter() {
-        if (matches!(trade.status, TradeStatus::NEW)
-            || matches!(trade.status, TradeStatus::ACCEPTED))
-            && (trade.proposed_by == *_user_id && trade.ask_to == *_user_id)
-        {
+        if (matches!(trade.status, TradeStatus::NEW)) && (trade.proposed_by == *_user_id) {
             return Ok(create_error_response(
                 "User can only have one active trade at a time.".to_string(),
             )
@@ -424,7 +422,7 @@ pub async fn create_trade(
         }
     }
 
-    // does the the from or to side has too much items in the trade ?
+    // does the the from or to side has items in the trade ?
 
     if (_trade.from_items.picks.len() + _trade.from_items.players.len()) == 0
         || (_trade.to_items.picks.len() + _trade.to_items.players.len()) == 0
@@ -443,7 +441,7 @@ pub async fn create_trade(
         return Ok(create_error_response("There is to much items in the trade.".to_string()).await);
     }
 
-    // Does the pooler really possess the players ?
+    // Does the pooler really poccess the players ?
 
     if !validate_trade_possession(&_trade.from_items, &pool_context, &_trade.proposed_by).await
         || !validate_trade_possession(&_trade.to_items, &pool_context, &_trade.ask_to).await
@@ -455,6 +453,7 @@ pub async fn create_trade(
         .await);
     }
 
+    _trade.date_created = Utc::now().timestamp_millis();
     _trade.status = TradeStatus::NEW;
     _trade.id = pool_unwrap.nb_trade;
     trades.push(_trade.clone());
@@ -592,7 +591,7 @@ pub async fn respond_trade(
         .await);
     }
 
-    // validate only the owner can cancel a trade
+    // validate that only the one that was ask for the trade can accept it.
 
     if trades[_trade_id as usize].ask_to != *_user_id {
         return Ok(create_error_response(
@@ -601,19 +600,30 @@ pub async fn respond_trade(
         .await);
     }
 
-    // validate the both trade parties own those items
+    // validate that 24h have been passed since the trade was created.
 
-    if !remove_roster_items(&mut pool_context, &trades[_trade_id as usize]).await {
-        return Ok(create_error_response("Trading items is not valid.".to_string()).await);
+    let now = Utc::now().timestamp_millis();
+
+    if trades[_trade_id as usize].date_created + 8640000 > now {
+        return Ok(create_error_response(
+            "The trade needs to be active for 24h before being able to accept it.".to_string(),
+        )
+        .await);
     }
 
-    trades[_trade_id as usize].status = if _is_accepted {
-        TradeStatus::ACCEPTED
+    // validate that both trade parties own those items
+
+    if _is_accepted {
+        trades[_trade_id as usize].status = TradeStatus::ACCEPTED;
+
+        if !trade_roster_items(&mut pool_context, &trades[_trade_id as usize]).await {
+            return Ok(create_error_response("Trading items is not valid.".to_string()).await);
+        }
+        // TODO not remove but change switch all trade items.
     } else {
-        TradeStatus::REFUSED
+        trades[_trade_id as usize].status = TradeStatus::REFUSED;
     };
 
-    trades[_trade_id as usize].status = TradeStatus::CANCELLED;
     // Update fields with the new trade
 
     let updated_fields = doc! {
@@ -892,7 +902,7 @@ pub async fn protect_players(
 
     let mut status = PoolState::Dynastie;
 
-    let mut updated_fields = doc!{};
+    let mut updated_fields = doc! {};
 
     if is_all_participants_ready {
         status = PoolState::Draft;
@@ -917,17 +927,16 @@ pub async fn protect_players(
                 }
             }
         }
-            // Update fields with the new trade
-    
-            updated_fields = doc! {
-                "$set": doc!{
-                    "context.pooler_roster": to_bson(&pooler_context.pooler_roster).unwrap(),
-                    "context.draft_order": to_bson(&pooler_context.draft_order).unwrap(),
-                    "status": to_bson(&status).unwrap()
-                }
-            };
-    }
-    else{
+        // Update fields with the new trade
+
+        updated_fields = doc! {
+            "$set": doc!{
+                "context.pooler_roster": to_bson(&pooler_context.pooler_roster).unwrap(),
+                "context.draft_order": to_bson(&pooler_context.draft_order).unwrap(),
+                "status": to_bson(&status).unwrap()
+            }
+        };
+    } else {
         // Update fields with the new trade
 
         updated_fields = doc! {
@@ -937,8 +946,6 @@ pub async fn protect_players(
             }
         };
     }
-
-    
 
     // Update the fields in the mongoDB pool document.
     let find_one_and_update_options = FindOneAndUpdateOptions::builder()
@@ -961,7 +968,7 @@ pub async fn protect_players(
     Ok(create_success_response(&new_pool).await)
 }
 
-async fn remove_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> bool {
+async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> bool {
     if !validate_trade_possession(&_trade.from_items, _pool_context, &_trade.proposed_by).await
         || !validate_trade_possession(&_trade.from_items, _pool_context, &_trade.proposed_by).await
     {
@@ -969,16 +976,16 @@ async fn remove_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) ->
     }
 
     for player in _trade.from_items.players.iter() {
-        remove_roster_player(_pool_context, player, &_trade.proposed_by).await;
+        trade_roster_player(_pool_context, player, &_trade.proposed_by, &_trade.ask_to).await;
     }
 
     for player in _trade.to_items.players.iter() {
-        remove_roster_player(_pool_context, player, &_trade.ask_to).await;
+        trade_roster_player(_pool_context, player, &_trade.ask_to, &_trade.proposed_by).await;
     }
 
     for pick in _trade.from_items.picks.iter() {
         if let Some(tradable_picks) = &mut _pool_context.tradable_picks {
-            if let Some(owner) = tradable_picks[pick.rank as usize].get_mut(&pick.pooler) {
+            if let Some(owner) = tradable_picks[pick.round as usize].get_mut(&pick.from) {
                 *owner = _trade.ask_to.clone();
             }
         }
@@ -986,7 +993,7 @@ async fn remove_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) ->
 
     for pick in _trade.to_items.picks.iter() {
         if let Some(tradable_picks) = &mut _pool_context.tradable_picks {
-            if let Some(owner) = tradable_picks[pick.rank as usize].get_mut(&pick.pooler) {
+            if let Some(owner) = tradable_picks[pick.round as usize].get_mut(&pick.from) {
                 *owner = _trade.proposed_by.clone();
             }
         }
@@ -995,37 +1002,45 @@ async fn remove_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) ->
     true
 }
 
-async fn remove_roster_player(
+async fn trade_roster_player(
     _pool_context: &mut PoolContext,
     _player: &Player,
-    _participant: &String,
-) {
+    _participant_giver: &String,
+    _participant_receiver: &String,
+) -> bool {
     match _player.position {
         Position::F => {
-            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant) {
+            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant_giver) {
                 x.chosen_forwards.retain(|player| player != _player);
             }
-            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant) {
+            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant_giver) {
                 x.chosen_reservists.retain(|player| player != _player);
             }
         }
         Position::D => {
-            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant) {
+            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant_giver) {
                 x.chosen_defenders.retain(|player| player != _player);
             }
-            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant) {
+            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant_giver) {
                 x.chosen_reservists.retain(|player| player != _player);
             }
         }
         Position::G => {
-            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant) {
+            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant_giver) {
                 x.chosen_goalies.retain(|player| player != _player);
             }
-            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant) {
+            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant_giver) {
                 x.chosen_reservists.retain(|player| player != _player);
             }
         }
     }
+
+    if let Some(x) = _pool_context.pooler_roster.get_mut(_participant_receiver) {
+        x.chosen_reservists.push(_player.clone());
+        return true;
+    }
+
+    false
 }
 
 async fn validate_trade_possession(
@@ -1041,7 +1056,7 @@ async fn validate_trade_possession(
 
     if let Some(tradable_picks) = &_pool_context.tradable_picks {
         for pick in _trading_list.picks.iter() {
-            if tradable_picks[pick.rank as usize][&pick.pooler] != *_participant {
+            if tradable_picks[pick.round as usize][&pick.from] != *_participant {
                 return false;
             }
         }

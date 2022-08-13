@@ -165,14 +165,14 @@ pub enum Position {
 
 impl PartialEq<Pick> for Pick {
     fn eq(&self, other: &Pick) -> bool {
-        self.rank == other.rank && self.pooler == other.pooler
+        self.round == other.round && self.from == other.from
     }
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct Pick {
-    pub rank: u8,
-    pub pooler: String,
+    pub round: u8,
+    pub from: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
@@ -183,7 +183,8 @@ pub struct Trade {
     pub to_items: TradeItems,
     pub status: TradeStatus,
     pub id: u32,
-    pub date_accepted: String,
+    pub date_created: i64,
+    pub date_accepted: i64,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
@@ -194,11 +195,10 @@ pub struct TradeItems {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub enum TradeStatus {
-    NEW,
-    ACCEPTED,
-    COMPLETED,
-    CANCELLED,
-    REFUSED,
+    NEW,       // trade created by a requester (not yet ACCEPTED/CANCELLED/REFUSED)
+    ACCEPTED,  // trade accepted items were officially traded
+    CANCELLED, // items were not traded cancelled by the requester
+    REFUSED,   // items were not traded cancelled by the one requested for the traded
 }
 
 // payload to sent when creating a new pool.
