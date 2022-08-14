@@ -8,8 +8,8 @@ use crate::db::pool;
 use crate::errors::response::MyError;
 use crate::models::pool::{
     CancelTradeRequest, CreateTradeRequest, FillSpotRequest, Pool, PoolCreationRequest,
-    PoolDeletionRequest, ProtectPlayersRequest, RespondTradeRequest, SelectPlayerRequest,
-    StartDraftRequest,
+    PoolDeletionRequest, ProjectedPool, ProtectPlayersRequest, RespondTradeRequest,
+    SelectPlayerRequest, StartDraftRequest,
 };
 use crate::models::response::PoolMessageResponse;
 use crate::routes::jwt::{return_token_error, ApiKeyError, UserToken};
@@ -47,7 +47,7 @@ pub async fn get_pool_by_name(
 pub async fn get_pools(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
-) -> Result<Json<Vec<Pool>>, MyError> {
+) -> Result<Json<Vec<ProjectedPool>>, MyError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }

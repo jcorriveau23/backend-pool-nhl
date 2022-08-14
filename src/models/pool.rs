@@ -3,6 +3,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+pub struct ProjectedPool {
+    pub name: String, // the name of the pool.
+    pub owner: String,
+    pub status: PoolState, // State of the pool.
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct Pool {
     pub name: String, // the name of the pool.
     pub owner: String,

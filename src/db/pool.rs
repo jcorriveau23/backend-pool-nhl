@@ -1,13 +1,13 @@
 use chrono::offset::Utc;
 use futures::stream::TryStreamExt;
 use mongodb::bson::{doc, to_bson};
-use mongodb::options::{FindOneAndUpdateOptions, ReturnDocument};
+use mongodb::options::{FindOneAndUpdateOptions, FindOptions, ReturnDocument};
 use mongodb::Database;
 use std::collections::HashMap;
 
 use crate::models::pool::{
-    Player, Pool, PoolContext, PoolCreationRequest, PoolState, PoolerRoster, Position, Trade,
-    TradeItems, TradeStatus,
+    Player, Pool, PoolContext, PoolCreationRequest, PoolState, PoolerRoster, Position,
+    ProjectedPool, Trade, TradeItems, TradeStatus,
 };
 use crate::models::response::PoolMessageResponse;
 
@@ -17,27 +17,30 @@ pub async fn find_pool_with_name(
 ) -> mongodb::error::Result<Option<Pool>> {
     let collection = db.collection::<Pool>("pools");
 
-    // let find_one_options = FindOneOptions::builder()
-    // .projection(doc! {"name": 1, "status" : 1})
-    // .build();
-
     let pool_doc = collection.find_one(doc! {"name": _name}, None).await?;
 
     Ok(pool_doc)
 }
 
-pub async fn find_pools(db: &Database) -> mongodb::error::Result<Vec<Pool>> {
+pub async fn find_pools(db: &Database) -> mongodb::error::Result<Vec<ProjectedPool>> {
     let collection = db.collection::<Pool>("pools");
+    let find_option = FindOptions::builder()
+        .projection(doc! {"name": 1, "owner": 1, "status": 1})
+        .build();
 
-    let mut cursor = collection.find(None, None).await?;
+    let mut cursor = collection
+        .clone_with_type::<ProjectedPool>()
+        .find(None, find_option)
+        .await?;
 
-    let mut users: Vec<Pool> = vec![];
+    let mut pools: Vec<ProjectedPool> = vec![];
 
-    while let Some(user) = cursor.try_next().await? {
-        users.push(user);
+    while let Some(pool) = cursor.try_next().await? {
+        println!("hey");
+        pools.push(pool);
     }
 
-    Ok(users)
+    Ok(pools)
 }
 
 pub async fn create_pool(
