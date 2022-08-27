@@ -67,7 +67,7 @@ pub enum PoolState {
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)] // Copy
 pub struct PoolContext {
     pub pooler_roster: HashMap<String, PoolerRoster>,
-    pub draft_order: Vec<String>,
+    pub players_name_drafted: Vec<String>,
     pub score_by_day: Option<HashMap<String, HashMap<String, DailyRosterPoints>>>,
     pub tradable_picks: Option<Vec<HashMap<String, String>>>,
 }

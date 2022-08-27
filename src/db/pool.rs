@@ -36,7 +36,6 @@ pub async fn find_pools(db: &Database) -> mongodb::error::Result<Vec<ProjectedPo
     let mut pools: Vec<ProjectedPool> = vec![];
 
     while let Some(pool) = cursor.try_next().await? {
-        println!("hey");
         pools.push(pool);
     }
 
@@ -153,9 +152,9 @@ pub async fn start_draft(
         // create pool context
         let mut pool_context = PoolContext {
             pooler_roster: HashMap::new(),
-            draft_order: Vec::new(),
             score_by_day: Some(HashMap::new()),
             tradable_picks: Some(Vec::new()),
+            players_name_drafted: Vec::new(),
         };
 
         // Initialize all participants roster object.
@@ -172,7 +171,7 @@ pub async fn start_draft(
                 .insert(participant.to_string(), pooler_roster);
         }
 
-        // TODO: randomize the list of participants and fill up the draft_order members like before.
+        // TODO: randomize the list of participants so the draft order is random
         //thread_rng().shuffle(&mut _participants);
 
         let number_picks: u16 = _poolInfo.number_poolers as u16
@@ -181,17 +180,11 @@ pub async fn start_draft(
                 + _poolInfo.number_goalies as u16
                 + _poolInfo.number_reservists as u16);
 
-        // fill up the draft list.
-
-        for i in 0..number_picks {
-            let index = i as usize % _poolInfo.number_poolers as usize;
-            pool_context.draft_order.push(participants[index].clone())
-        }
-
         _poolInfo.status = PoolState::Draft;
         _poolInfo.context = Some(pool_context);
 
         // updated fields.
+
         let updated_fields = doc! {
             "$set": to_bson(&_poolInfo).unwrap()
         };
@@ -223,6 +216,9 @@ pub async fn start_draft(
     }
 }
 
+// Dynastie:
+// Start draft: final_rank would be empty
+
 pub async fn select_player(
     db: &Database,
     _user_id: &String,
@@ -251,10 +247,6 @@ pub async fn select_player(
         return Ok(create_error_response("The user is not in the pool.".to_string()).await);
     }
 
-    if pool_context.draft_order[0] != *_user_id {
-        return Ok(create_error_response("Not your turn.".to_string()).await);
-    }
-
     if pool_unwrap.participants.is_none() {
         return Ok(
             create_error_response("There is no participants in that pool yet.".to_string()).await,
@@ -273,75 +265,142 @@ pub async fn select_player(
         }
     }
 
-    // Then, Add the chosen player in its right spot. When there is no place in the position of the player we will add it to the reservists.
+    // validate it is the user turn.
 
-    let mut pooler_roster = pool_context.pooler_roster[_user_id].clone();
+    if pool_unwrap.final_rank.is_some() {
+        // This comes from a Dynastie draft.
 
-    let mut is_added = false;
+        let final_rank = pool_unwrap.final_rank.clone().unwrap(); // the final rank is used to see who picks
 
-    match _player.position {
-        Position::F => {
-            if (pooler_roster.chosen_forwards.len() as u8) < pool_unwrap.number_forwards {
-                pooler_roster.chosen_forwards.push(_player.clone());
-                is_added = true;
+        let players_drafted = pool_context.players_name_drafted.len();
+
+        let index = pool_unwrap.number_poolers as usize
+            - 1
+            - (players_drafted % pool_unwrap.number_poolers as usize);
+        let next_drafter = &final_rank[index];
+
+        if players_drafted < (pool_unwrap.tradable_picks * pool_unwrap.number_poolers) as usize {
+            // use the tradable_picks to see who will draft next.
+            let tradable_picks = pool_context.tradable_picks.clone().unwrap();
+
+            let real_next_drafter = &tradable_picks
+                [players_drafted / pool_unwrap.number_poolers as usize][next_drafter];
+
+            if real_next_drafter != _user_id {
+                return Ok(
+                    create_error_response(format!("It is {}'s turn.", real_next_drafter)).await,
+                );
             }
-        }
-        Position::D => {
-            if (pooler_roster.chosen_defenders.len() as u8) < pool_unwrap.number_defenders {
-                pooler_roster.chosen_defenders.push(_player.clone());
-                is_added = true;
-            }
-        }
-        Position::G => {
-            if (pooler_roster.chosen_goalies.len() as u8) < pool_unwrap.number_goalies {
-                pooler_roster.chosen_goalies.push(_player.clone());
-                is_added = true;
-            }
-        }
-    }
-
-    if !is_added {
-        if (pooler_roster.chosen_reservists.len() as u8) < pool_unwrap.number_reservists {
-            pooler_roster.chosen_reservists.push(_player.clone());
         } else {
-            return Ok(
-                create_error_response("Not enough space for this player.".to_string()).await,
-            );
+            // Use the final_rank to see who draft next.
+            if next_drafter != _user_id {
+                return Ok(create_error_response(format!("It is {}'s turn.", next_drafter)).await);
+            }
+        }
+    } else {
+        // this comes from a new draft.
+
+        let participants = pool_unwrap.participants.unwrap(); // the participants is used to see who picks
+
+        let players_drafted = pool_context.players_name_drafted.len();
+
+        let index = players_drafted % pool_unwrap.number_poolers as usize;
+        let next_drafter = &participants[index];
+
+        if next_drafter != _user_id {
+            return Ok(create_error_response(format!("It is {}'s turn.", next_drafter)).await);
         }
     }
 
-    // Save the dictionnary modified with the new pick inside the pool_context.
+    // Then, Add the chosen player in its right spot. When there is no place in the position of the player we will add it to the reservists.
+    if let Some(pooler_roster) = pool_context.pooler_roster.get_mut(_user_id) {
+        let mut is_added = false;
 
-    if let Some(x) = pool_context.pooler_roster.get_mut(_user_id) {
-        *x = pooler_roster;
+        match _player.position {
+            Position::F => {
+                if (pooler_roster.chosen_forwards.len() as u8) < pool_unwrap.number_forwards {
+                    pooler_roster.chosen_forwards.push(_player.clone());
+                    pool_context.players_name_drafted.push(_player.name.clone());
+                    is_added = true;
+                }
+            }
+            Position::D => {
+                if (pooler_roster.chosen_defenders.len() as u8) < pool_unwrap.number_defenders {
+                    pooler_roster.chosen_defenders.push(_player.clone());
+                    pool_context.players_name_drafted.push(_player.name.clone());
+                    is_added = true;
+                }
+            }
+            Position::G => {
+                if (pooler_roster.chosen_goalies.len() as u8) < pool_unwrap.number_goalies {
+                    pooler_roster.chosen_goalies.push(_player.clone());
+                    pool_context.players_name_drafted.push(_player.name.clone());
+                    is_added = true;
+                }
+            }
+        }
+
+        if !is_added {
+            if (pooler_roster.chosen_reservists.len() as u8) < pool_unwrap.number_reservists {
+                pooler_roster.chosen_reservists.push(_player.clone());
+                pool_context.players_name_drafted.push(_player.name.clone());
+            } else {
+                return Ok(
+                    create_error_response("Not enough space for this player.".to_string()).await,
+                );
+            }
+        }
     }
-    // change the
-
-    pool_context.draft_order.remove(0);
 
     // the status change to InProgress when the draft is completed.
 
-    let status = if pool_context.draft_order.is_empty() {
-        PoolState::InProgress
+    let total_players_limit = (pool_unwrap.number_forwards
+        + pool_unwrap.number_defenders
+        + pool_unwrap.number_goalies
+        + pool_unwrap.number_reservists) as u16
+        * pool_unwrap.number_poolers as u16;
+
+    let mut is_done = false;
+
+    if pool_unwrap.final_rank.is_some() {
+        // dynastie draft
+
+        if total_players_limit
+            == pool_context.players_name_drafted.len() as u16
+                + (pool_unwrap.next_season_number_players_protected * pool_unwrap.number_poolers)
+                    as u16
+        {
+            is_done = true; // the limit of drafted players has been reached.
+        }
     } else {
-        pool_unwrap.status
-    };
+        // new draft
+
+        if total_players_limit == pool_context.players_name_drafted.len() as u16 {
+            is_done = true; // the limit of drafted players has been reached.
+        }
+    }
+
+    let mut status = PoolState::Draft;
 
     // generate the list of tradable_picks for the next season
 
-    let mut vect = vec![];
+    if is_done {
+        status = PoolState::InProgress;
 
-    for _pick_round in 0..pool_unwrap.tradable_picks {
-        let mut round = HashMap::new();
+        let mut vect = vec![];
 
-        for participant in participants.iter() {
-            round.insert(participant.clone(), participant.clone());
+        for _pick_round in 0..pool_unwrap.tradable_picks {
+            let mut round = HashMap::new();
+
+            for participant in participants.iter() {
+                round.insert(participant.clone(), participant.clone());
+            }
+
+            vect.push(round);
         }
 
-        vect.push(round);
+        pool_context.tradable_picks = Some(vect);
     }
-
-    pool_context.tradable_picks = Some(vect);
 
     // updated fields.
 
@@ -617,12 +676,12 @@ pub async fn respond_trade(
     // validate that both trade parties own those items
 
     if _is_accepted {
-        trades[_trade_id as usize].status = TradeStatus::ACCEPTED;
-
         if !trade_roster_items(&mut pool_context, &trades[_trade_id as usize]).await {
             return Ok(create_error_response("Trading items is not valid.".to_string()).await);
         }
-        // TODO not remove but change switch all trade items.
+
+        trades[_trade_id as usize].status = TradeStatus::ACCEPTED;
+        trades[_trade_id as usize].date_accepted = Utc::now().timestamp_millis();
     } else {
         trades[_trade_id as usize].status = TradeStatus::REFUSED;
     };
@@ -632,7 +691,8 @@ pub async fn respond_trade(
     let updated_fields = doc! {
         "$set": doc!{
             "trades": to_bson(&trades).unwrap(),
-            "context.pooler_roster": to_bson(&pool_context.pooler_roster ).unwrap()
+            "context.pooler_roster": to_bson(&pool_context.pooler_roster ).unwrap(),
+            "context.tradable_picks": to_bson(&pool_context.tradable_picks ).unwrap()
         }
     };
 
@@ -728,7 +788,7 @@ pub async fn fill_spot(
     }
 
     if let Some(x) = pooler_roster.get_mut(_user_id) {
-        x.chosen_forwards.retain(|player| player != _player);
+        x.chosen_reservists.retain(|player| player != _player);
     }
     // Update fields with the new trade
 
@@ -898,57 +958,19 @@ pub async fn protect_players(
             != pool_unwrap.next_season_number_players_protected
         {
             is_all_participants_ready = false; // not all participants are ready
+            break;
         }
     }
 
     // Fill up the draft list, we need to use the tradable_picks with the final_rank, so the draft list take the last season into account.
 
-    let mut status = PoolState::Dynastie;
-
-    let mut updated_fields = doc! {};
-
-    if is_all_participants_ready {
-        status = PoolState::Draft;
-
-        let final_rank = pool_unwrap.final_rank.clone().unwrap();
-
-        let total_round = pool_unwrap.number_forwards
-            + pool_unwrap.number_defenders
-            + pool_unwrap.number_goalies
-            + pool_unwrap.number_reservists;
-
-        let tradable_picks = pooler_context.tradable_picks.unwrap();
-
-        for round in 0..pool_unwrap.tradable_picks {
-            for participant in final_rank.iter() {
-                if total_round < pool_unwrap.tradable_picks {
-                    pooler_context
-                        .draft_order
-                        .push(tradable_picks[round as usize][participant].clone());
-                } else {
-                    pooler_context.draft_order.push(participant.clone());
-                }
-            }
+    let updated_fields = doc! {
+        "$set": doc!{
+            "context.pooler_roster": to_bson(&pooler_context.pooler_roster).unwrap(),
+            //"context.score_by_day": Some(), // TODO: clear this field since it is not usefull for the new season.
+            "status": if is_all_participants_ready {to_bson(&PoolState::Draft).unwrap()} else {to_bson(&PoolState::Draft).unwrap()}
         }
-        // Update fields with the new trade
-
-        updated_fields = doc! {
-            "$set": doc!{
-                "context.pooler_roster": to_bson(&pooler_context.pooler_roster).unwrap(),
-                "context.draft_order": to_bson(&pooler_context.draft_order).unwrap(),
-                "status": to_bson(&status).unwrap()
-            }
-        };
-    } else {
-        // Update fields with the new trade
-
-        updated_fields = doc! {
-            "$set": doc!{
-                "context.pooler_roster": to_bson(&pooler_context.pooler_roster).unwrap(),
-                "status": to_bson(&status).unwrap()
-            }
-        };
-    }
+    };
 
     // Update the fields in the mongoDB pool document.
     let find_one_and_update_options = FindOneAndUpdateOptions::builder()
@@ -990,6 +1012,7 @@ async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> 
         if let Some(tradable_picks) = &mut _pool_context.tradable_picks {
             if let Some(owner) = tradable_picks[pick.round as usize].get_mut(&pick.from) {
                 *owner = _trade.ask_to.clone();
+                println!("From: {}", _trade.ask_to);
             }
         }
     }
@@ -998,6 +1021,7 @@ async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> 
         if let Some(tradable_picks) = &mut _pool_context.tradable_picks {
             if let Some(owner) = tradable_picks[pick.round as usize].get_mut(&pick.from) {
                 *owner = _trade.proposed_by.clone();
+                println!("To: {}", _trade.proposed_by)
             }
         }
     }
