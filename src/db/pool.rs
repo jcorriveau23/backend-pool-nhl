@@ -320,21 +320,21 @@ pub async fn select_player(
             Position::F => {
                 if (pooler_roster.chosen_forwards.len() as u8) < pool_unwrap.number_forwards {
                     pooler_roster.chosen_forwards.push(_player.clone());
-                    pool_context.players_name_drafted.push(_player.name.clone());
+                    pool_context.players_name_drafted.push(_player.id.clone());
                     is_added = true;
                 }
             }
             Position::D => {
                 if (pooler_roster.chosen_defenders.len() as u8) < pool_unwrap.number_defenders {
                     pooler_roster.chosen_defenders.push(_player.clone());
-                    pool_context.players_name_drafted.push(_player.name.clone());
+                    pool_context.players_name_drafted.push(_player.id.clone());
                     is_added = true;
                 }
             }
             Position::G => {
                 if (pooler_roster.chosen_goalies.len() as u8) < pool_unwrap.number_goalies {
                     pooler_roster.chosen_goalies.push(_player.clone());
-                    pool_context.players_name_drafted.push(_player.name.clone());
+                    pool_context.players_name_drafted.push(_player.id.clone());
                     is_added = true;
                 }
             }
@@ -343,7 +343,7 @@ pub async fn select_player(
         if !is_added {
             if (pooler_roster.chosen_reservists.len() as u8) < pool_unwrap.number_reservists {
                 pooler_roster.chosen_reservists.push(_player.clone());
-                pool_context.players_name_drafted.push(_player.name.clone());
+                pool_context.players_name_drafted.push(_player.id.clone());
             } else {
                 return Ok(
                     create_error_response("Not enough space for this player.".to_string()).await,
@@ -819,6 +819,112 @@ pub async fn fill_spot(
     Ok(create_success_response(&new_pool).await)
 }
 
+pub async fn undo_select_player(
+    db: &Database,
+    _user_id: &String,
+    _pool_name: &String,
+) -> mongodb::error::Result<PoolMessageResponse> {
+    let collection = db.collection::<Pool>("pools");
+
+    let pool = find_pool_with_name(db, _pool_name.clone()).await?;
+
+    if pool.is_none() {
+        return Ok(create_error_response("Pool name does not exist.".to_string()).await);
+    }
+
+    let pool_unwrap = pool.unwrap();
+
+    // validate that the user making the request is the pool owner.
+
+    if &pool_unwrap.owner != _user_id {
+        return Ok(create_error_response("Only the owner of the pool can undo.".to_string()).await);
+    }
+
+    // validate that the pool is into the draft status.
+
+    if !matches!(pool_unwrap.status, PoolState::Draft) {
+        return Ok(create_error_response(
+            "The pool must be into the draft status to perform an undo.".to_string(),
+        )
+        .await);
+    }
+
+    let mut pool_context = pool_unwrap.context.unwrap();
+
+    // validate there is something to undo.
+
+    if pool_context.players_name_drafted.len() == 0 {
+        return Ok(create_error_response("There is nothing to undo".to_string()).await);
+    }
+
+    let latest_pick = pool_context.players_name_drafted.pop().unwrap();
+    let pick_number = pool_context.players_name_drafted.len() - 1;
+    let latest_drafter;
+
+    if pool_unwrap.final_rank.is_some() {
+        // This comes from a Dynastie draft.
+
+        let final_rank = pool_unwrap.final_rank.clone().unwrap(); // the final rank is used to see who picks
+
+        let index = pool_unwrap.number_poolers as usize
+            - 1
+            - (pick_number % pool_unwrap.number_poolers as usize);
+
+        let next_drafter = &final_rank[index];
+
+        if pick_number < (pool_unwrap.tradable_picks * pool_unwrap.number_poolers) as usize {
+            // use the tradable_picks to see who will draft next.
+            let tradable_picks = pool_context.tradable_picks.clone().unwrap();
+
+            latest_drafter = tradable_picks[pick_number / pool_unwrap.number_poolers as usize]
+                [next_drafter]
+                .clone();
+        } else {
+            // Use the final_rank to see who draft next.
+            latest_drafter = next_drafter.clone();
+        }
+    } else {
+        // this comes from a new draft.
+
+        let participants = pool_unwrap.participants.unwrap(); // the participants is used to see who picks
+
+        let index = pick_number % pool_unwrap.number_poolers as usize;
+        latest_drafter = participants[index].clone();
+    }
+
+    // Remove the player from the player roster.
+
+    remove_roster_player(&mut pool_context, latest_pick, &latest_drafter).await;
+
+    let updated_fields = doc! {
+        "$set": doc!{
+            "context.pooler_roster": to_bson(&pool_context.pooler_roster).unwrap(),
+            "context.players_name_drafted": to_bson(&pool_context.players_name_drafted).unwrap(),
+        }
+    };
+
+    // Update the fields in the mongoDB pool document.
+
+    let find_one_and_update_options = FindOneAndUpdateOptions::builder()
+        .return_document(ReturnDocument::After)
+        .build();
+
+    let new_pool = collection
+        .find_one_and_update(
+            doc! {"name": pool_unwrap.name},
+            updated_fields,
+            find_one_and_update_options,
+        )
+        .await
+        .unwrap();
+
+    if new_pool.is_none() {
+        return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+    }
+
+    Ok(create_success_response(&new_pool).await)
+}
+
 pub async fn protect_players(
     db: &Database,
     _user_id: &String,
@@ -840,7 +946,7 @@ pub async fn protect_players(
 
     let mut pooler_context = pool_unwrap.context.unwrap();
 
-    // validate that the numbers of players protected is ok.
+    // make sure the user making the resquest is a pool participants.
 
     if !pooler_context.pooler_roster.contains_key(_user_id) {
         return Ok(create_error_response(
@@ -848,6 +954,8 @@ pub async fn protect_players(
         )
         .await);
     }
+
+    // validate that the numbers of players protected is ok.
 
     if (_forw_protected.len() as u8) > pool_unwrap.number_forwards {
         return Ok(create_error_response("To much forwards protected".to_string()).await);
@@ -923,7 +1031,7 @@ pub async fn protect_players(
 
         if !is_selected_players_valid {
             return Ok(create_error_response(
-                "The pooler does not poccess  one of the selected reservisists".to_string(),
+                "The pooler does not poccess  one of the selected reservists".to_string(),
             )
             .await);
         }
@@ -962,17 +1070,16 @@ pub async fn protect_players(
         }
     }
 
-    // Fill up the draft list, we need to use the tradable_picks with the final_rank, so the draft list take the last season into account.
-
     let updated_fields = doc! {
         "$set": doc!{
             "context.pooler_roster": to_bson(&pooler_context.pooler_roster).unwrap(),
             //"context.score_by_day": Some(), // TODO: clear this field since it is not usefull for the new season.
-            "status": if is_all_participants_ready {to_bson(&PoolState::Draft).unwrap()} else {to_bson(&PoolState::Draft).unwrap()}
+            "status": if is_all_participants_ready {to_bson(&PoolState::Draft).unwrap()} else {to_bson(&PoolState::Dynastie).unwrap()}
         }
     };
 
     // Update the fields in the mongoDB pool document.
+
     let find_one_and_update_options = FindOneAndUpdateOptions::builder()
         .return_document(ReturnDocument::After)
         .build();
@@ -1027,6 +1134,21 @@ async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> 
     }
 
     true
+}
+
+async fn remove_roster_player(_pool_context: &mut PoolContext, _player_id: u32, _user_id: &String) {
+    if let Some(x) = _pool_context.pooler_roster.get_mut(_user_id) {
+        x.chosen_forwards.retain(|player| player.id != _player_id);
+    }
+    if let Some(x) = _pool_context.pooler_roster.get_mut(_user_id) {
+        x.chosen_defenders.retain(|player| player.id != _player_id);
+    }
+    if let Some(x) = _pool_context.pooler_roster.get_mut(_user_id) {
+        x.chosen_goalies.retain(|player| player.id != _player_id);
+    }
+    if let Some(x) = _pool_context.pooler_roster.get_mut(_user_id) {
+        x.chosen_reservists.retain(|player| player.id != _player_id);
+    }
 }
 
 async fn trade_roster_player(

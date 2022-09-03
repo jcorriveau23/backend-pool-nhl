@@ -130,6 +130,24 @@ pub async fn select_player(
     }
 }
 
+#[post("/undo-select-player", format = "json", data = "<body>")]
+pub async fn undo_select_player(
+    db: &State<Database>,
+    token: Result<UserToken, ApiKeyError>,
+    body: Json<SelectPlayerRequest>,
+) -> Result<Json<PoolMessageResponse>, MyError> {
+    if let Err(e) = token {
+        return Err(return_token_error(e));
+    }
+
+    let user_id = token.unwrap()._id;
+
+    match pool::undo_select_player(db, &user_id.to_string(), &body.name).await {
+        Ok(data) => Ok(Json(data)),
+        Err(e) => Err(MyError::build(400, Some(e.to_string()))),
+    }
+}
+
 #[post("/create-trade", format = "json", data = "<body>")]
 pub async fn create_trade(
     db: &State<Database>,
