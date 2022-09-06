@@ -8,8 +8,8 @@ use crate::db::pool;
 use crate::errors::response::MyError;
 use crate::models::pool::{
     CancelTradeRequest, CreateTradeRequest, FillSpotRequest, Pool, PoolCreationRequest,
-    PoolDeletionRequest, ProjectedPool, ProtectPlayersRequest, RespondTradeRequest,
-    SelectPlayerRequest, StartDraftRequest,
+    PoolDeletionRequest, ProjectedPool, ProjectedPoolShort, ProtectPlayersRequest,
+    RespondTradeRequest, SelectPlayerRequest, StartDraftRequest,
 };
 use crate::models::response::PoolMessageResponse;
 use crate::routes::jwt::{return_token_error, ApiKeyError, UserToken};
@@ -47,7 +47,7 @@ pub async fn get_pool_by_name(
 pub async fn get_pools(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
-) -> Result<Json<Vec<ProjectedPool>>, MyError> {
+) -> Result<Json<Vec<ProjectedPoolShort>>, MyError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
@@ -243,6 +243,34 @@ pub async fn protect_players(
     let user_id = token.unwrap()._id;
 
     match pool::protect_players(
+        db,
+        &user_id.to_string(),
+        &body.name,
+        &body.forw_protected,
+        &body.def_protected,
+        &body.goal_protected,
+        &body.reserv_protected,
+    )
+    .await
+    {
+        Ok(data) => Ok(Json(data)),
+        Err(e) => Err(MyError::build(400, Some(e.to_string()))),
+    }
+}
+
+#[post("/modify-roster", format = "json", data = "<body>")]
+pub async fn modify_roster(
+    db: &State<Database>,
+    token: Result<UserToken, ApiKeyError>,
+    body: Json<ProtectPlayersRequest>,
+) -> Result<Json<PoolMessageResponse>, MyError> {
+    if let Err(e) = token {
+        return Err(return_token_error(e));
+    }
+
+    let user_id = token.unwrap()._id;
+
+    match pool::modify_roster(
         db,
         &user_id.to_string(),
         &body.name,
