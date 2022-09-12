@@ -8,7 +8,7 @@ use crate::db::pool;
 use crate::errors::response::MyError;
 use crate::models::pool::{
     CancelTradeRequest, CreateTradeRequest, FillSpotRequest, Pool, PoolCreationRequest,
-    PoolDeletionRequest, ProjectedPool, ProjectedPoolShort, ProtectPlayersRequest,
+    PoolDeletionRequest, PoolUndoSelectionRequest, ProjectedPoolShort, ProtectPlayersRequest,
     RespondTradeRequest, SelectPlayerRequest, StartDraftRequest,
 };
 use crate::models::response::PoolMessageResponse;
@@ -26,7 +26,35 @@ pub async fn get_pool_by_name(
         return Err(return_token_error(e));
     }
 
-    match pool::find_pool_with_name(db, _name).await {
+    match pool::find_pool_by_name(db, &_name).await {
+        Ok(data) => {
+            if data.is_none() {
+                return Err(MyError::build(
+                    400,
+                    Some("Pool not found with name".to_string()),
+                ));
+            }
+
+            Ok(Json(data.unwrap()))
+        }
+        Err(e) => Err(MyError::build(400, Some(e.to_string()))),
+    }
+}
+
+/// get Pool document by _name
+//  http://127.0.0.1:8000/rust-api/pool/test4
+#[get("/pool/<_name>/<_from>")]
+pub async fn get_pool_by_name_with_range(
+    db: &State<Database>,
+    token: Result<UserToken, ApiKeyError>,
+    _name: String,
+    _from: String,
+) -> Result<Json<Pool>, MyError> {
+    if let Err(e) = token {
+        return Err(return_token_error(e));
+    }
+
+    match pool::find_pool_by_name_with_range(db, &_name, &_from).await {
         Ok(data) => {
             if data.is_none() {
                 return Err(MyError::build(
@@ -88,7 +116,7 @@ pub async fn delete_pool(
 
     let user_id = token.unwrap()._id;
 
-    match pool::delete_pool(db, user_id.to_string(), body.name.clone()).await {
+    match pool::delete_pool(db, &user_id.to_string(), &body.name).await {
         Ok(data) => Ok(Json(data)),
         Err(e) => Err(MyError::build(400, Some(e.to_string()))),
     }
@@ -134,7 +162,7 @@ pub async fn select_player(
 pub async fn undo_select_player(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
-    body: Json<SelectPlayerRequest>,
+    body: Json<PoolUndoSelectionRequest>,
 ) -> Result<Json<PoolMessageResponse>, MyError> {
     if let Err(e) = token {
         return Err(return_token_error(e));

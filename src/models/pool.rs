@@ -9,54 +9,6 @@ pub struct ProjectedPoolShort {
     pub status: PoolState, // State of the pool.
 }
 
-// This structure is the same as Pool but does not contains the score_by_day members that can be really heavy at the end of the season.
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
-pub struct ProjectedPool {
-    pub name: String, // the name of the pool.
-    pub owner: String,
-    pub number_poolers: u8, // the number of participants in the pool.
-
-    pub participants: Option<Vec<String>>, // The mongoDB ID of each participants.
-
-    // Roster configuration.
-    pub number_forwards: u8,
-    pub number_defenders: u8,
-    pub number_goalies: u8,
-    pub number_reservists: u8,
-
-    // Forwards points configuration.
-    pub forward_pts_goals: u8,
-    pub forward_pts_assists: u8,
-    pub forward_pts_hattricks: u8,
-
-    // Defenders points configuration.
-    pub defender_pts_goals: u8,
-    pub defender_pts_assists: u8,
-    pub defender_pts_hattricks: u8,
-
-    // Goalies points configuration.
-    pub goalies_pts_wins: u8,
-    pub goalies_pts_shutouts: u8,
-    pub goalies_pts_goals: u8,
-    pub goalies_pts_assists: u8,
-
-    // Other pool configuration
-    pub next_season_number_players_protected: u8,
-    pub tradable_picks: u8, // numbers of the next season picks participants are able to trade with each other.
-
-    pub status: PoolState, // State of the pool.
-    pub final_rank: Option<Vec<String>>,
-
-    pub nb_player_drafted: u8,
-
-    // Trade information.
-    pub nb_trade: u32,
-    pub trades: Option<Vec<Trade>>,
-
-    // context of the pool.
-    pub context: Option<ProjectedPoolContext>,
-}
-
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct Pool {
     pub name: String, // the name of the pool.
@@ -102,6 +54,7 @@ pub struct Pool {
 
     // context of the pool.
     pub context: Option<PoolContext>,
+    pub date_updated: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
@@ -325,4 +278,10 @@ pub struct ProtectPlayersRequest {
     pub def_protected: Vec<Player>,
     pub goal_protected: Vec<Player>,
     pub reserv_protected: Vec<Player>,
+}
+
+// payload to sent when undoing a selection in a pool by the owner.
+#[derive(Debug, Deserialize, JsonSchema, Clone)]
+pub struct PoolUndoSelectionRequest {
+    pub name: String,
 }

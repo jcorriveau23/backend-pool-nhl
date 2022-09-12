@@ -22,6 +22,7 @@ async fn rocket() -> _ {
             routes::auth::set_username,
             routes::auth::validate_token,
             routes::pool::get_pool_by_name,
+            routes::pool::get_pool_by_name_with_range,
             routes::pool::get_pools,
             routes::pool::create_pool,
             routes::pool::delete_pool,

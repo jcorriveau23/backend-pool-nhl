@@ -1,25 +1,71 @@
-use chrono::offset::Utc;
+use chrono::{Date, Duration, NaiveDate, Utc};
 use futures::stream::TryStreamExt;
 use mongodb::bson::{doc, to_bson};
 use mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, ReturnDocument};
-use mongodb::Database;
+use mongodb::{Collection, Database};
 use std::collections::HashMap;
 
 use crate::models::pool::{
     Player, Pool, PoolContext, PoolCreationRequest, PoolState, PoolerRoster, Position,
-    ProjectedPool, ProjectedPoolShort, Trade, TradeItems, TradeStatus,
+    ProjectedPoolShort, Trade, TradeItems, TradeStatus,
 };
 use crate::models::response::PoolMessageResponse;
 
-pub async fn find_pool_with_name(
+// Return the complete Pool information
+pub async fn find_pool_by_name(
     db: &Database,
-    _name: String,
+    _name: &String,
 ) -> mongodb::error::Result<Option<Pool>> {
     let collection = db.collection::<Pool>("pools");
 
-    let pool_doc = collection.find_one(doc! {"name": _name}, None).await?;
+    collection.find_one(doc! {"name": _name}, None).await
+}
 
-    Ok(pool_doc)
+// Return the pool information without the score_by_day member
+pub async fn find_short_pool_by_name(
+    collection: &Collection<Pool>,
+    _name: &String,
+) -> mongodb::error::Result<Option<Pool>> {
+    let find_option = FindOneOptions::builder()
+        .projection(doc! {"context.score_by_day": 0})
+        .build();
+
+    collection
+        .clone_with_type::<Pool>()
+        .find_one(doc! {"name": &_name}, find_option)
+        .await
+}
+
+// Return the pool information with a requested range of day for the score_by_day member
+pub async fn find_pool_by_name_with_range(
+    db: &Database,
+    _name: &String,
+    _from: &String,
+) -> mongodb::error::Result<Option<Pool>> {
+    let mut date = Date::<Utc>::from_utc(NaiveDate::from_ymd(2021, 10, 13), Utc);
+    //let begining_season = Utc::today();
+
+    let mut projection = doc! {};
+
+    loop {
+        let str_date = date.to_string().strip_suffix("UTC").unwrap().to_string();
+        // println!("{}", str_date);
+
+        if str_date == *_from {
+            break;
+        }
+        projection.insert(format!("context.score_by_day.{}", str_date), 0);
+        date = date + Duration::days(1);
+    }
+
+    // println!("{}", projection);
+
+    let find_option = FindOneOptions::builder().projection(projection).build();
+    let collection = db.collection::<Pool>("pools");
+    collection
+        .clone_with_type::<Pool>()
+        .find_one(doc! {"name": &_name}, find_option)
+        .await
 }
 
 pub async fn find_pools(db: &Database) -> mongodb::error::Result<Vec<ProjectedPoolShort>> {
@@ -49,7 +95,7 @@ pub async fn create_pool(
 ) -> mongodb::error::Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
-    if find_pool_with_name(db, _pool_info.name.clone())
+    if find_short_pool_by_name(&collection, &_pool_info.name)
         .await?
         .is_some()
     {
@@ -83,6 +129,7 @@ pub async fn create_pool(
             nb_trade: 0,
             trades: None,
             context: None,
+            date_updated: 0,
         };
 
         collection.insert_one(pool, None).await?;
@@ -93,16 +140,16 @@ pub async fn create_pool(
 
 pub async fn delete_pool(
     db: &Database,
-    _user_id: String,
-    _pool_name: String,
+    _user_id: &String,
+    _pool_name: &String,
 ) -> mongodb::error::Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
-    let pool = find_pool_with_name(db, _pool_name.clone()).await?;
+    let pool = find_short_pool_by_name(&collection, &_pool_name).await?;
 
     if pool.is_none() {
         return Ok(create_error_response("Pool name does not exist.".to_string()).await);
-    } else if pool.unwrap().owner != _user_id {
+    } else if pool.unwrap().owner != *_user_id {
         return Ok(create_error_response(
             "Only the owner of the pool can delete the pool.".to_string(),
         )
@@ -227,7 +274,7 @@ pub async fn select_player(
 ) -> mongodb::error::Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
-    let pool = find_pool_with_name(db, _pool_name.clone()).await?;
+    let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
     if pool.is_none() {
         return Ok(create_error_response("Pool name does not exist.".to_string()).await);
@@ -457,7 +504,7 @@ pub async fn create_trade(
 ) -> mongodb::error::Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
-    let pool = find_pool_with_name(db, _pool_name.clone()).await?;
+    let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
     if pool.is_none() {
         return Ok(create_error_response("Pool name does not exist.".to_string()).await);
@@ -575,7 +622,7 @@ pub async fn cancel_trade(
 ) -> mongodb::error::Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
-    let pool = find_pool_with_name(db, _pool_name.clone()).await?;
+    let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
     if pool.is_none() {
         return Ok(create_error_response("Pool name does not exist.".to_string()).await);
@@ -646,7 +693,7 @@ pub async fn respond_trade(
 ) -> mongodb::error::Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
-    let pool = find_pool_with_name(db, _pool_name.clone()).await?;
+    let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
     if pool.is_none() {
         return Ok(create_error_response("Pool name does not exist.".to_string()).await);
@@ -742,7 +789,7 @@ pub async fn fill_spot(
 ) -> mongodb::error::Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
-    let pool = find_pool_with_name(db, _pool_name.clone()).await?;
+    let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
     if pool.is_none() {
         return Ok(create_error_response("Pool name does not exist.".to_string()).await);
@@ -843,7 +890,7 @@ pub async fn undo_select_player(
 ) -> mongodb::error::Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
-    let pool = find_pool_with_name(db, _pool_name.clone()).await?;
+    let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
     if pool.is_none() {
         return Ok(create_error_response("Pool name does not exist.".to_string()).await);
@@ -874,8 +921,16 @@ pub async fn undo_select_player(
         return Ok(create_error_response("There is nothing to undo".to_string()).await);
     }
 
-    let latest_pick = pool_context.players_name_drafted.pop().unwrap();
-    let pick_number = pool_context.players_name_drafted.len() - 1;
+    let mut latest_pick;
+
+    loop {
+        latest_pick = pool_context.players_name_drafted.pop().unwrap();
+        if latest_pick > 0 {
+            break;
+        }
+    }
+
+    let pick_number = pool_context.players_name_drafted.len();
     let latest_drafter;
 
     if pool_unwrap.final_rank.is_some() {
@@ -952,16 +1007,8 @@ pub async fn modify_roster(
     _reserv_selected: &Vec<Player>,
 ) -> mongodb::error::Result<PoolMessageResponse> {
     // TODO: validate the date is valid to perform a roster modification (before season start first sathurday of each month from 5AM to 12PM)
-
     let collection = db.collection::<Pool>("pools");
-    let find_option = FindOneOptions::builder()
-        .projection(doc! {"context.score_by_day": 0})
-        .build();
-
-    let mut pool = collection
-        .clone_with_type::<ProjectedPool>()
-        .find_one(doc! {"name": &_pool_name}, find_option)
-        .await?;
+    let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
     if pool.is_none() {
         return Ok(create_error_response("Pool name does not exist.".to_string()).await);
@@ -1132,7 +1179,7 @@ pub async fn protect_players(
 ) -> mongodb::error::Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
-    let pool = find_pool_with_name(db, _pool_name.clone()).await?;
+    let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
     if pool.is_none() {
         return Ok(create_error_response("Pool name does not exist.".to_string()).await);
