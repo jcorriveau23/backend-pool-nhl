@@ -20,6 +20,7 @@ async fn rocket() -> _ {
             routes::auth::login_user,
             routes::auth::wallet_login_user,
             routes::auth::set_username,
+            routes::auth::set_password,
             routes::auth::validate_token,
             routes::pool::get_pool_by_name,
             routes::pool::get_pool_by_name_with_range,

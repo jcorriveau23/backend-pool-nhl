@@ -56,7 +56,7 @@ pub struct SkaterStats {
     pub hits: u8,
     pub powerPlayGoals: u8,
     pub powerPlayAssists: u8,
-    pub penaltyMinutes: u8,
+    pub penaltyMinutes: Option<u8>,
     pub faceOffPct: Option<f32>,
     pub faceOffWins: u8,
     pub faceoffTaken: u8,

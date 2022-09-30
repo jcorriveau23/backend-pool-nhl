@@ -1,15 +1,32 @@
 use chrono::{Date, Duration, NaiveDate, Utc};
 use futures::stream::TryStreamExt;
-use mongodb::bson::{doc, to_bson};
+use mongodb::bson::{doc, oid::ObjectId, to_bson};
 use mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, ReturnDocument};
 use mongodb::{Collection, Database};
 use std::collections::HashMap;
+use std::str::FromStr;
 
 use crate::models::pool::{
     Player, Pool, PoolContext, PoolCreationRequest, PoolState, PoolerRoster, Position,
     ProjectedPoolShort, Trade, TradeItems, TradeStatus,
 };
+use crate::models::user::User;
+
 use crate::models::response::PoolMessageResponse;
+
+// Date for season
+
+const START_SEASON_DATE: &str = "2022-09-24"; // TODO change to 2022-10-11 for season
+const END_SEASON_DATE: &str = "2022-10-08"; // TODO change to 2023-04-13 for season
+
+const FIRST_SATHURDAY_OF_MONTHS: [&str; 6] = [
+    "2022-10-01", // Pre season
+    "2022-11-05",
+    "2022-12-03",
+    "2023-01-07",
+    "2023-02-04",
+    "2023-03-04",
+];
 
 // Return the complete Pool information
 pub async fn find_pool_by_name(
@@ -42,20 +59,38 @@ pub async fn find_pool_by_name_with_range(
     _name: &String,
     _from: &String,
 ) -> mongodb::error::Result<Option<Pool>> {
-    let mut date = Date::<Utc>::from_utc(NaiveDate::from_ymd(2021, 10, 13), Utc);
-    //let begining_season = Utc::today();
+    let from_date =
+        Date::<Utc>::from_utc(NaiveDate::parse_from_str(_from, "%Y-%m-%d").unwrap(), Utc);
+
+    let mut start_date = Date::<Utc>::from_utc(
+        NaiveDate::parse_from_str(START_SEASON_DATE, "%Y-%m-%d").unwrap(),
+        Utc,
+    );
+
+    let end_date = Date::<Utc>::from_utc(
+        NaiveDate::parse_from_str(END_SEASON_DATE, "%Y-%m-%d").unwrap(),
+        Utc,
+    );
+
+    if from_date < start_date || from_date > end_date {
+        return Ok(None); // error.
+    }
 
     let mut projection = doc! {};
 
     loop {
-        let str_date = date.to_string().strip_suffix("UTC").unwrap().to_string();
+        let str_date = start_date
+            .to_string()
+            .strip_suffix("UTC")
+            .unwrap()
+            .to_string();
         // println!("{}", str_date);
 
         if str_date == *_from {
             break;
         }
         projection.insert(format!("context.score_by_day.{}", str_date), 0);
-        date = date + Duration::days(1);
+        start_date = start_date + Duration::days(1);
     }
 
     // println!("{}", projection);
@@ -105,6 +140,7 @@ pub async fn create_pool(
         let pool = Pool {
             name: _pool_info.name,
             owner: _owner,
+            assistants: Vec::new(),
             number_poolers: _pool_info.number_pooler,
             participants: None,
             number_forwards: 9,
@@ -114,9 +150,11 @@ pub async fn create_pool(
             forward_pts_goals: 2,
             forward_pts_assists: 1,
             forward_pts_hattricks: 3,
+            forward_pts_shootout_goals: 1,
             defender_pts_goals: 3,
             defender_pts_assists: 2,
             defender_pts_hattricks: 2,
+            defender_pts_shootout_goals: 1,
             goalies_pts_wins: 2,
             goalies_pts_shutouts: 3,
             goalies_pts_goals: 3,
@@ -189,10 +227,32 @@ pub async fn start_draft(
 
         if _poolInfo.owner != *_user_id {
             return Ok(create_error_response(
-                "Only the owner of the pool can delete the pool.".to_string(),
+                "Only the owner of the pool can start the draft.".to_string(),
             )
             .await);
         }
+
+        // Validate that the list of users provided all exist.
+
+        let collection_users = db.collection::<User>("users");
+
+        // Add the new pool to the list of pool in each users.
+
+        let mut participants_objectId = Vec::new();
+
+        for participant in participants {
+            participants_objectId.push(ObjectId::from_str(participant).unwrap());
+        }
+
+        // let updated_doc = to_bson(&users).unwrap();
+
+        let query = doc! {"_id": {"$in": participants_objectId}};
+
+        let update = doc! {"$push": {"pool_list": &_poolInfo.name}}; // Add the name of the pool
+
+        let update_result = collection_users.update_many(query, update, None).await?;
+
+        println!("Modified Count: {}", update_result.modified_count);
 
         let collection = db.collection::<Pool>("pools");
 
@@ -201,6 +261,7 @@ pub async fn start_draft(
             pooler_roster: HashMap::new(),
             score_by_day: Some(HashMap::new()),
             tradable_picks: Some(Vec::new()),
+            past_tradable_picks: Some(Vec::new()),
             players_name_drafted: Vec::new(),
         };
 
@@ -357,8 +418,6 @@ pub async fn select_player(
                 break;
             } else {
                 // Use the final_rank to see who draft next.
-                // TODO: Skip the pooler if the user had more than next_season_tradable_picks.
-                // TODO: Need to also handle the case where the user has less than next_season_tradable_picks (some additional round will need to be done)
 
                 if users_players_count[next_drafter] >= tot_players_in_roster {
                     pool_context.players_name_drafted.push(0); // Id 0 means the players did not draft because is roster is already full
@@ -719,7 +778,9 @@ pub async fn respond_trade(
 
     // validate that only the one that was ask for the trade can accept it.
 
-    if trades[_trade_id as usize].ask_to != *_user_id {
+    if trades[_trade_id as usize].ask_to != *_user_id
+        && !owner_and_assitants_rights(_user_id, &pool_unwrap).await
+    {
         return Ok(create_error_response(
             "Only the one that was ask for the trade can accept it.".to_string(),
         )
@@ -730,7 +791,9 @@ pub async fn respond_trade(
 
     let now = Utc::now().timestamp_millis();
 
-    if trades[_trade_id as usize].date_created + 8640000 > now {
+    if trades[_trade_id as usize].date_created + 8640000 > now
+        && !owner_and_assitants_rights(_user_id, &pool_unwrap).await
+    {
         return Ok(create_error_response(
             "The trade needs to be active for 24h before being able to accept it.".to_string(),
         )
@@ -1006,7 +1069,34 @@ pub async fn modify_roster(
     _goal_selected: &Vec<Player>,
     _reserv_selected: &Vec<Player>,
 ) -> mongodb::error::Result<PoolMessageResponse> {
-    // TODO: validate the date is valid to perform a roster modification (before season start first sathurday of each month from 5AM to 12PM)
+    let start_season_date = Date::<Utc>::from_utc(
+        NaiveDate::parse_from_str(START_SEASON_DATE, "%Y-%m-%d").unwrap(),
+        Utc,
+    );
+
+    let end_season_date = Date::<Utc>::from_utc(
+        NaiveDate::parse_from_str(END_SEASON_DATE, "%Y-%m-%d").unwrap(),
+        Utc,
+    );
+
+    let today = Utc::today();
+
+    if today >= start_season_date && today <= end_season_date {
+        for DATE in FIRST_SATHURDAY_OF_MONTHS {
+            let sathurday =
+                Date::<Utc>::from_utc(NaiveDate::parse_from_str(DATE, "%Y-%m-%d").unwrap(), Utc);
+
+            if sathurday == today {
+                break;
+            }
+        }
+
+        return Ok(create_error_response(
+            "You are not allowed to modify your roster today.".to_string(),
+        )
+        .await);
+    }
+
     let collection = db.collection::<Pool>("pools");
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
@@ -1539,4 +1629,12 @@ async fn create_success_response(_pool: &Option<Pool>) -> PoolMessageResponse {
         message: "".to_string(),
         pool: _pool.clone(),
     }
+}
+
+async fn owner_and_assitants_rights(_user_id: &String, _pool_info: &Pool) -> bool {
+    *_user_id == _pool_info.owner || _pool_info.assistants.contains(_user_id)
+}
+
+async fn owner_rights(_user_id: &String, _pool_info: &Pool) -> bool {
+    *_user_id == _pool_info.owner
 }

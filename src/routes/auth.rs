@@ -8,7 +8,8 @@ use web3;
 use crate::db::user;
 use crate::errors::response::MyError;
 use crate::models::user::{
-    LoginRequest, RegisterRequest, SetUsernameRequest, WalletLoginRegisterRequest,
+    LoginRequest, RegisterRequest, SetPasswordRequest, SetUsernameRequest,
+    WalletLoginRegisterRequest,
 };
 use crate::routes::jwt;
 use crate::routes::jwt::{ApiKeyError, UserToken};
@@ -136,6 +137,28 @@ pub async fn set_username(
     }
 
     let user = user::update_user_name(db, &token.unwrap()._id.to_string(), &body.new_username)
+        .await
+        .unwrap();
+
+    let user_json = json! ({"user": user.unwrap()});
+
+    Ok(user_json)
+}
+
+/// Set Username
+#[post("/set-password", format = "json", data = "<body>")]
+pub async fn set_password(
+    db: &State<Database>,
+    token: Result<UserToken, ApiKeyError>,
+    body: Json<SetPasswordRequest>,
+) -> Result<Value, MyError> {
+    if let Err(e) = token {
+        return Err(jwt::return_token_error(e));
+    }
+
+    let password_hash = bcrypt::hash(body.password.clone(), 4).unwrap();
+
+    let user = user::update_password(db, &token.unwrap()._id.to_string(), &password_hash)
         .await
         .unwrap();
 

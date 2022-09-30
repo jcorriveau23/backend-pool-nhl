@@ -9,8 +9,8 @@ pub struct User {
     pub password: Option<String>,
     pub email: Option<String>,
     pub phone: Option<String>,
-    pub addr: Option<String>,           // Ethereum public address of user.
-    pub pool_list: Option<Vec<String>>, // list of pool name this user participate in.
+    pub addr: Option<String>,   // Ethereum public address of user.
+    pub pool_list: Vec<String>, // list of pool name this user participate in.
 }
 
 // payload to register with name and password
@@ -40,4 +40,10 @@ pub struct LoginRequest {
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct SetUsernameRequest {
     pub new_username: String,
+}
+
+// payload to set a password.
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+pub struct SetPasswordRequest {
+    pub password: String,
 }

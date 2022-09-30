@@ -13,6 +13,7 @@ pub struct ProjectedPoolShort {
 pub struct Pool {
     pub name: String, // the name of the pool.
     pub owner: String,
+    pub assistants: Vec<String>,
     pub number_poolers: u8, // the number of participants in the pool.
 
     pub participants: Option<Vec<String>>, // The mongoDB ID of each participants.
@@ -27,11 +28,13 @@ pub struct Pool {
     pub forward_pts_goals: u8,
     pub forward_pts_assists: u8,
     pub forward_pts_hattricks: u8,
+    pub forward_pts_shootout_goals: u8,
 
     // Defenders points configuration.
     pub defender_pts_goals: u8,
     pub defender_pts_assists: u8,
     pub defender_pts_hattricks: u8,
+    pub defender_pts_shootout_goals: u8,
 
     // Goalies points configuration.
     pub goalies_pts_wins: u8,
@@ -77,6 +80,7 @@ pub struct PoolContext {
     pub players_name_drafted: Vec<u32>,
     pub score_by_day: Option<HashMap<String, HashMap<String, DailyRosterPoints>>>,
     pub tradable_picks: Option<Vec<HashMap<String, String>>>,
+    pub past_tradable_picks: Option<Vec<HashMap<String, String>>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)] // Copy
@@ -108,6 +112,7 @@ pub struct Roster {
 pub struct SkaterPoints {
     pub G: u8,
     pub A: u8,
+    pub SOG: Option<u8>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
@@ -124,6 +129,7 @@ pub struct SkaterPoolPoints {
     pub A: u8,
     pub HT: u8,
     pub pts: u8,
+    pub SOG: u8,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
@@ -142,11 +148,13 @@ pub struct DailyCumulate {
     pub A_F: u16,
     pub HT_F: u8,
     pub P_F: u16,
+    pub SOG_F: u16,
     // Defenders
     pub G_D: u16,
     pub A_D: u16,
     pub HT_D: u8,
     pub P_D: u16,
+    pub SOG_D: u16,
     // Goalies
     pub G_G: u8,
     pub A_G: u8,

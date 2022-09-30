@@ -3,7 +3,7 @@ use std::str::FromStr;
 use futures::stream::TryStreamExt;
 use mongodb::bson::{doc, oid::ObjectId, Document};
 use mongodb::options::{FindOneAndUpdateOptions, ReturnDocument};
-use mongodb::Database;
+use mongodb::{Collection, Database};
 
 use crate::models::user::{RegisterRequest, User, WalletLoginRegisterRequest};
 
@@ -49,6 +49,23 @@ pub async fn find_users(db: &Database) -> mongodb::error::Result<Vec<User>> {
     Ok(users)
 }
 
+pub async fn find_users_with_ids(
+    _collection: &Collection<User>,
+    _user_ids: &Vec<String>,
+) -> mongodb::error::Result<Vec<User>> {
+    let mut cursor = _collection.find(None, None).await?;
+
+    let mut users: Vec<User> = vec![];
+
+    while let Some(user) = cursor.try_next().await? {
+        if _user_ids.contains(&user._id.to_string()) {
+            users.push(user);
+        }
+    }
+
+    Ok(users)
+}
+
 pub async fn create_user_from_login(
     db: &Database,
     user: &RegisterRequest,
@@ -61,7 +78,8 @@ pub async fn create_user_from_login(
         "name": user.name.clone(),
         "password": password_hash,
         "email": user.email.clone(),
-        "phone": user.phone.clone()
+        "phone": user.phone.clone(),
+        "pool_list": [],
     };
 
     let insert_one_result = collection.insert_one(d, None).await?;
@@ -74,7 +92,7 @@ pub async fn create_user_from_login(
         email: Some(user.email.clone()),
         phone: Some(user.phone.clone()),
         addr: None,
-        pool_list: None,
+        pool_list: Vec::new(),
     };
 
     Ok(Some(new_user))
@@ -103,13 +121,12 @@ pub async fn create_user_from_wallet_login(
         email: None,
         phone: None,
         addr: Some(user.addr.clone()),
-        pool_list: None,
+        pool_list: Vec::new(),
     };
 
     Ok(Some(new_user))
 }
 
-// TODO: use this function to let the user edit their name.
 pub async fn update_user_name(
     db: &Database,
     _user_id: &String,
@@ -130,6 +147,32 @@ pub async fn update_user_name(
 
     let user = collection
         .find_one_and_update(filter, doc, find_one_and_update_options)
+        .await
+        .unwrap();
+
+    Ok(user)
+}
+
+pub async fn update_password(
+    db: &Database,
+    _user_id: &String,
+    _new_password: &String,
+) -> mongodb::error::Result<Option<User>> {
+    let collection = db.collection::<User>("users");
+    let find_one_and_update_options = FindOneAndUpdateOptions::builder()
+        .return_document(ReturnDocument::After)
+        .build();
+
+    let filter = doc! {"_id": ObjectId::from_str(_user_id).unwrap()};
+
+    let updated_fields = doc! {
+        "$set":  doc!{
+            "password": _new_password
+        }
+    };
+
+    let user = collection
+        .find_one_and_update(filter, updated_fields, find_one_and_update_options)
         .await
         .unwrap();
 
