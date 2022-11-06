@@ -1,26 +1,29 @@
-use chrono::{Date, Duration, NaiveDate, Utc};
+use chrono::{Date, Duration, Local, NaiveDate, TimeZone, Timelike, Utc};
 use futures::stream::TryStreamExt;
 use mongodb::bson::{doc, oid::ObjectId, to_bson};
 use mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, ReturnDocument};
 use mongodb::{Collection, Database};
 use std::collections::HashMap;
-use std::str::FromStr;
 
 use crate::models::pool::{
     Player, Pool, PoolContext, PoolCreationRequest, PoolState, PoolerRoster, Position,
     ProjectedPoolShort, Trade, TradeItems, TradeStatus,
 };
+
+use crate::db::user::add_pool_to_users;
 use crate::models::user::User;
 
 use crate::models::response::PoolMessageResponse;
 
 // Date for season
 
-const START_SEASON_DATE: &str = "2022-09-24"; // TODO change to 2022-10-11 for season
-const END_SEASON_DATE: &str = "2022-10-08"; // TODO change to 2023-04-13 for season
+const START_PRE_SEASON_DATE: &str = "2022-09-24";
+const START_SEASON_DATE: &str = "2022-10-07";
+const END_SEASON_DATE: &str = "2023-04-13";
 
-const FIRST_SATHURDAY_OF_MONTHS: [&str; 6] = [
-    "2022-10-01", // Pre season
+const TRADE_DEADLINE_DATE: &str = "2023-03-03";
+
+const FIRST_SATHURDAY_OF_MONTHS: [&str; 5] = [
     "2022-11-05",
     "2022-12-03",
     "2023-01-07",
@@ -159,6 +162,7 @@ pub async fn create_pool(
             goalies_pts_shutouts: 3,
             goalies_pts_goals: 3,
             goalies_pts_assists: 2,
+            goalies_pts_overtimes: 1,
             next_season_number_players_protected: 8,
             tradable_picks: 3,
             status: PoolState::Created,
@@ -168,6 +172,8 @@ pub async fn create_pool(
             trades: None,
             context: None,
             date_updated: 0,
+            season_start: START_SEASON_DATE.to_string(),
+            season_end: END_SEASON_DATE.to_string(),
         };
 
         collection.insert_one(pool, None).await?;
@@ -232,27 +238,12 @@ pub async fn start_draft(
             .await);
         }
 
-        // Validate that the list of users provided all exist.
-
-        let collection_users = db.collection::<User>("users");
+        // TODO: Validate that the list of users provided all exist.
 
         // Add the new pool to the list of pool in each users.
 
-        let mut participants_objectId = Vec::new();
-
-        for participant in participants {
-            participants_objectId.push(ObjectId::from_str(participant).unwrap());
-        }
-
-        // let updated_doc = to_bson(&users).unwrap();
-
-        let query = doc! {"_id": {"$in": participants_objectId}};
-
-        let update = doc! {"$push": {"pool_list": &_poolInfo.name}}; // Add the name of the pool
-
-        let update_result = collection_users.update_many(query, update, None).await?;
-
-        println!("Modified Count: {}", update_result.modified_count);
+        let collection_users = db.collection::<User>("users");
+        add_pool_to_users(&collection_users, &_poolInfo.name, participants).await;
 
         let collection = db.collection::<Pool>("pools");
 
@@ -281,12 +272,6 @@ pub async fn start_draft(
 
         // TODO: randomize the list of participants so the draft order is random
         //thread_rng().shuffle(&mut _participants);
-
-        let number_picks: u16 = _poolInfo.number_poolers as u16
-            * (_poolInfo.number_forwards as u16
-                + _poolInfo.number_defenders as u16
-                + _poolInfo.number_goalies as u16
-                + _poolInfo.number_reservists as u16);
 
         _poolInfo.status = PoolState::Draft;
         _poolInfo.context = Some(pool_context);
@@ -561,6 +546,20 @@ pub async fn create_trade(
     _pool_name: &String,
     _trade: &mut Trade,
 ) -> mongodb::error::Result<PoolMessageResponse> {
+    let trade_deadline_date = Date::<Utc>::from_utc(
+        NaiveDate::parse_from_str(TRADE_DEADLINE_DATE, "%Y-%m-%d").unwrap(),
+        Utc,
+    );
+
+    let today = Utc::today();
+
+    if today > trade_deadline_date {
+        return Ok(create_error_response(
+            "Trade cannot be created after the trade deadline.".to_string(),
+        )
+        .await);
+    }
+
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
@@ -652,25 +651,19 @@ pub async fn create_trade(
         }
     };
 
-    // Update the fields in the mongoDB pool document.
-    let find_one_and_update_options = FindOneAndUpdateOptions::builder()
-        .return_document(ReturnDocument::After)
-        .build();
-
-    let new_pool = collection
-        .find_one_and_update(
-            doc! {"name": pool_unwrap.name},
-            updated_fields,
-            find_one_and_update_options,
-        )
+    match collection
+        .update_one(doc! {"name": _pool_name}, updated_fields, None)
         .await
-        .unwrap();
-
-    if new_pool.is_none() {
-        return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+    {
+        Ok(res) => {
+            println!("{:?}", res);
+            return Ok(create_success_response(&None).await);
+        }
+        Err(e) => {
+            println!("{}", e);
+            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+        }
     }
-
-    Ok(create_success_response(&new_pool).await)
 }
 
 pub async fn cancel_trade(
@@ -722,25 +715,19 @@ pub async fn cancel_trade(
         }
     };
 
-    // Update the fields in the mongoDB pool document.
-    let find_one_and_update_options = FindOneAndUpdateOptions::builder()
-        .return_document(ReturnDocument::After)
-        .build();
-
-    let new_pool = collection
-        .find_one_and_update(
-            doc! {"name": pool_unwrap.name},
-            updated_fields,
-            find_one_and_update_options,
-        )
+    match collection
+        .update_one(doc! {"name": _pool_name}, updated_fields, None)
         .await
-        .unwrap();
-
-    if new_pool.is_none() {
-        return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+    {
+        Ok(res) => {
+            println!("{:?}", res);
+            return Ok(create_success_response(&None).await);
+        }
+        Err(e) => {
+            println!("{}", e);
+            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+        }
     }
-
-    Ok(create_success_response(&new_pool).await)
 }
 
 pub async fn respond_trade(
@@ -813,7 +800,7 @@ pub async fn respond_trade(
         trades[_trade_id as usize].status = TradeStatus::REFUSED;
     };
 
-    // Update fields with the new trade
+    // Update fields with the new trade response
 
     let updated_fields = doc! {
         "$set": doc!{
@@ -823,25 +810,19 @@ pub async fn respond_trade(
         }
     };
 
-    // Update the fields in the mongoDB pool document.
-    let find_one_and_update_options = FindOneAndUpdateOptions::builder()
-        .return_document(ReturnDocument::After)
-        .build();
-
-    let new_pool = collection
-        .find_one_and_update(
-            doc! {"name": pool_unwrap.name},
-            updated_fields,
-            find_one_and_update_options,
-        )
+    match collection
+        .update_one(doc! {"name": _pool_name}, updated_fields, None)
         .await
-        .unwrap();
-
-    if new_pool.is_none() {
-        return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+    {
+        Ok(res) => {
+            println!("{:?}", res);
+            return Ok(create_success_response(&None).await);
+        }
+        Err(e) => {
+            println!("{}", e);
+            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+        }
     }
-
-    Ok(create_success_response(&new_pool).await)
 }
 
 pub async fn fill_spot(
@@ -917,7 +898,7 @@ pub async fn fill_spot(
     if let Some(x) = pooler_roster.get_mut(_user_id) {
         x.chosen_reservists.retain(|player| player != _player);
     }
-    // Update fields with the new trade
+    // Update fields with the filled spot
 
     let updated_fields = doc! {
         "$set": doc!{
@@ -925,25 +906,19 @@ pub async fn fill_spot(
         }
     };
 
-    // Update the fields in the mongoDB pool document.
-    let find_one_and_update_options = FindOneAndUpdateOptions::builder()
-        .return_document(ReturnDocument::After)
-        .build();
-
-    let new_pool = collection
-        .find_one_and_update(
-            doc! {"name": pool_unwrap.name},
-            updated_fields,
-            find_one_and_update_options,
-        )
+    match collection
+        .update_one(doc! {"name": _pool_name}, updated_fields, None)
         .await
-        .unwrap();
-
-    if new_pool.is_none() {
-        return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+    {
+        Ok(res) => {
+            println!("{:?}", res);
+            return Ok(create_success_response(&None).await);
+        }
+        Err(e) => {
+            println!("{}", e);
+            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+        }
     }
-
-    Ok(create_success_response(&new_pool).await)
 }
 
 pub async fn undo_select_player(
@@ -1069,32 +1044,32 @@ pub async fn modify_roster(
     _goal_selected: &Vec<Player>,
     _reserv_selected: &Vec<Player>,
 ) -> mongodb::error::Result<PoolMessageResponse> {
-    let start_season_date = Date::<Utc>::from_utc(
-        NaiveDate::parse_from_str(START_SEASON_DATE, "%Y-%m-%d").unwrap(),
-        Utc,
-    );
+    let start_season_date =
+        Local.from_utc_date(&NaiveDate::parse_from_str(START_SEASON_DATE, "%Y-%m-%d").unwrap());
+    let end_season_date =
+        Local.from_utc_date(&NaiveDate::parse_from_str(END_SEASON_DATE, "%Y-%m-%d").unwrap());
 
-    let end_season_date = Date::<Utc>::from_utc(
-        NaiveDate::parse_from_str(END_SEASON_DATE, "%Y-%m-%d").unwrap(),
-        Utc,
-    );
-
-    let today = Utc::today();
+    let today = Local::today();
 
     if today >= start_season_date && today <= end_season_date {
+        let mut bAllowed = false;
+
         for DATE in FIRST_SATHURDAY_OF_MONTHS {
             let sathurday =
-                Date::<Utc>::from_utc(NaiveDate::parse_from_str(DATE, "%Y-%m-%d").unwrap(), Utc);
+                Local.from_utc_date(&NaiveDate::parse_from_str(DATE, "%Y-%m-%d").unwrap());
 
             if sathurday == today {
+                bAllowed = true;
                 break;
             }
         }
 
-        return Ok(create_error_response(
-            "You are not allowed to modify your roster today.".to_string(),
-        )
-        .await);
+        if !bAllowed {
+            return Ok(create_error_response(
+                "You are not allowed to modify your roster today.".to_string(),
+            )
+            .await);
+        }
     }
 
     let collection = db.collection::<Pool>("pools");
@@ -1230,32 +1205,27 @@ pub async fn modify_roster(
         roster.chosen_reservists = _reserv_selected.clone();
     }
 
+    // Modify the all the pooler_roster (we could update only the pooler_roster[userId] if necessary)
+
     let updated_fields = doc! {
         "$set": doc!{
             "context.pooler_roster": to_bson(&pool_roster).unwrap(),
         }
     };
 
-    // Update the fields in the mongoDB pool document.
-
-    let find_one_and_update_options = FindOneAndUpdateOptions::builder()
-        .return_document(ReturnDocument::After)
-        .build();
-
-    let new_pool = collection
-        .find_one_and_update(
-            doc! {"name": _pool_name},
-            updated_fields,
-            find_one_and_update_options,
-        )
+    match collection
+        .update_one(doc! {"name": _pool_name}, updated_fields, None)
         .await
-        .unwrap();
-
-    if new_pool.is_none() {
-        return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+    {
+        Ok(res) => {
+            println!("{:?}", res);
+            return Ok(create_success_response(&None).await);
+        }
+        Err(e) => {
+            println!("{}", e);
+            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+        }
     }
-
-    Ok(create_success_response(&new_pool).await)
 }
 
 pub async fn protect_players(
@@ -1404,24 +1374,19 @@ pub async fn protect_players(
 
     // Update the fields in the mongoDB pool document.
 
-    let find_one_and_update_options = FindOneAndUpdateOptions::builder()
-        .return_document(ReturnDocument::After)
-        .build();
-
-    let new_pool = collection
-        .find_one_and_update(
-            doc! {"name": pool_unwrap.name},
-            updated_fields,
-            find_one_and_update_options,
-        )
+    match collection
+        .update_one(doc! {"name": _pool_name}, updated_fields, None)
         .await
-        .unwrap();
-
-    if new_pool.is_none() {
-        return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+    {
+        Ok(res) => {
+            println!("{:?}", res);
+            return Ok(create_success_response(&None).await);
+        }
+        Err(e) => {
+            println!("{}", e);
+            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+        }
     }
-
-    Ok(create_success_response(&new_pool).await)
 }
 
 async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> bool {
@@ -1431,12 +1396,24 @@ async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> 
         return false;
     }
 
-    for player in _trade.from_items.players.iter() {
-        trade_roster_player(_pool_context, player, &_trade.proposed_by, &_trade.ask_to).await;
+    for player_id in _trade.from_items.players.iter() {
+        trade_roster_player(
+            _pool_context,
+            *player_id,
+            &_trade.proposed_by,
+            &_trade.ask_to,
+        )
+        .await;
     }
 
-    for player in _trade.to_items.players.iter() {
-        trade_roster_player(_pool_context, player, &_trade.ask_to, &_trade.proposed_by).await;
+    for player_id in _trade.to_items.players.iter() {
+        trade_roster_player(
+            _pool_context,
+            *player_id,
+            &_trade.ask_to,
+            &_trade.proposed_by,
+        )
+        .await;
     }
 
     for pick in _trade.from_items.picks.iter() {
@@ -1477,40 +1454,68 @@ async fn remove_roster_player(_pool_context: &mut PoolContext, _player_id: u32, 
 
 async fn trade_roster_player(
     _pool_context: &mut PoolContext,
-    _player: &Player,
+    _player_id: u32,
     _participant_giver: &String,
     _participant_receiver: &String,
 ) -> bool {
-    match _player.position {
-        Position::F => {
-            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant_giver) {
-                x.chosen_forwards.retain(|player| player != _player);
-            }
-            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant_giver) {
-                x.chosen_reservists.retain(|player| player != _player);
-            }
-        }
-        Position::D => {
-            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant_giver) {
-                x.chosen_defenders.retain(|player| player != _player);
-            }
-            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant_giver) {
-                x.chosen_reservists.retain(|player| player != _player);
-            }
-        }
-        Position::G => {
-            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant_giver) {
-                x.chosen_goalies.retain(|player| player != _player);
-            }
-            if let Some(x) = _pool_context.pooler_roster.get_mut(_participant_giver) {
-                x.chosen_reservists.retain(|player| player != _player);
+    let mut player: Option<Player> = None; // The player traded from the giver.
+
+    if let Some(giver) = _pool_context.pooler_roster.get_mut(_participant_giver) {
+        // 1) Look into Forwards
+
+        let mut index = giver
+            .chosen_forwards
+            .iter()
+            .position(|r| r.id == _player_id);
+
+        if index.is_some() {
+            player = Some(giver.chosen_forwards[index.unwrap()].clone());
+            giver.chosen_forwards.remove(index.unwrap());
+        } else {
+            // 2) Look into Defenders
+
+            index = giver
+                .chosen_defenders
+                .iter()
+                .position(|r| r.id == _player_id);
+
+            if index.is_some() {
+                player = Some(giver.chosen_defenders[index.unwrap()].clone());
+                giver.chosen_defenders.remove(index.unwrap());
+            } else {
+                // 3) Look into Goalies
+
+                index = giver.chosen_goalies.iter().position(|r| r.id == _player_id);
+
+                if index.is_some() {
+                    player = Some(giver.chosen_goalies[index.unwrap()].clone());
+                    giver.chosen_goalies.remove(index.unwrap());
+                } else {
+                    // 4) Look into Reservists
+
+                    index = giver
+                        .chosen_reservists
+                        .iter()
+                        .position(|r| r.id == _player_id);
+
+                    if index.is_some() {
+                        player = Some(giver.chosen_reservists[index.unwrap()].clone());
+                        giver.chosen_reservists.remove(index.unwrap());
+                    } else {
+                        return false;
+                    }
+                }
             }
         }
     }
 
-    if let Some(x) = _pool_context.pooler_roster.get_mut(_participant_receiver) {
-        x.chosen_reservists.push(_player.clone());
-        return true;
+    // Add the player to the receiver's reservists.
+
+    if let Some(receiver) = _pool_context.pooler_roster.get_mut(_participant_receiver) {
+        if player.is_some() {
+            receiver.chosen_reservists.push(player.unwrap());
+            return true;
+        }
     }
 
     false
@@ -1521,8 +1526,13 @@ async fn validate_trade_possession(
     _pool_context: &PoolContext,
     _participant: &String,
 ) -> bool {
-    for player in _trading_list.players.iter() {
-        if !validate_player_possession(player, &_pool_context.pooler_roster[_participant]).await {
+    for player_id in _trading_list.players.iter() {
+        if !validate_player_possession_with_id(
+            *player_id,
+            &_pool_context.pooler_roster[_participant],
+        )
+        .await
+        {
             return false;
         }
     }
@@ -1558,35 +1568,6 @@ async fn get_users_players_count(
     hashCount
 }
 
-// return a hash map of number of pick each user made before a pick number by taking into acount the tradable picks.
-
-async fn get_users_tradable_draft_picks_count(
-    _tradable_picks: &Vec<HashMap<String, String>>,
-    _participants: &Vec<String>,
-    _players_drafted: usize,
-) -> HashMap<String, u8> {
-    let mut hashCount = HashMap::new();
-
-    for participant in _participants {
-        hashCount.insert(participant.clone(), 0);
-    }
-
-    let nPickCount: usize = 0;
-
-    for tradable_pick in _tradable_picks {
-        for value in tradable_pick.into_iter() {
-            if nPickCount < _players_drafted {
-                return hashCount;
-            }
-            if let Some(nCount) = hashCount.get_mut(value.1) {
-                *nCount += 1;
-            }
-        }
-    }
-
-    hashCount
-}
-
 async fn validate_player_possession(_player: &Player, _pooler_roster: &PoolerRoster) -> bool {
     match _player.position {
         Position::F => {
@@ -1613,6 +1594,24 @@ async fn validate_player_possession(_player: &Player, _pooler_roster: &PoolerRos
     }
 
     true
+}
+
+async fn validate_player_possession_with_id(
+    _player_id: u32,
+    _pooler_roster: &PoolerRoster,
+) -> bool {
+    let player = Player {
+        id: _player_id,
+        position: Position::F,
+        name: "".to_string(),
+        team: "".to_string(),
+        caps: None,
+    };
+
+    _pooler_roster.chosen_forwards.contains(&player)
+        || _pooler_roster.chosen_defenders.contains(&player)
+        || _pooler_roster.chosen_goalies.contains(&player)
+        || _pooler_roster.chosen_reservists.contains(&player)
 }
 
 async fn create_error_response(_message: String) -> PoolMessageResponse {

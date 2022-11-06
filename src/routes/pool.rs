@@ -1,3 +1,4 @@
+use chrono::Local;
 use mongodb::bson::doc;
 use mongodb::Database;
 
@@ -53,6 +54,9 @@ pub async fn get_pool_by_name_with_range(
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
+    let user_token = token.unwrap();
+
+    println!("Time: {}, user: {}", Local::now(), user_token._id);
 
     match pool::find_pool_by_name_with_range(db, &_name, &_from).await {
         Ok(data) => {
@@ -65,7 +69,10 @@ pub async fn get_pool_by_name_with_range(
 
             Ok(Json(data.unwrap()))
         }
-        Err(e) => Err(MyError::build(400, Some(e.to_string()))),
+        Err(e) => {
+            println!("{}", e);
+            Err(MyError::build(400, Some(e.to_string())))
+        }
     }
 }
 

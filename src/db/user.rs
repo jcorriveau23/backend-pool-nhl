@@ -49,21 +49,24 @@ pub async fn find_users(db: &Database) -> mongodb::error::Result<Vec<User>> {
     Ok(users)
 }
 
-pub async fn find_users_with_ids(
+pub async fn add_pool_to_users(
     _collection: &Collection<User>,
+    _pool_name: &String,
     _user_ids: &Vec<String>,
-) -> mongodb::error::Result<Vec<User>> {
-    let mut cursor = _collection.find(None, None).await?;
+) -> () {
+    // Add the new pool to the list of pool in each users.
 
-    let mut users: Vec<User> = vec![];
+    let mut participants_objectId = Vec::new();
 
-    while let Some(user) = cursor.try_next().await? {
-        if _user_ids.contains(&user._id.to_string()) {
-            users.push(user);
-        }
+    for participant in _user_ids {
+        participants_objectId.push(ObjectId::from_str(participant).unwrap());
     }
 
-    Ok(users)
+    let query = doc! {"_id": {"$in": participants_objectId}};
+
+    let update = doc! {"$push": {"pool_list": _pool_name}}; // Add the name of the pool
+
+    _collection.update_many(query, update, None).await;
 }
 
 pub async fn create_user_from_login(

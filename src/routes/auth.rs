@@ -56,6 +56,8 @@ pub async fn register_user(
 pub async fn login_user(db: &State<Database>, body: Json<LoginRequest>) -> Result<Value, MyError> {
     let user = user::find_user_with_name(db, &body.name).await.unwrap();
 
+    println!("Login from {}", body.name);
+
     if user.is_none() {
         return Err(MyError::build(
             400,

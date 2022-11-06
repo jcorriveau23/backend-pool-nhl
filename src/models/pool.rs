@@ -39,6 +39,7 @@ pub struct Pool {
     // Goalies points configuration.
     pub goalies_pts_wins: u8,
     pub goalies_pts_shutouts: u8,
+    pub goalies_pts_overtimes: u8,
     pub goalies_pts_goals: u8,
     pub goalies_pts_assists: u8,
 
@@ -58,6 +59,8 @@ pub struct Pool {
     // context of the pool.
     pub context: Option<PoolContext>,
     pub date_updated: i64,
+    pub season_start: String,
+    pub season_end: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
@@ -121,6 +124,7 @@ pub struct GoalyPoints {
     pub A: u8,
     pub W: bool,
     pub SO: bool,
+    pub OT: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
@@ -138,6 +142,7 @@ pub struct GoalyPoolPoints {
     pub A: u8,
     pub W: u8,
     pub SO: u8,
+    pub OT: u8,
     pub pts: u8,
 }
 
@@ -160,6 +165,7 @@ pub struct DailyCumulate {
     pub A_G: u8,
     pub W_G: u16,
     pub SO_G: u8,
+    pub OT_G: u8,
     pub P_G: u16,
     pub P: u16,
 }
@@ -176,6 +182,7 @@ pub struct Player {
     pub name: String,
     pub team: String,
     pub position: Position,
+    pub caps: Option<Vec<u32>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
@@ -211,7 +218,7 @@ pub struct Trade {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct TradeItems {
-    pub players: Vec<Player>,
+    pub players: Vec<u32>, // Id of the player
     pub picks: Vec<Pick>,
 }
 

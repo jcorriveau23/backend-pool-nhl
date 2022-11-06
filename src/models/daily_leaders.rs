@@ -44,6 +44,7 @@ pub struct GoalyStats {
     pub powerPlaySavePercentage: Option<f32>,
     pub shortHandedSavePercentage: Option<f32>,
     pub evenStrengthSavePercentage: Option<f32>,
+    pub OT: Option<bool>
 }
 
 #[allow(non_snake_case)]
