@@ -1049,7 +1049,20 @@ pub async fn modify_roster(
     let end_season_date =
         Local.from_utc_date(&NaiveDate::parse_from_str(END_SEASON_DATE, "%Y-%m-%d").unwrap());
 
-    let today = Local::today();
+    let mut today = Local::today();
+
+    let time = Local::now();
+
+    println!(
+        "Roster modification by {}, performed at {} {}",
+        _user_id, today, time
+    );
+
+    // At 12PM we start to count the action for the next day.
+
+    if time.hour() > 12 && time.minute() > 1 {
+        today = today + Duration::days(1);
+    }
 
     if today >= start_season_date && today <= end_season_date {
         let mut bAllowed = false;
