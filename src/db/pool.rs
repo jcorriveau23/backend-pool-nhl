@@ -1060,7 +1060,7 @@ pub async fn modify_roster(
 
     // At 12PM we start to count the action for the next day.
 
-    if time.hour() > 12 && time.minute() > 1 {
+    if time.hour() >= 12 {
         today = today + Duration::days(1);
     }
 
