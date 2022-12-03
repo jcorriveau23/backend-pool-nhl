@@ -12,7 +12,7 @@ pub struct DailyLeaders {
 pub struct DailyGoaly {
     pub name: String,
     pub id: i32,
-    pub team: String,
+    pub team: u32,
     pub stats: GoalyStats,
 }
 
@@ -20,7 +20,7 @@ pub struct DailyGoaly {
 pub struct DailySkater {
     pub name: String,
     pub id: i32,
-    pub team: String,
+    pub team: u32,
     pub stats: SkaterStats,
 }
 
@@ -44,7 +44,7 @@ pub struct GoalyStats {
     pub powerPlaySavePercentage: Option<f32>,
     pub shortHandedSavePercentage: Option<f32>,
     pub evenStrengthSavePercentage: Option<f32>,
-    pub OT: Option<bool>
+    pub OT: Option<bool>,
 }
 
 #[allow(non_snake_case)]

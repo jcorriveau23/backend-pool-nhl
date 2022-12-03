@@ -180,7 +180,7 @@ impl PartialEq<Player> for Player {
 pub struct Player {
     pub id: u32, // ID from the NHL API.
     pub name: String,
-    pub team: String,
+    pub team: u32,
     pub position: Position,
     pub caps: Option<Vec<u32>>,
 }

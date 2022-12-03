@@ -1617,7 +1617,7 @@ async fn validate_player_possession_with_id(
         id: _player_id,
         position: Position::F,
         name: "".to_string(),
-        team: "".to_string(),
+        team: 0,
         caps: None,
     };
 
