@@ -100,7 +100,6 @@ pub struct DailyRosterPoints {
     pub F_tot: Option<SkaterPoolPoints>,
     pub D_tot: Option<SkaterPoolPoints>,
     pub G_tot: Option<GoalyPoolPoints>,
-    pub tot_pts: Option<u32>,
     pub cumulate: Option<DailyCumulate>,
 }
 
@@ -132,7 +131,6 @@ pub struct SkaterPoolPoints {
     pub G: u8,
     pub A: u8,
     pub HT: u8,
-    pub pts: u8,
     pub SOG: u8,
 }
 
@@ -143,7 +141,6 @@ pub struct GoalyPoolPoints {
     pub W: u8,
     pub SO: u8,
     pub OT: u8,
-    pub pts: u8,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
@@ -152,13 +149,11 @@ pub struct DailyCumulate {
     pub G_F: u16,
     pub A_F: u16,
     pub HT_F: u8,
-    pub P_F: u16,
     pub SOG_F: u16,
     // Defenders
     pub G_D: u16,
     pub A_D: u16,
     pub HT_D: u8,
-    pub P_D: u16,
     pub SOG_D: u16,
     // Goalies
     pub G_G: u8,
@@ -166,8 +161,6 @@ pub struct DailyCumulate {
     pub W_G: u16,
     pub SO_G: u8,
     pub OT_G: u8,
-    pub P_G: u16,
-    pub P: u16,
 }
 
 impl PartialEq<Player> for Player {
@@ -299,4 +292,45 @@ pub struct ProtectPlayersRequest {
 #[derive(Debug, Deserialize, JsonSchema, Clone)]
 pub struct PoolUndoSelectionRequest {
     pub name: String,
+}
+
+// TODO: since these are the same settings as his the pool,
+// this should be used in the Pool object instead. This will required a big data base and front-end refactor but would be lot cleaner.
+#[derive(Debug, Deserialize, JsonSchema, Clone)]
+pub struct PoolSettings {
+    pub number_forwards: Option<u8>,
+    pub number_defenders: Option<u8>,
+    pub number_goalies: Option<u8>,
+    pub number_reservists: Option<u8>,
+
+    // Forwards points configuration.
+    pub forward_pts_goals: Option<u8>,
+    pub forward_pts_assists: Option<u8>,
+    pub forward_pts_hattricks: Option<u8>,
+    pub forward_pts_shootout_goals: Option<u8>,
+
+    // Defenders points configuration.
+    pub defender_pts_goals: Option<u8>,
+    pub defender_pts_assists: Option<u8>,
+    pub defender_pts_hattricks: Option<u8>,
+    pub defender_pts_shootout_goals: Option<u8>,
+
+    // Goalies points configuration.
+    pub goalies_pts_wins: Option<u8>,
+    pub goalies_pts_shutouts: Option<u8>,
+    pub goalies_pts_overtimes: Option<u8>,
+    pub goalies_pts_goals: Option<u8>,
+    pub goalies_pts_assists: Option<u8>,
+
+    // Other pool configuration
+    pub next_season_number_players_protected: Option<u8>,
+    pub tradable_picks: Option<u8>, // numbers of the next season picks participants are able to trade with each other.
+}
+
+// payload to sent when undoing a selection in a pool by the owner.
+#[derive(Debug, Deserialize, JsonSchema, Clone)]
+pub struct UpdatePoolSettingsRequest {
+    pub name: String,
+    // Roster configuration.
+    pub pool_settings: PoolSettings,
 }

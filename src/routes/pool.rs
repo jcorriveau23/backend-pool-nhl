@@ -10,7 +10,7 @@ use crate::errors::response::MyError;
 use crate::models::pool::{
     CancelTradeRequest, CreateTradeRequest, FillSpotRequest, Pool, PoolCreationRequest,
     PoolDeletionRequest, PoolUndoSelectionRequest, ProjectedPoolShort, ProtectPlayersRequest,
-    RespondTradeRequest, SelectPlayerRequest, StartDraftRequest,
+    RespondTradeRequest, SelectPlayerRequest, StartDraftRequest, UpdatePoolSettingsRequest,
 };
 use crate::models::response::PoolMessageResponse;
 use crate::routes::jwt::{return_token_error, ApiKeyError, UserToken};
@@ -316,6 +316,24 @@ pub async fn modify_roster(
     )
     .await
     {
+        Ok(data) => Ok(Json(data)),
+        Err(e) => Err(MyError::build(400, Some(e.to_string()))),
+    }
+}
+
+#[post("/update-pool-settings", format = "json", data = "<body>")]
+pub async fn update_pool_settings(
+    db: &State<Database>,
+    token: Result<UserToken, ApiKeyError>,
+    body: Json<UpdatePoolSettingsRequest>,
+) -> Result<Json<PoolMessageResponse>, MyError> {
+    if let Err(e) = token {
+        return Err(return_token_error(e));
+    }
+
+    let user_id = token.unwrap()._id;
+
+    match pool::update_pool_settings(db, &user_id.to_string(), &body).await {
         Ok(data) => Ok(Json(data)),
         Err(e) => Err(MyError::build(400, Some(e.to_string()))),
     }

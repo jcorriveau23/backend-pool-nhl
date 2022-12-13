@@ -36,6 +36,7 @@ async fn rocket() -> _ {
             routes::pool::fill_spot,
             routes::pool::protect_players,
             routes::pool::modify_roster,
+            routes::pool::update_pool_settings,
         ],
     )
 }

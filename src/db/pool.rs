@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use crate::models::pool::{
     Player, Pool, PoolContext, PoolCreationRequest, PoolState, PoolerRoster, Position,
-    ProjectedPoolShort, Trade, TradeItems, TradeStatus,
+    ProjectedPoolShort, Trade, TradeItems, TradeStatus, UpdatePoolSettingsRequest,
 };
 
 use crate::db::user::add_pool_to_users;
@@ -193,7 +193,11 @@ pub async fn delete_pool(
 
     if pool.is_none() {
         return Ok(create_error_response("Pool name does not exist.".to_string()).await);
-    } else if pool.unwrap().owner != *_user_id {
+    }
+
+    let pool_unwrap = pool.unwrap();
+
+    if !has_owner_rights(_user_id, &pool_unwrap).await {
         return Ok(create_error_response(
             "Only the owner of the pool can delete the pool.".to_string(),
         )
@@ -214,24 +218,24 @@ pub async fn delete_pool(
 pub async fn start_draft(
     db: &Database,
     _user_id: &String,
-    _poolInfo: &mut Pool,
+    _pool_info: &mut Pool,
 ) -> mongodb::error::Result<PoolMessageResponse> {
-    if let Some(participants) = &_poolInfo.participants {
-        if _poolInfo.number_poolers != participants.len() as u8 {
+    if let Some(participants) = &_pool_info.participants {
+        if _pool_info.number_poolers != participants.len() as u8 {
             return Ok(create_error_response(
                 "The number of participants is not good.".to_string(),
             )
             .await);
         }
 
-        if !matches!(_poolInfo.status, PoolState::Created) {
+        if !matches!(_pool_info.status, PoolState::Created) {
             return Ok(create_error_response(
                 "The pool is not in a valid state to start.".to_string(),
             )
             .await);
         }
 
-        if _poolInfo.owner != *_user_id {
+        if !has_owner_rights(_user_id, _pool_info).await {
             return Ok(create_error_response(
                 "Only the owner of the pool can start the draft.".to_string(),
             )
@@ -243,7 +247,7 @@ pub async fn start_draft(
         // Add the new pool to the list of pool in each users.
 
         let collection_users = db.collection::<User>("users");
-        add_pool_to_users(&collection_users, &_poolInfo.name, participants).await;
+        add_pool_to_users(&collection_users, &_pool_info.name, participants).await;
 
         let collection = db.collection::<Pool>("pools");
 
@@ -273,13 +277,13 @@ pub async fn start_draft(
         // TODO: randomize the list of participants so the draft order is random
         //thread_rng().shuffle(&mut _participants);
 
-        _poolInfo.status = PoolState::Draft;
-        _poolInfo.context = Some(pool_context);
+        _pool_info.status = PoolState::Draft;
+        _pool_info.context = Some(pool_context);
 
         // updated fields.
 
         let updated_fields = doc! {
-            "$set": to_bson(&_poolInfo).unwrap()
+            "$set": to_bson(&_pool_info).unwrap()
         };
 
         // Update the fields in the mongoDB pool document.
@@ -289,7 +293,7 @@ pub async fn start_draft(
 
         let new_pool = collection
             .find_one_and_update(
-                doc! {"name": &_poolInfo.name},
+                doc! {"name": &_pool_info.name},
                 updated_fields,
                 find_one_and_update_options,
             )
@@ -766,7 +770,7 @@ pub async fn respond_trade(
     // validate that only the one that was ask for the trade can accept it.
 
     if trades[_trade_id as usize].ask_to != *_user_id
-        && !owner_and_assitants_rights(_user_id, &pool_unwrap).await
+        && !has_owner_and_assitants_rights(_user_id, &pool_unwrap).await
     {
         return Ok(create_error_response(
             "Only the one that was ask for the trade can accept it.".to_string(),
@@ -779,7 +783,7 @@ pub async fn respond_trade(
     let now = Utc::now().timestamp_millis();
 
     if trades[_trade_id as usize].date_created + 8640000 > now
-        && !owner_and_assitants_rights(_user_id, &pool_unwrap).await
+        && !has_owner_and_assitants_rights(_user_id, &pool_unwrap).await
     {
         return Ok(create_error_response(
             "The trade needs to be active for 24h before being able to accept it.".to_string(),
@@ -1402,6 +1406,91 @@ pub async fn protect_players(
     }
 }
 
+pub async fn update_pool_settings(
+    db: &Database,
+    _user_id: &String,
+    _update: &UpdatePoolSettingsRequest,
+) -> mongodb::error::Result<PoolMessageResponse> {
+    let collection = db.collection::<Pool>("pools");
+
+    let pool = find_short_pool_by_name(&collection, &_update.name).await?;
+
+    if pool.is_none() {
+        return Ok(create_error_response("Pool name does not exist.".to_string()).await);
+    }
+
+    let pool_unwrap = pool.unwrap();
+
+    // make sure the user making the resquest is a pool participants.
+
+    if !has_owner_and_assitants_rights(_user_id, &pool_unwrap).await {
+        return Ok(create_error_response(
+            "You don't have the rights to update pool settings".to_string(),
+        )
+        .await);
+    }
+
+    // Update the fields in the mongoDB pool document.
+    if (_update.pool_settings.number_forwards.is_some()
+        || _update.pool_settings.number_defenders.is_some()
+        || _update.pool_settings.number_goalies.is_some()
+        || _update.pool_settings.number_reservists.is_some()
+        || _update
+            .pool_settings
+            .next_season_number_players_protected
+            .is_some()
+        || _update.pool_settings.tradable_picks.is_some())
+        && matches!(pool_unwrap.status, PoolState::InProgress)
+    {
+        return Ok(create_error_response(
+            "These settings cannot be updated while the pool is in progress.".to_string(),
+        )
+        .await); // Need to make this robust, potentially need another pool status
+    }
+
+    let updated_fields = doc! {
+        "$set": doc!{
+            "number_forwards": to_bson(&_update.pool_settings.number_forwards.unwrap_or(pool_unwrap.number_forwards)).unwrap(),
+            "number_defenders": to_bson(&_update.pool_settings.number_defenders.unwrap_or(pool_unwrap.number_defenders)).unwrap(),
+            "number_goalies": to_bson(&_update.pool_settings.number_goalies.unwrap_or(pool_unwrap.number_goalies)).unwrap(),
+            "number_reservists": to_bson(&_update.pool_settings.number_reservists.unwrap_or(pool_unwrap.number_reservists)).unwrap(),
+            "next_season_number_players_protected": to_bson(&_update.pool_settings.next_season_number_players_protected.unwrap_or(pool_unwrap.next_season_number_players_protected)).unwrap(),
+            "tradable_picks": to_bson(&_update.pool_settings.tradable_picks.unwrap_or(pool_unwrap.tradable_picks)).unwrap(),
+            //Points per forwards
+            "forward_pts_goals": to_bson(&_update.pool_settings.forward_pts_goals.unwrap_or(pool_unwrap.forward_pts_goals)).unwrap(),
+            "forward_pts_assists": to_bson(&_update.pool_settings.forward_pts_assists.unwrap_or(pool_unwrap.forward_pts_assists)).unwrap(),
+            "forward_pts_hattricks": to_bson(&_update.pool_settings.forward_pts_hattricks.unwrap_or(pool_unwrap.forward_pts_hattricks)).unwrap(),
+            "forward_pts_shootout_goals": to_bson(&_update.pool_settings.forward_pts_shootout_goals.unwrap_or(pool_unwrap.forward_pts_shootout_goals)).unwrap(),
+            //Points per Defenders
+            "defender_pts_goals": to_bson(&_update.pool_settings.defender_pts_goals.unwrap_or(pool_unwrap.defender_pts_goals)).unwrap(),
+            "defender_pts_assists": to_bson(&_update.pool_settings.defender_pts_assists.unwrap_or(pool_unwrap.defender_pts_assists)).unwrap(),
+            "defender_pts_hattricks": to_bson(&_update.pool_settings.defender_pts_hattricks.unwrap_or(pool_unwrap.defender_pts_hattricks)).unwrap(),
+            "defender_pts_shootout_goals": to_bson(&_update.pool_settings.defender_pts_shootout_goals.unwrap_or(pool_unwrap.defender_pts_shootout_goals)).unwrap(),
+            //Points per Goalies
+            "goalies_pts_wins": to_bson(&_update.pool_settings.goalies_pts_wins.unwrap_or(pool_unwrap.goalies_pts_wins)).unwrap(),
+            "goalies_pts_shutouts": to_bson(&_update.pool_settings.goalies_pts_shutouts.unwrap_or(pool_unwrap.goalies_pts_shutouts)).unwrap(),
+            "goalies_pts_overtimes": to_bson(&_update.pool_settings.goalies_pts_overtimes.unwrap_or(pool_unwrap.goalies_pts_overtimes)).unwrap(),
+            "goalies_pts_goals": to_bson(&_update.pool_settings.goalies_pts_goals.unwrap_or(pool_unwrap.goalies_pts_goals)).unwrap(),
+            "goalies_pts_assists": to_bson(&_update.pool_settings.goalies_pts_assists.unwrap_or(pool_unwrap.goalies_pts_assists)).unwrap(),
+
+        }
+    };
+
+    match collection
+        .update_one(doc! {"name": &_update.name}, updated_fields, None)
+        .await
+    {
+        Ok(res) => {
+            println!("{:?}", res);
+            return Ok(create_success_response(&None).await);
+        }
+        Err(e) => {
+            println!("{}", e);
+            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+        }
+    }
+}
+
 async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> bool {
     if !validate_trade_possession(&_trade.from_items, _pool_context, &_trade.proposed_by).await
         || !validate_trade_possession(&_trade.from_items, _pool_context, &_trade.proposed_by).await
@@ -1643,10 +1732,10 @@ async fn create_success_response(_pool: &Option<Pool>) -> PoolMessageResponse {
     }
 }
 
-async fn owner_and_assitants_rights(_user_id: &String, _pool_info: &Pool) -> bool {
+async fn has_owner_and_assitants_rights(_user_id: &String, _pool_info: &Pool) -> bool {
     *_user_id == _pool_info.owner || _pool_info.assistants.contains(_user_id)
 }
 
-async fn owner_rights(_user_id: &String, _pool_info: &Pool) -> bool {
+async fn has_owner_rights(_user_id: &String, _pool_info: &Pool) -> bool {
     *_user_id == _pool_info.owner
 }
