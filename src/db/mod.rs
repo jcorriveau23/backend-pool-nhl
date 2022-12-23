@@ -27,7 +27,7 @@ async fn connect() -> mongodb::error::Result<Database> {
     let client = Client::with_options(client_options).unwrap();
 
     // mongoDB database
-    let db = client.database("pooljdope");
+    let db = client.database("hockeypool");
 
     println!("MongoDB Connected!");
 

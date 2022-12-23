@@ -58,22 +58,6 @@ pub fn return_token_error(e: ApiKeyError) -> MyError {
     }
 }
 
-pub fn generate_token_register(_user: &User) -> String {
-    let now = Utc::now().timestamp_nanos() / 1_000_000_000; // nanosecond -> second
-    let payload = UserToken {
-        iat: now,
-        exp: now + ONE_WEEK,
-        _id: _user._id,
-    };
-
-    jsonwebtoken::encode(
-        &Header::default(),
-        &payload,
-        &EncodingKey::from_secret(include_bytes!("secret.key")),
-    )
-    .unwrap()
-}
-
 pub fn generate_token(_user: &User) -> String {
     let now = Utc::now().timestamp_nanos() / 1_000_000_000; // nanosecond -> second
     let payload = UserToken {

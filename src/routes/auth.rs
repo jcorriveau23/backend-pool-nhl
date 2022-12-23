@@ -44,7 +44,7 @@ pub async fn register_user(
     let new_user_unwrap = new_user.unwrap();
 
     // create the token before sending the response (might need to change the string returned value)
-    let token = jwt::generate_token_register(&new_user_unwrap);
+    let token = jwt::generate_token(&new_user_unwrap);
 
     let user_json = json! ({"user": new_user_unwrap, "token": token});
 
