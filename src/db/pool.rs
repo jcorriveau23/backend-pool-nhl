@@ -354,9 +354,6 @@ pub async fn select_player(
     let participants = pool_unwrap.participants.clone().unwrap();
 
     for participant in participants.iter() {
-        if participant == _user_id {
-            continue;
-        }
         if validate_player_possession(_player, &pool_context.pooler_roster[participant]).await {
             return Ok(create_error_response("This player is already picked.".to_string()).await);
         }
