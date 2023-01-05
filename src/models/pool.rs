@@ -61,6 +61,7 @@ pub struct Pool {
     pub date_updated: i64,
     pub season_start: String,
     pub season_end: String,
+    pub roster_modification_date: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]

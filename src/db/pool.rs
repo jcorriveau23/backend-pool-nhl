@@ -17,7 +17,6 @@ use crate::models::response::PoolMessageResponse;
 
 // Date for season
 
-const START_PRE_SEASON_DATE: &str = "2022-09-24";
 const START_SEASON_DATE: &str = "2022-10-07";
 const END_SEASON_DATE: &str = "2023-04-13";
 
@@ -174,6 +173,9 @@ pub async fn create_pool(
             date_updated: 0,
             season_start: START_SEASON_DATE.to_string(),
             season_end: END_SEASON_DATE.to_string(),
+            roster_modification_date: FIRST_SATHURDAY_OF_MONTHS
+                .map(|date| date.to_string())
+                .to_vec(),
         };
 
         collection.insert_one(pool, None).await?;
