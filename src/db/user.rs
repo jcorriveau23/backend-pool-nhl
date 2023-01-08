@@ -53,7 +53,7 @@ pub async fn add_pool_to_users(
     _collection: &Collection<User>,
     _pool_name: &String,
     _user_ids: &Vec<String>,
-) -> () {
+) {
     // Add the new pool to the list of pool in each users.
 
     let mut participants_objectId = Vec::new();
@@ -132,8 +132,8 @@ pub async fn create_user_from_wallet_login(
 
 pub async fn update_user_name(
     db: &Database,
-    _user_id: &String,
-    _new_name: &String,
+    _user_id: &str,
+    _new_name: &str,
 ) -> mongodb::error::Result<Option<User>> {
     let collection = db.collection::<User>("users");
     let find_one_and_update_options = FindOneAndUpdateOptions::builder()
@@ -158,7 +158,7 @@ pub async fn update_user_name(
 
 pub async fn update_password(
     db: &Database,
-    _user_id: &String,
+    _user_id: &str,
     _new_password: &String,
 ) -> mongodb::error::Result<Option<User>> {
     let collection = db.collection::<User>("users");

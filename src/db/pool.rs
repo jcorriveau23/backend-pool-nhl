@@ -1,6 +1,6 @@
 use chrono::{Date, Duration, Local, NaiveDate, TimeZone, Timelike, Utc};
 use futures::stream::TryStreamExt;
-use mongodb::bson::{doc, oid::ObjectId, to_bson};
+use mongodb::bson::{doc, to_bson};
 use mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, ReturnDocument};
 use mongodb::{Collection, Database};
 use std::collections::HashMap;
@@ -43,7 +43,7 @@ pub async fn find_pool_by_name(
 // Return the pool information without the score_by_day member
 pub async fn find_short_pool_by_name(
     collection: &Collection<Pool>,
-    _name: &String,
+    _name: &str,
 ) -> mongodb::error::Result<Option<Pool>> {
     let find_option = FindOneOptions::builder()
         .projection(doc! {"context.score_by_day": 0})
@@ -186,12 +186,12 @@ pub async fn create_pool(
 
 pub async fn delete_pool(
     db: &Database,
-    _user_id: &String,
-    _pool_name: &String,
+    _user_id: &str,
+    _pool_name: &str,
 ) -> mongodb::error::Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
-    let pool = find_short_pool_by_name(&collection, &_pool_name).await?;
+    let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
     if pool.is_none() {
         return Ok(create_error_response("Pool name does not exist.".to_string()).await);
@@ -206,7 +206,7 @@ pub async fn delete_pool(
         .await);
     } else {
         let delete_result = collection
-            .delete_one(doc! {"name": _pool_name.clone()}, None)
+            .delete_one(doc! {"name": _pool_name}, None)
             .await?;
 
         if delete_result.deleted_count == 0 {
@@ -219,7 +219,7 @@ pub async fn delete_pool(
 
 pub async fn start_draft(
     db: &Database,
-    _user_id: &String,
+    _user_id: &str,
     _pool_info: &mut Pool,
 ) -> mongodb::error::Result<PoolMessageResponse> {
     if let Some(participants) = &_pool_info.participants {
@@ -320,8 +320,8 @@ pub async fn start_draft(
 
 pub async fn select_player(
     db: &Database,
-    _user_id: &String,
-    _pool_name: &String,
+    _user_id: &str,
+    _pool_name: &str,
     _player: &Player,
 ) -> mongodb::error::Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
@@ -472,7 +472,7 @@ pub async fn select_player(
             }
         }
 
-        pool_context.players_name_drafted.push(_player.id.clone());
+        pool_context.players_name_drafted.push(_player.id);
 
         if let Some(nCount) = users_players_count.get_mut(_user_id) {
             *nCount += 1;
@@ -926,8 +926,8 @@ pub async fn fill_spot(
 
 pub async fn undo_select_player(
     db: &Database,
-    _user_id: &String,
-    _pool_name: &String,
+    _user_id: &str,
+    _pool_name: &str,
 ) -> mongodb::error::Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
@@ -941,7 +941,7 @@ pub async fn undo_select_player(
 
     // validate that the user making the request is the pool owner.
 
-    if &pool_unwrap.owner != _user_id {
+    if pool_unwrap.owner != _user_id {
         return Ok(create_error_response("Only the owner of the pool can undo.".to_string()).await);
     }
 
@@ -958,7 +958,7 @@ pub async fn undo_select_player(
 
     // validate there is something to undo.
 
-    if pool_context.players_name_drafted.len() == 0 {
+    if pool_context.players_name_drafted.is_empty() {
         return Ok(create_error_response("There is nothing to undo".to_string()).await);
     }
 
@@ -1735,6 +1735,6 @@ async fn has_owner_and_assitants_rights(_user_id: &String, _pool_info: &Pool) ->
     *_user_id == _pool_info.owner || _pool_info.assistants.contains(_user_id)
 }
 
-async fn has_owner_rights(_user_id: &String, _pool_info: &Pool) -> bool {
+async fn has_owner_rights(_user_id: &str, _pool_info: &Pool) -> bool {
     *_user_id == _pool_info.owner
 }

@@ -181,7 +181,7 @@ pub async fn validate_token(token: Result<UserToken, ApiKeyError>) -> Result<Val
     Ok(token_json)
 }
 
-async fn verify_message(addr: &String, sig: &String) -> bool {
+async fn verify_message(addr: &str, sig: &str) -> bool {
     let message = "Unlock wallet to access nhl-pool-ethereum.".to_string();
     let signature = hex::decode(sig.strip_prefix("0x").unwrap()).unwrap();
     let signer_addr = web3::signing::recover(&eth_message(message), &signature[..64], 0).unwrap();
