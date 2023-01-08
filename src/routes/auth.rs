@@ -26,7 +26,7 @@ pub async fn register_user(
 
     // the username provided is already registered.
 
-    if user.is_some() {
+    if let Some(_) = user {
         return Err(MyError::build(
             400,
             Some("this username is not available.".to_string()),

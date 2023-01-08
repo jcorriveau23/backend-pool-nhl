@@ -13,10 +13,7 @@ pub async fn find_user_with_name(
 ) -> mongodb::error::Result<Option<User>> {
     let collection = db.collection::<User>("users");
 
-    let user = collection
-        .find_one(doc! {"name": _name}, None)
-        .await
-        .unwrap();
+    let user = collection.find_one(doc! {"name": _name}, None).await?;
 
     Ok(user)
 }
@@ -27,10 +24,7 @@ pub async fn find_user_with_address(
 ) -> mongodb::error::Result<Option<User>> {
     let collection = db.collection::<User>("users");
 
-    let user = collection
-        .find_one(doc! {"addr": _addr}, None)
-        .await
-        .unwrap();
+    let user = collection.find_one(doc! {"addr": _addr}, None).await?;
 
     Ok(user)
 }
@@ -38,13 +32,9 @@ pub async fn find_user_with_address(
 pub async fn find_users(db: &Database) -> mongodb::error::Result<Vec<User>> {
     let collection = db.collection::<User>("users");
 
-    let mut cursor = collection.find(None, None).await?;
+    let cursor = collection.find(None, None).await?;
 
-    let mut users: Vec<User> = vec![];
-
-    while let Some(user) = cursor.try_next().await? {
-        users.push(user);
-    }
+    let users: Vec<User> = cursor.try_collect().await?;
 
     Ok(users)
 }
@@ -56,11 +46,10 @@ pub async fn add_pool_to_users(
 ) {
     // Add the new pool to the list of pool in each users.
 
-    let mut participants_objectId = Vec::new();
-
-    for participant in _user_ids {
-        participants_objectId.push(ObjectId::from_str(participant).unwrap());
-    }
+    let participants_objectId: Vec<ObjectId> = _user_ids
+        .iter()
+        .map(|id| ObjectId::from_str(id).unwrap())
+        .collect();
 
     let query = doc! {"_id": {"$in": participants_objectId}};
 
@@ -150,8 +139,7 @@ pub async fn update_user_name(
 
     let user = collection
         .find_one_and_update(filter, doc, find_one_and_update_options)
-        .await
-        .unwrap();
+        .await?;
 
     Ok(user)
 }
@@ -176,8 +164,7 @@ pub async fn update_password(
 
     let user = collection
         .find_one_and_update(filter, updated_fields, find_one_and_update_options)
-        .await
-        .unwrap();
+        .await?;
 
     Ok(user)
 }
