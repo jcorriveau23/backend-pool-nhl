@@ -1,3 +1,4 @@
+use crate::errors::response::Result;
 use chrono::{Date, Duration, Local, NaiveDate, TimeZone, Timelike, Utc};
 use futures::stream::TryStreamExt;
 use mongodb::bson::{doc, to_bson};
@@ -31,28 +32,29 @@ const FIRST_SATHURDAY_OF_MONTHS: [&str; 5] = [
 ];
 
 // Return the complete Pool information
-pub async fn find_pool_by_name(
-    db: &Database,
-    _name: &String,
-) -> mongodb::error::Result<Option<Pool>> {
+pub async fn find_pool_by_name(db: &Database, _name: &String) -> Result<Option<Pool>> {
     let collection = db.collection::<Pool>("pools");
 
-    collection.find_one(doc! {"name": _name}, None).await
+    let pool = collection.find_one(doc! {"name": _name}, None).await?;
+
+    Ok(pool)
 }
 
 // Return the pool information without the score_by_day member
 pub async fn find_short_pool_by_name(
     collection: &Collection<Pool>,
     _name: &str,
-) -> mongodb::error::Result<Option<Pool>> {
+) -> Result<Option<Pool>> {
     let find_option = FindOneOptions::builder()
         .projection(doc! {"context.score_by_day": 0})
         .build();
 
-    collection
+    let short_pool = collection
         .clone_with_type::<Pool>()
         .find_one(doc! {"name": &_name}, find_option)
-        .await
+        .await?;
+
+    Ok(short_pool)
 }
 
 // Return the pool information with a requested range of day for the score_by_day member
@@ -60,7 +62,7 @@ pub async fn find_pool_by_name_with_range(
     db: &Database,
     _name: &String,
     _from: &String,
-) -> mongodb::error::Result<Option<Pool>> {
+) -> Result<Option<Pool>> {
     let from_date =
         Date::<Utc>::from_utc(NaiveDate::parse_from_str(_from, "%Y-%m-%d").unwrap(), Utc);
 
@@ -86,7 +88,6 @@ pub async fn find_pool_by_name_with_range(
             .strip_suffix("UTC")
             .unwrap()
             .to_string();
-        // println!("{}", str_date);
 
         if str_date == *_from {
             break;
@@ -95,32 +96,28 @@ pub async fn find_pool_by_name_with_range(
         start_date = start_date + Duration::days(1);
     }
 
-    // println!("{}", projection);
-
     let find_option = FindOneOptions::builder().projection(projection).build();
     let collection = db.collection::<Pool>("pools");
-    collection
+    let pool = collection
         .clone_with_type::<Pool>()
         .find_one(doc! {"name": &_name}, find_option)
-        .await
+        .await?;
+
+    Ok(pool)
 }
 
-pub async fn find_pools(db: &Database) -> mongodb::error::Result<Vec<ProjectedPoolShort>> {
+pub async fn find_pools(db: &Database) -> Result<Vec<ProjectedPoolShort>> {
     let collection = db.collection::<Pool>("pools");
     let find_option = FindOptions::builder()
         .projection(doc! {"name": 1, "owner": 1, "status": 1})
         .build();
 
-    let mut cursor = collection
+    let cursor = collection
         .clone_with_type::<ProjectedPoolShort>()
         .find(None, find_option)
         .await?;
 
-    let mut pools = vec![];
-
-    while let Some(pool) = cursor.try_next().await? {
-        pools.push(pool);
-    }
+    let pools = cursor.try_collect().await?;
 
     Ok(pools)
 }
@@ -129,7 +126,7 @@ pub async fn create_pool(
     db: &Database,
     _owner: String,
     _pool_info: PoolCreationRequest,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     if find_short_pool_by_name(&collection, &_pool_info.name)
@@ -188,7 +185,7 @@ pub async fn delete_pool(
     db: &Database,
     _user_id: &str,
     _pool_name: &str,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
@@ -221,7 +218,7 @@ pub async fn start_draft(
     db: &Database,
     _user_id: &str,
     _pool_info: &mut Pool,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     if let Some(participants) = &_pool_info.participants {
         if _pool_info.number_poolers != participants.len() as u8 {
             return Ok(create_error_response(
@@ -299,8 +296,7 @@ pub async fn start_draft(
                 updated_fields,
                 find_one_and_update_options,
             )
-            .await
-            .unwrap();
+            .await?;
 
         if new_pool.is_none() {
             return Ok(create_error_response("The pool could not be updated.".to_string()).await);
@@ -323,7 +319,7 @@ pub async fn select_player(
     _user_id: &str,
     _pool_name: &str,
     _player: &Player,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
@@ -533,8 +529,7 @@ pub async fn select_player(
             updated_fields,
             find_one_and_update_options,
         )
-        .await
-        .unwrap();
+        .await?;
 
     if new_pool.is_none() {
         return Ok(create_error_response("The pool could not be updated.".to_string()).await);
@@ -548,7 +543,7 @@ pub async fn create_trade(
     _user_id: &String,
     _pool_name: &String,
     _trade: &mut Trade,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let trade_deadline_date = Date::<Utc>::from_utc(
         NaiveDate::parse_from_str(TRADE_DEADLINE_DATE, "%Y-%m-%d").unwrap(),
         Utc,
@@ -634,8 +629,7 @@ pub async fn create_trade(
         || !validate_trade_possession(&_trade.to_items, &pool_context, &_trade.ask_to).await
     {
         return Ok(create_error_response(
-            "One of the to pooler does not poccess the items list provided for the trade."
-                .to_string(),
+            "One of the pooler does not poccess the items list provided for the trade.".to_string(),
         )
         .await);
     }
@@ -654,19 +648,11 @@ pub async fn create_trade(
         }
     };
 
-    match collection
+    collection
         .update_one(doc! {"name": _pool_name}, updated_fields, None)
-        .await
-    {
-        Ok(res) => {
-            println!("{:?}", res);
-            return Ok(create_success_response(&None).await);
-        }
-        Err(e) => {
-            println!("{}", e);
-            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
-        }
-    }
+        .await?;
+
+    Ok(create_success_response(&None).await)
 }
 
 pub async fn cancel_trade(
@@ -674,7 +660,7 @@ pub async fn cancel_trade(
     _user_id: &String,
     _pool_name: &String,
     _trade_id: u32,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
@@ -718,19 +704,11 @@ pub async fn cancel_trade(
         }
     };
 
-    match collection
+    collection
         .update_one(doc! {"name": _pool_name}, updated_fields, None)
-        .await
-    {
-        Ok(res) => {
-            println!("{:?}", res);
-            return Ok(create_success_response(&None).await);
-        }
-        Err(e) => {
-            println!("{}", e);
-            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
-        }
-    }
+        .await?;
+
+    Ok(create_success_response(&None).await)
 }
 
 pub async fn respond_trade(
@@ -739,7 +717,7 @@ pub async fn respond_trade(
     _pool_name: &String,
     _is_accepted: bool,
     _trade_id: u32,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
@@ -766,13 +744,13 @@ pub async fn respond_trade(
         .await);
     }
 
-    // validate that only the one that was ask for the trade can accept it.
+    // validate that only the one that was ask for the trade or the owner can accept it.
 
     if trades[_trade_id as usize].ask_to != *_user_id
         && !has_owner_and_assitants_rights(_user_id, &pool_unwrap).await
     {
         return Ok(create_error_response(
-            "Only the one that was ask for the trade can accept it.".to_string(),
+            "Only the one that was ask for the trade or the owner can accept it.".to_string(),
         )
         .await);
     }
@@ -813,19 +791,11 @@ pub async fn respond_trade(
         }
     };
 
-    match collection
+    collection
         .update_one(doc! {"name": _pool_name}, updated_fields, None)
-        .await
-    {
-        Ok(res) => {
-            println!("{:?}", res);
-            return Ok(create_success_response(&None).await);
-        }
-        Err(e) => {
-            println!("{}", e);
-            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
-        }
-    }
+        .await?;
+
+    Ok(create_success_response(&None).await)
 }
 
 pub async fn fill_spot(
@@ -833,7 +803,7 @@ pub async fn fill_spot(
     _user_id: &String,
     _pool_name: &String,
     _player: &Player,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
@@ -909,26 +879,18 @@ pub async fn fill_spot(
         }
     };
 
-    match collection
+    collection
         .update_one(doc! {"name": _pool_name}, updated_fields, None)
-        .await
-    {
-        Ok(res) => {
-            println!("{:?}", res);
-            return Ok(create_success_response(&None).await);
-        }
-        Err(e) => {
-            println!("{}", e);
-            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
-        }
-    }
+        .await?;
+
+    Ok(create_success_response(&None).await)
 }
 
 pub async fn undo_select_player(
     db: &Database,
     _user_id: &str,
     _pool_name: &str,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
@@ -1028,8 +990,7 @@ pub async fn undo_select_player(
             updated_fields,
             find_one_and_update_options,
         )
-        .await
-        .unwrap();
+        .await?;
 
     if new_pool.is_none() {
         return Ok(create_error_response("The pool could not be updated.".to_string()).await);
@@ -1046,7 +1007,7 @@ pub async fn modify_roster(
     _def_selected: &Vec<Player>,
     _goal_selected: &Vec<Player>,
     _reserv_selected: &Vec<Player>,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let start_season_date =
         Local.from_utc_date(&NaiveDate::parse_from_str(START_SEASON_DATE, "%Y-%m-%d").unwrap());
     let end_season_date =
@@ -1229,19 +1190,11 @@ pub async fn modify_roster(
         }
     };
 
-    match collection
+    collection
         .update_one(doc! {"name": _pool_name}, updated_fields, None)
-        .await
-    {
-        Ok(res) => {
-            println!("{:?}", res);
-            return Ok(create_success_response(&None).await);
-        }
-        Err(e) => {
-            println!("{}", e);
-            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
-        }
-    }
+        .await?;
+
+    Ok(create_success_response(&None).await)
 }
 
 pub async fn protect_players(
@@ -1252,7 +1205,7 @@ pub async fn protect_players(
     _def_protected: &Vec<Player>,
     _goal_protected: &Vec<Player>,
     _reserv_protected: &Vec<Player>,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
@@ -1390,26 +1343,18 @@ pub async fn protect_players(
 
     // Update the fields in the mongoDB pool document.
 
-    match collection
+    collection
         .update_one(doc! {"name": _pool_name}, updated_fields, None)
-        .await
-    {
-        Ok(res) => {
-            println!("{:?}", res);
-            return Ok(create_success_response(&None).await);
-        }
-        Err(e) => {
-            println!("{}", e);
-            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
-        }
-    }
+        .await?;
+
+    Ok(create_success_response(&None).await)
 }
 
 pub async fn update_pool_settings(
     db: &Database,
     _user_id: &String,
     _update: &UpdatePoolSettingsRequest,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, &_update.name).await?;
@@ -1475,19 +1420,11 @@ pub async fn update_pool_settings(
         }
     };
 
-    match collection
+    collection
         .update_one(doc! {"name": &_update.name}, updated_fields, None)
-        .await
-    {
-        Ok(res) => {
-            println!("{:?}", res);
-            return Ok(create_success_response(&None).await);
-        }
-        Err(e) => {
-            println!("{}", e);
-            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
-        }
-    }
+        .await?;
+
+    Ok(create_success_response(&None).await)
 }
 
 async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> bool {

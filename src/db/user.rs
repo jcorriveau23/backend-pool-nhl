@@ -1,16 +1,13 @@
-use std::str::FromStr;
-
+use crate::errors::response::Result;
 use futures::stream::TryStreamExt;
 use mongodb::bson::{doc, oid::ObjectId, Document};
 use mongodb::options::{FindOneAndUpdateOptions, ReturnDocument};
 use mongodb::{Collection, Database};
+use std::str::FromStr;
 
 use crate::models::user::{RegisterRequest, User, WalletLoginRegisterRequest};
 
-pub async fn find_user_with_name(
-    db: &Database,
-    _name: &String,
-) -> mongodb::error::Result<Option<User>> {
+pub async fn find_user_with_name(db: &Database, _name: &String) -> Result<Option<User>> {
     let collection = db.collection::<User>("users");
 
     let user = collection.find_one(doc! {"name": _name}, None).await?;
@@ -18,10 +15,7 @@ pub async fn find_user_with_name(
     Ok(user)
 }
 
-pub async fn find_user_with_address(
-    db: &Database,
-    _addr: &String,
-) -> mongodb::error::Result<Option<User>> {
+pub async fn find_user_with_address(db: &Database, _addr: &String) -> Result<Option<User>> {
     let collection = db.collection::<User>("users");
 
     let user = collection.find_one(doc! {"addr": _addr}, None).await?;
@@ -29,7 +23,7 @@ pub async fn find_user_with_address(
     Ok(user)
 }
 
-pub async fn find_users(db: &Database) -> mongodb::error::Result<Vec<User>> {
+pub async fn find_users(db: &Database) -> Result<Vec<User>> {
     let collection = db.collection::<User>("users");
 
     let cursor = collection.find(None, None).await?;
@@ -62,7 +56,7 @@ pub async fn create_user_from_login(
     db: &Database,
     user: &RegisterRequest,
     password_hash: &String,
-) -> mongodb::error::Result<Option<User>> {
+) -> Result<Option<User>> {
     // this function needd to be call after calling find_user() and validate a user does not exist
     let collection = db.collection::<Document>("users");
 
@@ -93,7 +87,7 @@ pub async fn create_user_from_login(
 pub async fn create_user_from_wallet_login(
     db: &Database,
     user: WalletLoginRegisterRequest,
-) -> mongodb::error::Result<Option<User>> {
+) -> Result<Option<User>> {
     // this function needd to be call after calling find_user() and validate a user does not exist
     let collection = db.collection::<Document>("users");
 
@@ -123,7 +117,7 @@ pub async fn update_user_name(
     db: &Database,
     _user_id: &str,
     _new_name: &str,
-) -> mongodb::error::Result<Option<User>> {
+) -> Result<Option<User>> {
     let collection = db.collection::<User>("users");
     let find_one_and_update_options = FindOneAndUpdateOptions::builder()
         .return_document(ReturnDocument::After)
@@ -148,7 +142,7 @@ pub async fn update_password(
     db: &Database,
     _user_id: &str,
     _new_password: &String,
-) -> mongodb::error::Result<Option<User>> {
+) -> Result<Option<User>> {
     let collection = db.collection::<User>("users");
     let find_one_and_update_options = FindOneAndUpdateOptions::builder()
         .return_document(ReturnDocument::After)
