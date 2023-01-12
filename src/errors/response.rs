@@ -1,10 +1,32 @@
-use rocket_okapi::gen::OpenApiGenerator;
-use rocket_okapi::okapi;
-use rocket_okapi::okapi::openapi3::{MediaType, Responses};
-use rocket_okapi::response::OpenApiResponderInner;
-use rocket_okapi::OpenApiError;
+use mongodb;
+use std::fmt;
 
-/// error type
+#[derive(Debug)]
+pub enum AppError {
+    HttpError,
+    MongoError,
+}
+
+impl std::error::Error for AppError {}
+
+impl fmt::Display for AppError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            AppError::HttpError => write!(f, "HTTP Error"),
+            AppError::MongoError => write!(f, "Mongo Error"),
+        }
+    }
+}
+
+impl From<mongodb::error::Error> for AppError {
+    fn from(_: mongodb::error::Error) -> Self {
+        AppError::MongoError
+    }
+}
+
+pub type Result<T> = std::result::Result<T, AppError>;
+
+// The error bellow will be removed once the issue is solved.
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct ErrorContent {
     // HTTP Status Code returned
@@ -40,25 +62,6 @@ impl MyError {
     }
 }
 
-/// Create my custom response
-pub fn bad_request_response(gen: &mut OpenApiGenerator) -> okapi::openapi3::Response {
-    let schema = gen.json_schema::<MyError>();
-    okapi::openapi3::Response {
-        description: "\
-        # 400 Bad Request\n\
-        The request given is wrongly formatted or data was missing. \
-        "
-        .to_owned(),
-        content: okapi::map! {
-            "application/json".to_owned() => MediaType {
-                schema: Some(schema),
-                ..Default::default()
-            }
-        },
-        ..Default::default()
-    }
-}
-
 impl<'r> rocket::response::Responder<'r, 'static> for MyError {
     fn respond_to(self, _: &'r rocket::Request<'_>) -> rocket::response::Result<'static> {
         // Convert object to json
@@ -68,19 +71,5 @@ impl<'r> rocket::response::Responder<'r, 'static> for MyError {
             .header(rocket::http::ContentType::JSON)
             .status(rocket::http::Status::new(self.error.code))
             .ok()
-    }
-}
-
-impl OpenApiResponderInner for MyError {
-    fn responses(gen: &mut OpenApiGenerator) -> Result<Responses, OpenApiError> {
-        use rocket_okapi::okapi::openapi3::RefOr;
-        Ok(Responses {
-            responses: okapi::map! {
-                "400".to_owned() => RefOr::Object(bad_request_response(gen)),
-                // Note: 401 is already declared for ApiKey. so this is not essential.
-                // "401".to_owned() => RefOr::Object(unauthorized_response(gen)),
-            },
-            ..Default::default()
-        })
     }
 }
