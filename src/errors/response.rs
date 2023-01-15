@@ -14,10 +14,10 @@ impl std::error::Error for AppError {}
 impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            AppError::CustomError(e) => write!(f, "Custom Error"),
-            AppError::MongoError(e) => write!(f, "Mongo Error"),
-            AppError::ParseError(e) => write!(f, "Parse Error"),
-            AppError::BcryptError(e) => write!(f, "Bcrypt Error"),
+            AppError::CustomError(e) => write!(f, "Custom Error: {}", e),
+            AppError::MongoError(e) => write!(f, "Mongo Error: {}", e),
+            AppError::ParseError(e) => write!(f, "Parse Error: {}", e),
+            AppError::BcryptError(e) => write!(f, "Bcrypt Error: {}", e),
         }
     }
 }
@@ -42,7 +42,13 @@ impl From<bcrypt::BcryptError> for AppError {
 
 pub type Result<T> = std::result::Result<T, AppError>;
 
-// The error bellow will be removed once the issue is solved.
+// Error Response being sent when an AppError has been captured into a request.
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct ResponseError {
+    pub error: ErrorContent,
+}
+
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct ErrorContent {
     // HTTP Status Code returned
@@ -51,12 +57,6 @@ pub struct ErrorContent {
     reason: String,
     // Description for an error if any
     description: Option<String>,
-}
-
-/// Error messages returned to user
-#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-pub struct ResponseError {
-    pub error: ErrorContent,
 }
 
 impl ResponseError {
