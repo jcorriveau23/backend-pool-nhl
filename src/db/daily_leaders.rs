@@ -1,13 +1,17 @@
+use crate::errors::response::AppError;
 use crate::errors::response::Result;
 use mongodb::bson::doc;
 use mongodb::Database;
 
 use crate::models::daily_leaders::DailyLeaders;
 
-pub async fn find_daily_leaders(db: &Database, date: String) -> Result<Option<DailyLeaders>> {
+pub async fn find_daily_leaders(db: &Database, _date: String) -> Result<DailyLeaders> {
     let collection = db.collection::<DailyLeaders>("day_leaders");
 
-    let daily_leaders_doc = collection.find_one(doc! {"date": date}, None).await?;
+    let daily_leaders = collection.find_one(doc! {"date": &_date}, None).await?;
 
-    Ok(daily_leaders_doc)
+    daily_leaders.ok_or(AppError::CustomError(format!(
+        "no daily leaders found for the date: {}",
+        _date
+    )))
 }

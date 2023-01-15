@@ -3,8 +3,10 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum AppError {
-    HttpError,
-    MongoError,
+    CustomError(String),
+    MongoError(String),
+    ParseError(String),
+    BcryptError(String),
 }
 
 impl std::error::Error for AppError {}
@@ -12,15 +14,29 @@ impl std::error::Error for AppError {}
 impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            AppError::HttpError => write!(f, "HTTP Error"),
-            AppError::MongoError => write!(f, "Mongo Error"),
+            AppError::CustomError(e) => write!(f, "Custom Error"),
+            AppError::MongoError(e) => write!(f, "Mongo Error"),
+            AppError::ParseError(e) => write!(f, "Parse Error"),
+            AppError::BcryptError(e) => write!(f, "Bcrypt Error"),
         }
     }
 }
 
 impl From<mongodb::error::Error> for AppError {
-    fn from(_: mongodb::error::Error) -> Self {
-        AppError::MongoError
+    fn from(e: mongodb::error::Error) -> Self {
+        AppError::MongoError(e.to_string())
+    }
+}
+
+impl From<chrono::format::ParseError> for AppError {
+    fn from(e: chrono::format::ParseError) -> Self {
+        AppError::ParseError(e.to_string())
+    }
+}
+
+impl From<bcrypt::BcryptError> for AppError {
+    fn from(e: bcrypt::BcryptError) -> Self {
+        AppError::BcryptError(e.to_string())
     }
 }
 
@@ -39,20 +55,20 @@ pub struct ErrorContent {
 
 /// Error messages returned to user
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-pub struct MyError {
+pub struct ResponseError {
     pub error: ErrorContent,
 }
 
-impl MyError {
+impl ResponseError {
     // building a custom error.
-    pub fn build(code: u16, description: Option<String>) -> MyError {
+    pub fn build(code: u16, description: Option<String>) -> ResponseError {
         let reason: String = match code {
             400 => "Bad Request".to_string(),
             401 => "Unauthorized".to_string(),
             _ => "Error".to_string(),
         };
 
-        MyError {
+        ResponseError {
             error: ErrorContent {
                 code,
                 reason,
@@ -62,7 +78,7 @@ impl MyError {
     }
 }
 
-impl<'r> rocket::response::Responder<'r, 'static> for MyError {
+impl<'r> rocket::response::Responder<'r, 'static> for ResponseError {
     fn respond_to(self, _: &'r rocket::Request<'_>) -> rocket::response::Result<'static> {
         // Convert object to json
         let body = serde_json::to_string(&self).unwrap();

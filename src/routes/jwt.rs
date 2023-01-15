@@ -10,7 +10,7 @@ use rocket::outcome::Outcome;
 use rocket::request::{self, FromRequest, Request};
 use serde::{Deserialize, Serialize};
 
-use crate::errors::response::MyError;
+use crate::errors::response::ResponseError;
 use crate::models::user::User;
 
 static ONE_WEEK: i64 = 60 * 60 * 24 * 7; // in seconds
@@ -46,15 +46,17 @@ impl<'r> FromRequest<'r> for UserToken {
     }
 }
 
-pub fn return_token_error(e: ApiKeyError) -> MyError {
+pub fn return_token_error(e: ApiKeyError) -> ResponseError {
     match e {
         ApiKeyError::Invalid => {
-            MyError::build(400, Some("The token provided is not valid.".to_string()))
+            ResponseError::build(400, Some("The token provided is not valid.".to_string()))
         }
         ApiKeyError::Missing => {
-            MyError::build(400, Some("The token was not provided.".to_string()))
+            ResponseError::build(400, Some("The token was not provided.".to_string()))
         }
-        ApiKeyError::Expired => MyError::build(400, Some("The token has expired.".to_string())),
+        ApiKeyError::Expired => {
+            ResponseError::build(400, Some("The token has expired.".to_string()))
+        }
     }
 }
 
