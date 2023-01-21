@@ -6,7 +6,7 @@ use rocket::serde::json::Json;
 use rocket::State;
 
 use crate::db::pool;
-use crate::errors::response::ResponseError;
+use crate::errors::response::AppError;
 use crate::models::pool::{
     CancelTradeRequest, CreateTradeRequest, FillSpotRequest, Pool, PoolCreationRequest,
     PoolDeletionRequest, PoolUndoSelectionRequest, ProjectedPoolShort, ProtectPlayersRequest,
@@ -22,14 +22,14 @@ pub async fn get_pool_by_name(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
     _name: String,
-) -> Result<Json<Pool>, ResponseError> {
+) -> Result<Json<Pool>, AppError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
 
     match pool::find_pool_by_name(db, &_name).await {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -41,7 +41,7 @@ pub async fn get_pool_by_name_with_range(
     token: Result<UserToken, ApiKeyError>,
     _name: String,
     _from: String,
-) -> Result<Json<Pool>, ResponseError> {
+) -> Result<Json<Pool>, AppError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
@@ -51,7 +51,7 @@ pub async fn get_pool_by_name_with_range(
 
     match pool::find_pool_by_name_with_range(db, &_name, &_from).await {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -61,14 +61,14 @@ pub async fn get_pool_by_name_with_range(
 pub async fn get_pools(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
-) -> Result<Json<Vec<ProjectedPoolShort>>, ResponseError> {
+) -> Result<Json<Vec<ProjectedPoolShort>>, AppError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
 
     match pool::find_pools(db).await {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -77,7 +77,7 @@ pub async fn create_pool(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
     body: Json<PoolCreationRequest>,
-) -> Result<Json<PoolMessageResponse>, ResponseError> {
+) -> Result<Json<PoolMessageResponse>, AppError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
@@ -86,7 +86,7 @@ pub async fn create_pool(
 
     match pool::create_pool(db, owner.to_string(), body.0).await {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -95,7 +95,7 @@ pub async fn delete_pool(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
     body: Json<PoolDeletionRequest>,
-) -> Result<Json<PoolMessageResponse>, ResponseError> {
+) -> Result<Json<PoolMessageResponse>, AppError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
@@ -104,7 +104,7 @@ pub async fn delete_pool(
 
     match pool::delete_pool(db, &user_id.to_string(), &body.name).await {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -113,7 +113,7 @@ pub async fn start_draft(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
     mut body: Json<StartDraftRequest>,
-) -> Result<Json<PoolMessageResponse>, ResponseError> {
+) -> Result<Json<PoolMessageResponse>, AppError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
@@ -122,7 +122,7 @@ pub async fn start_draft(
 
     match pool::start_draft(db, &user_id.to_string(), &mut body.poolInfo).await {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -131,7 +131,7 @@ pub async fn select_player(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
     body: Json<SelectPlayerRequest>,
-) -> Result<Json<PoolMessageResponse>, ResponseError> {
+) -> Result<Json<PoolMessageResponse>, AppError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
@@ -140,7 +140,7 @@ pub async fn select_player(
 
     match pool::select_player(db, &user_id.to_string(), &body.name, &body.player).await {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -149,7 +149,7 @@ pub async fn undo_select_player(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
     body: Json<PoolUndoSelectionRequest>,
-) -> Result<Json<PoolMessageResponse>, ResponseError> {
+) -> Result<Json<PoolMessageResponse>, AppError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
@@ -158,7 +158,7 @@ pub async fn undo_select_player(
 
     match pool::undo_select_player(db, &user_id.to_string(), &body.name).await {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -167,7 +167,7 @@ pub async fn create_trade(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
     body: Json<CreateTradeRequest>,
-) -> Result<Json<PoolMessageResponse>, ResponseError> {
+) -> Result<Json<PoolMessageResponse>, AppError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
@@ -178,7 +178,7 @@ pub async fn create_trade(
 
     match pool::create_trade(db, &user_id.to_string(), &body.name, &mut trade).await {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -187,7 +187,7 @@ pub async fn cancel_trade(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
     body: Json<CancelTradeRequest>,
-) -> Result<Json<PoolMessageResponse>, ResponseError> {
+) -> Result<Json<PoolMessageResponse>, AppError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
@@ -196,7 +196,7 @@ pub async fn cancel_trade(
 
     match pool::cancel_trade(db, &user_id.to_string(), &body.name, body.trade_id).await {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -205,7 +205,7 @@ pub async fn respond_trade(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
     body: Json<RespondTradeRequest>,
-) -> Result<Json<PoolMessageResponse>, ResponseError> {
+) -> Result<Json<PoolMessageResponse>, AppError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
@@ -222,7 +222,7 @@ pub async fn respond_trade(
     .await
     {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -231,7 +231,7 @@ pub async fn fill_spot(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
     body: Json<FillSpotRequest>,
-) -> Result<Json<PoolMessageResponse>, ResponseError> {
+) -> Result<Json<PoolMessageResponse>, AppError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
@@ -240,7 +240,7 @@ pub async fn fill_spot(
 
     match pool::fill_spot(db, &user_id.to_string(), &body.name, &body.player).await {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -249,7 +249,7 @@ pub async fn protect_players(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
     body: Json<ProtectPlayersRequest>,
-) -> Result<Json<PoolMessageResponse>, ResponseError> {
+) -> Result<Json<PoolMessageResponse>, AppError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
@@ -268,7 +268,7 @@ pub async fn protect_players(
     .await
     {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -277,7 +277,7 @@ pub async fn modify_roster(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
     body: Json<ProtectPlayersRequest>,
-) -> Result<Json<PoolMessageResponse>, ResponseError> {
+) -> Result<Json<PoolMessageResponse>, AppError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
@@ -296,7 +296,7 @@ pub async fn modify_roster(
     .await
     {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -305,7 +305,7 @@ pub async fn update_pool_settings(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
     body: Json<UpdatePoolSettingsRequest>,
-) -> Result<Json<PoolMessageResponse>, ResponseError> {
+) -> Result<Json<PoolMessageResponse>, AppError> {
     if let Err(e) = token {
         return Err(return_token_error(e));
     }
@@ -314,6 +314,6 @@ pub async fn update_pool_settings(
 
     match pool::update_pool_settings(db, &user_id.to_string(), &body).await {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }

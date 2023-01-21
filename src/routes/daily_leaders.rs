@@ -5,7 +5,7 @@ use rocket::serde::json::Json;
 use rocket::State;
 
 use crate::db::daily_leaders;
-use crate::errors::response::ResponseError;
+use crate::errors::response::AppError;
 use crate::models::daily_leaders::DailyLeaders;
 
 /// get dailyLeaders document by _date
@@ -14,9 +14,9 @@ use crate::models::daily_leaders::DailyLeaders;
 pub async fn get_daily_leaders_by_date(
     db: &State<Database>,
     _date: String,
-) -> Result<Json<DailyLeaders>, ResponseError> {
+) -> Result<Json<DailyLeaders>, AppError> {
     match daily_leaders::find_daily_leaders(db, _date).await {
         Ok(data) => Ok(Json(data)),
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }

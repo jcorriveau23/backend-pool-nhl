@@ -10,7 +10,7 @@ use rocket::outcome::Outcome;
 use rocket::request::{self, FromRequest, Request};
 use serde::{Deserialize, Serialize};
 
-use crate::errors::response::ResponseError;
+use crate::errors::response::AppError;
 use crate::models::user::User;
 
 static ONE_WEEK: i64 = 60 * 60 * 24 * 7; // in seconds
@@ -46,17 +46,20 @@ impl<'r> FromRequest<'r> for UserToken {
     }
 }
 
-pub fn return_token_error(e: ApiKeyError) -> ResponseError {
+pub fn return_token_error(e: ApiKeyError) -> AppError {
     match e {
-        ApiKeyError::Invalid => {
-            ResponseError::build(400, Some("The token provided is not valid.".to_string()))
-        }
-        ApiKeyError::Missing => {
-            ResponseError::build(400, Some("The token was not provided.".to_string()))
-        }
-        ApiKeyError::Expired => {
-            ResponseError::build(400, Some("The token has expired.".to_string()))
-        }
+        ApiKeyError::Invalid => AppError::AuthError {
+            msg: "The token provided is not valid.".to_string(),
+            code: 400,
+        },
+        ApiKeyError::Missing => AppError::AuthError {
+            msg: "The token was not provided.".to_string(),
+            code: 400,
+        },
+        ApiKeyError::Expired => AppError::AuthError {
+            msg: "The token has expired.".to_string(),
+            code: 400,
+        },
     }
 }
 
@@ -93,7 +96,7 @@ pub enum ApiKeyError {
 
 fn verify_token(token: UserToken) -> request::Outcome<UserToken, ApiKeyError> {
     if token.exp < (Utc::now().timestamp_nanos() / 1_000_000_000) {
-        // the token is expired, the user will need to re-login.
+        // the token is expired, the user will need to re-generate a jwt token
 
         return Outcome::Failure((Status::BadRequest, ApiKeyError::Expired));
     }

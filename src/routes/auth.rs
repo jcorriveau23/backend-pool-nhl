@@ -3,7 +3,7 @@ use mongodb::Database;
 use rocket::State;
 
 use crate::db::user;
-use crate::errors::response::ResponseError;
+use crate::errors::response::AppError;
 use crate::models::user::{
     LoginRequest, RegisterRequest, SetPasswordRequest, SetUsernameRequest,
     WalletLoginRegisterRequest,
@@ -18,7 +18,7 @@ use rocket::serde::json::{json, Json, Value};
 pub async fn register_user(
     db: &State<Database>,
     body: Json<RegisterRequest>,
-) -> Result<Value, ResponseError> {
+) -> Result<Value, AppError> {
     match user::create_user_from_register(db, &body).await {
         Ok(user) => {
             // create the token before sending the response (might need to change the string returned value)
@@ -26,16 +26,13 @@ pub async fn register_user(
             let user_json = json! ({"user": user, "token": token});
             Ok(user_json)
         }
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
 /// Login
 #[post("/login", format = "json", data = "<body>")]
-pub async fn login_user(
-    db: &State<Database>,
-    body: Json<LoginRequest>,
-) -> Result<Value, ResponseError> {
+pub async fn login_user(db: &State<Database>, body: Json<LoginRequest>) -> Result<Value, AppError> {
     match user::login(db, &body).await {
         Ok(user) => {
             // create the token before sending the response (might need to change the string returned value)
@@ -43,7 +40,7 @@ pub async fn login_user(
             let user_json = json! ({"user": user, "token": token});
             Ok(user_json)
         }
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -52,7 +49,7 @@ pub async fn login_user(
 pub async fn wallet_login_user(
     db: &State<Database>,
     body: Json<WalletLoginRegisterRequest>,
-) -> Result<Value, ResponseError> {
+) -> Result<Value, AppError> {
     match user::wallet_login(db, &body).await {
         Ok(user) => {
             // create the token before sending the response (might need to change the string returned value)
@@ -60,7 +57,7 @@ pub async fn wallet_login_user(
             let user_json = json! ({"user": user, "token": token});
             Ok(user_json)
         }
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -70,7 +67,7 @@ pub async fn set_username(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
     body: Json<SetUsernameRequest>,
-) -> Result<Value, ResponseError> {
+) -> Result<Value, AppError> {
     if let Err(e) = token {
         return Err(jwt::return_token_error(e));
     }
@@ -81,7 +78,7 @@ pub async fn set_username(
             let user_json = json!({ "user": user });
             Ok(user_json)
         }
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
@@ -91,7 +88,7 @@ pub async fn set_password(
     db: &State<Database>,
     token: Result<UserToken, ApiKeyError>,
     body: Json<SetPasswordRequest>,
-) -> Result<Value, ResponseError> {
+) -> Result<Value, AppError> {
     if let Err(e) = token {
         return Err(jwt::return_token_error(e));
     }
@@ -102,13 +99,13 @@ pub async fn set_password(
             let user_json = json!({ "user": user });
             Ok(user_json)
         }
-        Err(e) => Err(ResponseError::build(400, Some(e.to_string()))),
+        Err(e) => Err(e),
     }
 }
 
 /// validate the token received in the header.
 #[post("/validate-token")]
-pub async fn validate_token(token: Result<UserToken, ApiKeyError>) -> Result<Value, ResponseError> {
+pub async fn validate_token(token: Result<UserToken, ApiKeyError>) -> Result<Value, AppError> {
     if let Err(e) = token {
         return Err(jwt::return_token_error(e));
     }
