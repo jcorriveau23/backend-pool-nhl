@@ -19,9 +19,8 @@ pub async fn find_optional_user_with_name(db: &Database, _name: &String) -> Resu
 pub async fn find_user_with_name(db: &Database, _name: &String) -> Result<User> {
     let user = find_optional_user_with_name(db, _name).await?;
 
-    user.ok_or(AppError::CustomError {
+    user.ok_or_else(move || AppError::CustomError {
         msg: format!("no user found with name {}", _name),
-        code: 500,
     })
 }
 
@@ -39,9 +38,8 @@ pub async fn find_optional_user_with_address(
 pub async fn find_user_with_address(db: &Database, _addr: &String) -> Result<User> {
     let user = find_optional_user_with_address(db, _addr).await?;
 
-    user.ok_or(AppError::CustomError {
+    user.ok_or_else(move || AppError::CustomError {
         msg: format!("no user found with address {}", _addr),
-        code: 500,
     })
 }
 
@@ -88,7 +86,6 @@ pub async fn create_user_from_register(
     if let Some(_) = user {
         return Err(AppError::CustomError {
             msg: "this username is not available.".to_string(),
-            code: 500,
         });
     }
 
@@ -129,7 +126,6 @@ pub async fn login(db: &Database, login_req: &LoginRequest) -> Result<User> {
         return Err(
             AppError::CustomError {
                 msg: "This account does not store any password.".to_string(),
-                code: 500,
             }, // happens when someone loging with a wallet (no password stored)
         );
     }
@@ -140,7 +136,6 @@ pub async fn login(db: &Database, login_req: &LoginRequest) -> Result<User> {
     if !is_valid_password {
         return Err(AppError::CustomError {
             msg: "The password provided is not valid.".to_string(),
-            code: 500,
         });
     }
 
@@ -154,14 +149,13 @@ pub async fn wallet_login(
     // this function needd to be call after calling find_user() and validate a user does not exist
     let collection = db.collection::<Document>("users");
 
-    if !verify_message(&wallet_login_req.addr, &wallet_login_req.sig).await {
+    if !verify_message(&wallet_login_req.addr, &wallet_login_req.sig).await? {
         return Err(AppError::CustomError {
             msg: "The signature provided is not valid.".to_string(),
-            code: 500,
         });
     }
 
-    let mut user = find_optional_user_with_address(db, &wallet_login_req.addr).await?;
+    let user = find_optional_user_with_address(db, &wallet_login_req.addr).await?;
 
     if user.is_none() {
         // create the account if it does not exist
@@ -209,9 +203,8 @@ pub async fn update_user_name(db: &Database, _user_id: &str, _new_name: &str) ->
         .find_one_and_update(filter, doc, find_one_and_update_options)
         .await?;
 
-    user.ok_or(AppError::CustomError {
+    user.ok_or_else(move || AppError::CustomError {
         msg: format!("no user found with id {}", _user_id),
-        code: 500,
     })
 }
 
@@ -238,19 +231,19 @@ pub async fn update_password(db: &Database, _user_id: &str, _new_password: &str)
 
     user.ok_or(AppError::CustomError {
         msg: format!("no user found with id {}", _user_id),
-        code: 500,
     })
 }
 
-async fn verify_message(addr: &str, sig: &str) -> bool {
-    let message = "Unlock wallet to access nhl-pool-ethereum.".to_string();
-    let signature = hex::decode(sig.strip_prefix("0x").unwrap()).unwrap();
-    let signer_addr = web3::signing::recover(&eth_message(message), &signature[..64], 0).unwrap();
+async fn verify_message(addr: &str, sig: &str) -> Result<bool> {
+    let message = "Unlock wallet to access nhl-pool-ethereum.";
 
-    format!("{:02X?}", signer_addr) == *addr.to_lowercase()
+    let signature = hex::decode(sig.strip_prefix("0x").unwrap())?;
+    let signer_addr = web3::signing::recover(&eth_message(message), &signature[..64], 0)?;
+
+    Ok(format!("{:02X?}", signer_addr) == *addr.to_lowercase())
 }
 
-pub fn eth_message(message: String) -> [u8; 32] {
+pub fn eth_message(message: &str) -> [u8; 32] {
     web3::signing::keccak256(
         format!(
             "{}{}{}",

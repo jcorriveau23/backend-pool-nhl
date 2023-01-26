@@ -10,8 +10,7 @@ pub async fn find_daily_leaders(db: &Database, _date: String) -> Result<DailyLea
 
     let daily_leaders = collection.find_one(doc! {"date": &_date}, None).await?;
 
-    daily_leaders.ok_or(AppError::CustomError {
+    daily_leaders.ok_or_else(move || AppError::CustomError {
         msg: format!("no daily leaders found for the date: {}", _date),
-        code: 500,
     })
 }

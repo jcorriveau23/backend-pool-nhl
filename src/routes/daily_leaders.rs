@@ -15,8 +15,7 @@ pub async fn get_daily_leaders_by_date(
     db: &State<Database>,
     _date: String,
 ) -> Result<Json<DailyLeaders>, AppError> {
-    match daily_leaders::find_daily_leaders(db, _date).await {
-        Ok(data) => Ok(Json(data)),
-        Err(e) => Err(e),
-    }
+    daily_leaders::find_daily_leaders(db, _date)
+        .await
+        .map(|data| Json(data))
 }
