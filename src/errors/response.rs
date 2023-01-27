@@ -1,86 +1,90 @@
-use rocket_okapi::gen::OpenApiGenerator;
-use rocket_okapi::okapi;
-use rocket_okapi::okapi::openapi3::{MediaType, Responses};
-use rocket_okapi::response::OpenApiResponderInner;
-use rocket_okapi::OpenApiError;
+use hex::FromHexError;
+use mongodb;
+use std::{f32::consts::E, fmt};
+use web3;
 
-/// error type
-#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-pub struct ErrorContent {
-    // HTTP Status Code returned
-    code: u16,
-    // Reason for an error
-    reason: String,
-    // Description for an error if any
-    description: Option<String>,
+#[derive(Debug)]
+pub enum AppError {
+    CustomError { msg: String },
+    AuthError { msg: String },
+    MongoError { e: mongodb::error::Error },
+    ParseError { e: chrono::format::ParseError },
+    BcryptError { e: bcrypt::BcryptError },
+    HexError { e: FromHexError },
+    RecoveryError { e: web3::signing::RecoveryError },
 }
 
-/// Error messages returned to user
-#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-pub struct MyError {
-    pub error: ErrorContent,
-}
+impl std::error::Error for AppError {}
 
-impl MyError {
-    // building a custom error.
-    pub fn build(code: u16, description: Option<String>) -> MyError {
-        let reason: String = match code {
-            400 => "Bad Request".to_string(),
-            401 => "Unauthorized".to_string(),
-            _ => "Error".to_string(),
-        };
-
-        MyError {
-            error: ErrorContent {
-                code,
-                reason,
-                description,
-            },
+impl fmt::Display for AppError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            AppError::CustomError { msg } => write!(f, "Custom Error: {}", msg),
+            AppError::AuthError { msg } => write!(f, "Authentification Error: {}", msg),
+            AppError::MongoError { e } => write!(f, "Mongo Error: {}", e),
+            AppError::ParseError { e } => write!(f, "Parse Error: {}", e),
+            AppError::BcryptError { e } => write!(f, "Bcrypt Error: {}", e),
+            AppError::HexError { e } => write!(f, "Hex Error: {}", e),
+            AppError::RecoveryError { e } => write!(f, "Recovery Error: {}", e),
         }
     }
 }
 
-/// Create my custom response
-pub fn bad_request_response(gen: &mut OpenApiGenerator) -> okapi::openapi3::Response {
-    let schema = gen.json_schema::<MyError>();
-    okapi::openapi3::Response {
-        description: "\
-        # 400 Bad Request\n\
-        The request given is wrongly formatted or data was missing. \
-        "
-        .to_owned(),
-        content: okapi::map! {
-            "application/json".to_owned() => MediaType {
-                schema: Some(schema),
-                ..Default::default()
-            }
-        },
-        ..Default::default()
+impl From<mongodb::error::Error> for AppError {
+    fn from(e: mongodb::error::Error) -> Self {
+        AppError::MongoError { e }
     }
 }
 
-impl<'r> rocket::response::Responder<'r, 'static> for MyError {
+impl From<chrono::format::ParseError> for AppError {
+    fn from(e: chrono::format::ParseError) -> Self {
+        AppError::ParseError { e }
+    }
+}
+
+impl From<bcrypt::BcryptError> for AppError {
+    fn from(e: bcrypt::BcryptError) -> Self {
+        AppError::BcryptError { e }
+    }
+}
+
+impl From<FromHexError> for AppError {
+    fn from(e: FromHexError) -> Self {
+        AppError::HexError { e }
+    }
+}
+
+impl From<web3::signing::RecoveryError> for AppError {
+    fn from(e: web3::signing::RecoveryError) -> Self {
+        AppError::RecoveryError { e }
+    }
+}
+
+pub type Result<T> = std::result::Result<T, AppError>;
+
+impl AppError {
+    pub fn code(&self) -> u16 {
+        match &self {
+            Self::CustomError { .. } => 500,
+            Self::AuthError { .. } => 401, // Unauthorized
+            Self::MongoError { .. } => 501,
+            Self::ParseError { .. } => 502,
+            Self::BcryptError { .. } => 504,
+            Self::HexError { .. } => 505,
+            Self::RecoveryError { .. } => 506,
+        }
+    }
+}
+
+impl<'r> rocket::response::Responder<'r, 'static> for AppError {
     fn respond_to(self, _: &'r rocket::Request<'_>) -> rocket::response::Result<'static> {
         // Convert object to json
-        let body = serde_json::to_string(&self).unwrap();
+        let body = self.to_string();
+
         rocket::Response::build()
             .sized_body(body.len(), std::io::Cursor::new(body))
             .header(rocket::http::ContentType::JSON)
-            .status(rocket::http::Status::new(self.error.code))
+            .status(rocket::http::Status::new(self.code()))
             .ok()
-    }
-}
-
-impl OpenApiResponderInner for MyError {
-    fn responses(gen: &mut OpenApiGenerator) -> Result<Responses, OpenApiError> {
-        use rocket_okapi::okapi::openapi3::RefOr;
-        Ok(Responses {
-            responses: okapi::map! {
-                "400".to_owned() => RefOr::Object(bad_request_response(gen)),
-                // Note: 401 is already declared for ApiKey. so this is not essential.
-                // "401".to_owned() => RefOr::Object(unauthorized_response(gen)),
-            },
-            ..Default::default()
-        })
     }
 }

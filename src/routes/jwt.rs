@@ -10,7 +10,7 @@ use rocket::outcome::Outcome;
 use rocket::request::{self, FromRequest, Request};
 use serde::{Deserialize, Serialize};
 
-use crate::errors::response::MyError;
+use crate::errors::response::AppError;
 use crate::models::user::User;
 
 static ONE_WEEK: i64 = 60 * 60 * 24 * 7; // in seconds
@@ -27,7 +27,7 @@ pub struct UserToken {
 
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for UserToken {
-    type Error = ApiKeyError;
+    type Error = AppError;
     async fn from_request(req: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
         //let conn = req.guard::<Database>().unwrap();
         if let Some(authen_header) = req.headers().get_one("Authorization") {
@@ -37,24 +37,22 @@ impl<'r> FromRequest<'r> for UserToken {
                 if let Ok(token_data) = decode_token(token.to_string()) {
                     return verify_token(token_data.claims);
                 } else {
-                    return Outcome::Failure((Status::BadRequest, ApiKeyError::Invalid));
+                    return Outcome::Failure((
+                        Status::BadRequest,
+                        AppError::AuthError {
+                            msg: "The token is invalid.".to_string(),
+                        },
+                    ));
                 }
             }
         }
 
-        Outcome::Failure((Status::BadRequest, ApiKeyError::Missing))
-    }
-}
-
-pub fn return_token_error(e: ApiKeyError) -> MyError {
-    match e {
-        ApiKeyError::Invalid => {
-            MyError::build(400, Some("The token provided is not valid.".to_string()))
-        }
-        ApiKeyError::Missing => {
-            MyError::build(400, Some("The token was not provided.".to_string()))
-        }
-        ApiKeyError::Expired => MyError::build(400, Some("The token has expired.".to_string())),
+        Outcome::Failure((
+            Status::BadRequest,
+            AppError::AuthError {
+                msg: "The token is missing.".to_string(),
+            },
+        ))
     }
 }
 
@@ -82,18 +80,16 @@ fn decode_token(token: String) -> Result<TokenData<UserToken>> {
     )
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub enum ApiKeyError {
-    Missing,
-    Invalid,
-    Expired,
-}
-
-fn verify_token(token: UserToken) -> request::Outcome<UserToken, ApiKeyError> {
+fn verify_token(token: UserToken) -> request::Outcome<UserToken, AppError> {
     if token.exp < (Utc::now().timestamp_nanos() / 1_000_000_000) {
-        // the token is expired, the user will need to re-login.
+        // the token is expired, the user will need to re-generate a jwt token
 
-        return Outcome::Failure((Status::BadRequest, ApiKeyError::Expired));
+        return Outcome::Failure((
+            Status::BadRequest,
+            AppError::AuthError {
+                msg: "The token is expired!".to_string(),
+            },
+        ));
     }
 
     Outcome::Success(token)

@@ -1,3 +1,4 @@
+use crate::errors::response::Result;
 use mongodb::options::ClientOptions;
 use mongodb::{Client, Database};
 use rocket::fairing::AdHoc;
@@ -18,13 +19,11 @@ pub fn init() -> AdHoc {
     })
 }
 
-async fn connect() -> mongodb::error::Result<Database> {
-    let client_options = ClientOptions::parse("mongodb://localhost:27017")
-        .await
-        .unwrap();
+async fn connect() -> Result<Database> {
+    let client_options = ClientOptions::parse("mongodb://localhost:27017").await?;
 
     // mongoDB client
-    let client = Client::with_options(client_options).unwrap();
+    let client = Client::with_options(client_options)?;
 
     // mongoDB database
     let db = client.database("hockeypool");

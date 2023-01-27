@@ -1,3 +1,5 @@
+use crate::errors::response::AppError;
+use crate::errors::response::Result;
 use chrono::{Date, Duration, Local, NaiveDate, TimeZone, Timelike, Utc};
 use futures::stream::TryStreamExt;
 use mongodb::bson::{doc, to_bson};
@@ -31,28 +33,39 @@ const FIRST_SATHURDAY_OF_MONTHS: [&str; 5] = [
 ];
 
 // Return the complete Pool information
-pub async fn find_pool_by_name(
-    db: &Database,
-    _name: &String,
-) -> mongodb::error::Result<Option<Pool>> {
+pub async fn find_pool_by_name(db: &Database, _name: &String) -> Result<Pool> {
     let collection = db.collection::<Pool>("pools");
 
-    collection.find_one(doc! {"name": _name}, None).await
+    let pool = collection.find_one(doc! {"name": _name}, None).await?;
+
+    pool.ok_or(AppError::CustomError {
+        msg: format!("no pool found with name {}", _name),
+    })
 }
 
-// Return the pool information without the score_by_day member
-pub async fn find_short_pool_by_name(
+pub async fn find_optional_short_pool_by_name(
     collection: &Collection<Pool>,
     _name: &str,
-) -> mongodb::error::Result<Option<Pool>> {
+) -> Result<Option<Pool>> {
     let find_option = FindOneOptions::builder()
         .projection(doc! {"context.score_by_day": 0})
         .build();
 
-    collection
+    let short_pool = collection
         .clone_with_type::<Pool>()
         .find_one(doc! {"name": &_name}, find_option)
-        .await
+        .await?;
+
+    Ok(short_pool)
+}
+
+// Return the pool information without the score_by_day member
+pub async fn find_short_pool_by_name(collection: &Collection<Pool>, _name: &str) -> Result<Pool> {
+    let short_pool = find_optional_short_pool_by_name(collection, _name).await?;
+
+    short_pool.ok_or(AppError::CustomError {
+        msg: format!("no pool found with name {}", _name),
+    })
 }
 
 // Return the pool information with a requested range of day for the score_by_day member
@@ -60,22 +73,33 @@ pub async fn find_pool_by_name_with_range(
     db: &Database,
     _name: &String,
     _from: &String,
-) -> mongodb::error::Result<Option<Pool>> {
-    let from_date =
-        Date::<Utc>::from_utc(NaiveDate::parse_from_str(_from, "%Y-%m-%d").unwrap(), Utc);
+) -> Result<Pool> {
+    let from_date = Date::<Utc>::from_utc(NaiveDate::parse_from_str(_from, "%Y-%m-%d")?, Utc);
 
     let mut start_date = Date::<Utc>::from_utc(
-        NaiveDate::parse_from_str(START_SEASON_DATE, "%Y-%m-%d").unwrap(),
+        NaiveDate::parse_from_str(START_SEASON_DATE, "%Y-%m-%d")?,
         Utc,
     );
 
-    let end_date = Date::<Utc>::from_utc(
-        NaiveDate::parse_from_str(END_SEASON_DATE, "%Y-%m-%d").unwrap(),
-        Utc,
-    );
+    let end_date =
+        Date::<Utc>::from_utc(NaiveDate::parse_from_str(END_SEASON_DATE, "%Y-%m-%d")?, Utc);
 
-    if from_date < start_date || from_date > end_date {
-        return Ok(None); // error.
+    if from_date < start_date {
+        return Err(AppError::CustomError {
+            msg: format!(
+                "from date: {} cannot be before start date: {}",
+                from_date, start_date
+            ),
+        });
+    }
+
+    if from_date > end_date {
+        return Err(AppError::CustomError {
+            msg: format!(
+                "from date: {} cannot be after end date: {}",
+                from_date, end_date
+            ),
+        });
     }
 
     let mut projection = doc! {};
@@ -86,7 +110,6 @@ pub async fn find_pool_by_name_with_range(
             .strip_suffix("UTC")
             .unwrap()
             .to_string();
-        // println!("{}", str_date);
 
         if str_date == *_from {
             break;
@@ -95,32 +118,30 @@ pub async fn find_pool_by_name_with_range(
         start_date = start_date + Duration::days(1);
     }
 
-    // println!("{}", projection);
-
     let find_option = FindOneOptions::builder().projection(projection).build();
     let collection = db.collection::<Pool>("pools");
-    collection
+    let pool = collection
         .clone_with_type::<Pool>()
         .find_one(doc! {"name": &_name}, find_option)
-        .await
+        .await?;
+
+    pool.ok_or(AppError::CustomError {
+        msg: format!("no pool found with name {}", _name),
+    })
 }
 
-pub async fn find_pools(db: &Database) -> mongodb::error::Result<Vec<ProjectedPoolShort>> {
+pub async fn find_pools(db: &Database) -> Result<Vec<ProjectedPoolShort>> {
     let collection = db.collection::<Pool>("pools");
     let find_option = FindOptions::builder()
         .projection(doc! {"name": 1, "owner": 1, "status": 1})
         .build();
 
-    let mut cursor = collection
+    let cursor = collection
         .clone_with_type::<ProjectedPoolShort>()
         .find(None, find_option)
         .await?;
 
-    let mut pools = vec![];
-
-    while let Some(pool) = cursor.try_next().await? {
-        pools.push(pool);
-    }
+    let pools = cursor.try_collect().await?;
 
     Ok(pools)
 }
@@ -129,14 +150,16 @@ pub async fn create_pool(
     db: &Database,
     _owner: String,
     _pool_info: PoolCreationRequest,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
-    if find_short_pool_by_name(&collection, &_pool_info.name)
+    if find_optional_short_pool_by_name(&collection, &_pool_info.name)
         .await?
         .is_some()
     {
-        return Ok(create_error_response("pool name already exist.".to_string()).await);
+        return Err(AppError::CustomError {
+            msg: "pool name already exist.".to_string(),
+        });
     } else {
         // Create the default Pool creation class.
         let pool = Pool {
@@ -180,7 +203,7 @@ pub async fn create_pool(
 
         collection.insert_one(pool, None).await?;
 
-        Ok(create_success_response(&None).await)
+        Ok(create_success_pool_response(&None).await)
     }
 }
 
@@ -188,31 +211,26 @@ pub async fn delete_pool(
     db: &Database,
     _user_id: &str,
     _pool_name: &str,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
-    if pool.is_none() {
-        return Ok(create_error_response("Pool name does not exist.".to_string()).await);
-    }
-
-    let pool_unwrap = pool.unwrap();
-
-    if !has_owner_rights(_user_id, &pool_unwrap).await {
-        return Ok(create_error_response(
-            "Only the owner of the pool can delete the pool.".to_string(),
-        )
-        .await);
+    if !has_owner_rights(_user_id, &pool).await {
+        return Err(AppError::CustomError {
+            msg: "Only the owner of the pool can delete the pool.".to_string(),
+        });
     } else {
         let delete_result = collection
             .delete_one(doc! {"name": _pool_name}, None)
             .await?;
 
         if delete_result.deleted_count == 0 {
-            return Ok(create_error_response("The pool could not be deleted.".to_string()).await);
+            return Err(AppError::CustomError {
+                msg: "The pool could not be deleted.".to_string(),
+            });
         } else {
-            Ok(create_success_response(&None).await)
+            Ok(create_success_pool_response(&None).await)
         }
     }
 }
@@ -221,27 +239,24 @@ pub async fn start_draft(
     db: &Database,
     _user_id: &str,
     _pool_info: &mut Pool,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     if let Some(participants) = &_pool_info.participants {
         if _pool_info.number_poolers != participants.len() as u8 {
-            return Ok(create_error_response(
-                "The number of participants is not good.".to_string(),
-            )
-            .await);
+            return Err(AppError::CustomError {
+                msg: "The number of participants is not good.".to_string(),
+            });
         }
 
         if !matches!(_pool_info.status, PoolState::Created) {
-            return Ok(create_error_response(
-                "The pool is not in a valid state to start.".to_string(),
-            )
-            .await);
+            return Err(AppError::CustomError {
+                msg: "The pool is not in a valid state to start.".to_string(),
+            });
         }
 
         if !has_owner_rights(_user_id, _pool_info).await {
-            return Ok(create_error_response(
-                "Only the owner of the pool can start the draft.".to_string(),
-            )
-            .await);
+            return Err(AppError::CustomError {
+                msg: "Only the owner of the pool can start the draft.".to_string(),
+            });
         }
 
         // TODO: Validate that the list of users provided all exist.
@@ -299,19 +314,19 @@ pub async fn start_draft(
                 updated_fields,
                 find_one_and_update_options,
             )
-            .await
-            .unwrap();
+            .await?;
 
         if new_pool.is_none() {
-            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+            return Err(AppError::CustomError {
+                msg: "The pool could not be updated.".to_string(),
+            });
         }
 
-        Ok(create_success_response(&new_pool).await)
+        Ok(create_success_pool_response(&new_pool).await)
     } else {
-        return Ok(create_error_response(
-            "There is no participants added in the pool.".to_string(),
-        )
-        .await);
+        return Err(AppError::CustomError {
+            msg: "There is no participants added in the pool.".to_string(),
+        });
     }
 }
 
@@ -323,73 +338,67 @@ pub async fn select_player(
     _user_id: &str,
     _pool_name: &str,
     _player: &Player,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
-    if pool.is_none() {
-        return Ok(create_error_response("Pool name does not exist.".to_string()).await);
+    if pool.context.is_none() {
+        return Err(AppError::CustomError {
+            msg: "There is no context to that pool yet.".to_string(),
+        });
     }
 
-    let pool_unwrap = pool.unwrap();
-
-    if pool_unwrap.context.is_none() {
-        return Ok(
-            create_error_response("There is no context to that pool yet.".to_string()).await,
-        );
-    }
-
-    let mut pool_context = pool_unwrap.context.unwrap();
+    let mut pool_context = pool.context.unwrap();
 
     if !pool_context.pooler_roster.contains_key(_user_id) {
-        return Ok(create_error_response("The user is not in the pool.".to_string()).await);
+        return Err(AppError::CustomError {
+            msg: "The user is not in the pool.".to_string(),
+        });
     }
 
-    if pool_unwrap.participants.is_none() {
-        return Ok(
-            create_error_response("There is no participants in that pool yet.".to_string()).await,
-        );
+    if pool.participants.is_none() {
+        return Err(AppError::CustomError {
+            msg: "There is no participants in that pool yet.".to_string(),
+        });
     }
 
     // First, validate that the player selected is not picked by any of the other poolers.
-    let participants = pool_unwrap.participants.clone().unwrap();
+    let participants = pool.participants.clone().unwrap();
 
     for participant in participants.iter() {
         if validate_player_possession(_player, &pool_context.pooler_roster[participant]).await {
-            return Ok(create_error_response("This player is already picked.".to_string()).await);
+            return Err(AppError::CustomError {
+                msg: "This player is already picked.".to_string(),
+            });
         }
     }
 
     let mut users_players_count =
         get_users_players_count(&pool_context.pooler_roster, &participants).await;
 
-    let tot_players_in_roster = pool_unwrap.number_forwards
-        + pool_unwrap.number_defenders
-        + pool_unwrap.number_goalies
-        + pool_unwrap.number_reservists;
+    let tot_players_in_roster =
+        pool.number_forwards + pool.number_defenders + pool.number_goalies + pool.number_reservists;
 
     // validate it is the user turn.
-    if pool_unwrap.final_rank.is_some() {
+    if pool.final_rank.is_some() {
         // This comes from a Dynastie draft.
 
-        let final_rank = pool_unwrap.final_rank.clone().unwrap(); // the final rank is used to see who picks
+        let final_rank = pool.final_rank.clone().unwrap(); // the final rank is used to see who picks
         let tradable_picks = pool_context.tradable_picks.clone().unwrap();
 
         loop {
             let players_drafted = pool_context.players_name_drafted.len();
 
-            let index = pool_unwrap.number_poolers as usize
-                - 1
-                - (players_drafted % pool_unwrap.number_poolers as usize);
+            let index =
+                pool.number_poolers as usize - 1 - (players_drafted % pool.number_poolers as usize);
             let next_drafter = &final_rank[index];
 
-            if players_drafted < (pool_unwrap.tradable_picks * pool_unwrap.number_poolers) as usize
-            {
+            if players_drafted < (pool.tradable_picks * pool.number_poolers) as usize {
                 // use the tradable_picks to see who will draft next.
 
-                let real_next_drafter = &tradable_picks
-                    [players_drafted / pool_unwrap.number_poolers as usize][next_drafter];
+                let real_next_drafter =
+                    &tradable_picks[players_drafted / pool.number_poolers as usize][next_drafter];
 
                 if users_players_count[real_next_drafter] >= tot_players_in_roster {
                     pool_context.players_name_drafted.push(0); // Id 0 means the players did not draft because is roster is already full
@@ -397,11 +406,9 @@ pub async fn select_player(
                 }
 
                 if real_next_drafter != _user_id {
-                    return Ok(create_error_response(format!(
-                        "It is {}'s turn.",
-                        real_next_drafter
-                    ))
-                    .await);
+                    return Err(AppError::CustomError {
+                        msg: format!("It is {}'s turn.", real_next_drafter),
+                    });
                 }
                 break;
             } else {
@@ -413,9 +420,9 @@ pub async fn select_player(
                 }
 
                 if next_drafter != _user_id {
-                    return Ok(
-                        create_error_response(format!("It is {}'s turn.", next_drafter)).await,
-                    );
+                    return Err(AppError::CustomError {
+                        msg: format!("It is {}'s turn.", next_drafter),
+                    });
                 }
                 break;
             }
@@ -423,15 +430,17 @@ pub async fn select_player(
     } else {
         // this comes from a new draft.
 
-        let participants = pool_unwrap.participants.unwrap(); // the participants is used to see who picks
+        let participants = pool.participants.unwrap(); // the participants is used to see who picks
 
         let players_drafted = pool_context.players_name_drafted.len();
 
-        let index = players_drafted % pool_unwrap.number_poolers as usize;
+        let index = players_drafted % pool.number_poolers as usize;
         let next_drafter = &participants[index];
 
         if next_drafter != _user_id {
-            return Ok(create_error_response(format!("It is {}'s turn.", next_drafter)).await);
+            return Err(AppError::CustomError {
+                msg: format!("It is {}'s turn.", next_drafter),
+            });
         }
     }
 
@@ -443,19 +452,19 @@ pub async fn select_player(
 
         match _player.position {
             Position::F => {
-                if (pooler_roster.chosen_forwards.len() as u8) < pool_unwrap.number_forwards {
+                if (pooler_roster.chosen_forwards.len() as u8) < pool.number_forwards {
                     pooler_roster.chosen_forwards.push(_player.clone());
                     is_added = true;
                 }
             }
             Position::D => {
-                if (pooler_roster.chosen_defenders.len() as u8) < pool_unwrap.number_defenders {
+                if (pooler_roster.chosen_defenders.len() as u8) < pool.number_defenders {
                     pooler_roster.chosen_defenders.push(_player.clone());
                     is_added = true;
                 }
             }
             Position::G => {
-                if (pooler_roster.chosen_goalies.len() as u8) < pool_unwrap.number_goalies {
+                if (pooler_roster.chosen_goalies.len() as u8) < pool.number_goalies {
                     pooler_roster.chosen_goalies.push(_player.clone());
                     is_added = true;
                 }
@@ -463,12 +472,12 @@ pub async fn select_player(
         }
 
         if !is_added {
-            if (pooler_roster.chosen_reservists.len() as u8) < pool_unwrap.number_reservists {
+            if (pooler_roster.chosen_reservists.len() as u8) < pool.number_reservists {
                 pooler_roster.chosen_reservists.push(_player.clone());
             } else {
-                return Ok(
-                    create_error_response("Not enough space for this player.".to_string()).await,
-                );
+                return Err(AppError::CustomError {
+                    msg: "Not enough space for this player.".to_string(),
+                });
             }
         }
 
@@ -500,7 +509,7 @@ pub async fn select_player(
 
         let mut vect = vec![];
 
-        for _pick_round in 0..pool_unwrap.tradable_picks {
+        for _pick_round in 0..pool.tradable_picks {
             let mut round = HashMap::new();
 
             for participant in participants.iter() {
@@ -529,18 +538,19 @@ pub async fn select_player(
 
     let new_pool = collection
         .find_one_and_update(
-            doc! {"name": pool_unwrap.name},
+            doc! {"name": pool.name},
             updated_fields,
             find_one_and_update_options,
         )
-        .await
-        .unwrap();
+        .await?;
 
     if new_pool.is_none() {
-        return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+        return Err(AppError::CustomError {
+            msg: "The pool could not be updated.".to_string(),
+        });
     }
 
-    Ok(create_success_response(&new_pool).await)
+    Ok(create_success_pool_response(&new_pool).await)
 }
 
 pub async fn create_trade(
@@ -548,64 +558,55 @@ pub async fn create_trade(
     _user_id: &String,
     _pool_name: &String,
     _trade: &mut Trade,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let trade_deadline_date = Date::<Utc>::from_utc(
-        NaiveDate::parse_from_str(TRADE_DEADLINE_DATE, "%Y-%m-%d").unwrap(),
+        NaiveDate::parse_from_str(TRADE_DEADLINE_DATE, "%Y-%m-%d")?,
         Utc,
     );
 
     let today = Utc::today();
 
     if today > trade_deadline_date {
-        return Ok(create_error_response(
-            "Trade cannot be created after the trade deadline.".to_string(),
-        )
-        .await);
+        return Err(AppError::CustomError {
+            msg: "Trade cannot be created after the trade deadline.".to_string(),
+        });
     }
 
     let collection = db.collection::<Pool>("pools");
 
-    let pool = find_short_pool_by_name(&collection, _pool_name).await?;
+    let mut pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
-    if pool.is_none() {
-        return Ok(create_error_response("Pool name does not exist.".to_string()).await);
+    if pool.context.is_none() {
+        return Err(AppError::CustomError {
+            msg: "There is no context to that pool yet.".to_string(),
+        });
     }
 
-    let mut pool_unwrap = pool.unwrap();
-
-    if pool_unwrap.context.is_none() {
-        return Ok(
-            create_error_response("There is no context to that pool yet.".to_string()).await,
-        );
-    }
-
-    let pool_context = pool_unwrap.context.unwrap();
+    let pool_context = pool.context.unwrap();
 
     // does the proposedBy and askTo field are valid
 
     if !pool_context.pooler_roster.contains_key(&_trade.proposed_by)
         || !pool_context.pooler_roster.contains_key(&_trade.ask_to)
     {
-        return Ok(create_error_response(
-            "The users in the trade are not in the pool.".to_string(),
-        )
-        .await);
+        return Err(AppError::CustomError {
+            msg: "The users in the trade are not in the pool.".to_string(),
+        });
     }
 
-    if pool_unwrap.trades.is_none() {
-        pool_unwrap.trades = Some(Vec::new());
+    if pool.trades.is_none() {
+        pool.trades = Some(Vec::new());
     }
 
-    let mut trades = pool_unwrap.trades.unwrap().clone();
+    let mut trades = pool.trades.unwrap().clone();
 
     // Make sure that user can only have 1 active trade at a time. return an error if already one trade active in this pool. (Active trade = NEW, ACCEPTED, )
 
     for trade in trades.iter() {
         if (matches!(trade.status, TradeStatus::NEW)) && (trade.proposed_by == *_user_id) {
-            return Ok(create_error_response(
-                "User can only have one active trade at a time.".to_string(),
-            )
-            .await);
+            return Err(AppError::CustomError {
+                msg: "User can only have one active trade at a time.".to_string(),
+            });
         }
     }
 
@@ -614,10 +615,9 @@ pub async fn create_trade(
     if (_trade.from_items.picks.len() + _trade.from_items.players.len()) == 0
         || (_trade.to_items.picks.len() + _trade.to_items.players.len()) == 0
     {
-        return Ok(create_error_response(
-            "There is no items traded on one of the 2 sides.".to_string(),
-        )
-        .await);
+        return Err(AppError::CustomError {
+            msg: "There is no items traded on one of the 2 sides.".to_string(),
+        });
     }
 
     // Maximum of 5 items traded on each side ?
@@ -625,7 +625,9 @@ pub async fn create_trade(
     if (_trade.from_items.picks.len() + _trade.from_items.players.len()) > 5
         || (_trade.to_items.picks.len() + _trade.to_items.players.len()) > 5
     {
-        return Ok(create_error_response("There is to much items in the trade.".to_string()).await);
+        return Err(AppError::CustomError {
+            msg: "There is to much items in the trade.".to_string(),
+        });
     }
 
     // Does the pooler really poccess the players ?
@@ -633,16 +635,15 @@ pub async fn create_trade(
     if !validate_trade_possession(&_trade.from_items, &pool_context, &_trade.proposed_by).await
         || !validate_trade_possession(&_trade.to_items, &pool_context, &_trade.ask_to).await
     {
-        return Ok(create_error_response(
-            "One of the to pooler does not poccess the items list provided for the trade."
+        return Err(AppError::CustomError {
+            msg: "One of the pooler does not poccess the items list provided for the trade."
                 .to_string(),
-        )
-        .await);
+        });
     }
 
     _trade.date_created = Utc::now().timestamp_millis();
     _trade.status = TradeStatus::NEW;
-    _trade.id = pool_unwrap.nb_trade;
+    _trade.id = pool.nb_trade;
     trades.push(_trade.clone());
 
     // Update fields with the new trade
@@ -650,23 +651,15 @@ pub async fn create_trade(
     let updated_fields = doc! {
         "$set": doc!{
             "trades": to_bson(&trades).unwrap(),
-            "nb_trade": pool_unwrap.nb_trade + 1
+            "nb_trade": pool.nb_trade + 1
         }
     };
 
-    match collection
+    collection
         .update_one(doc! {"name": _pool_name}, updated_fields, None)
-        .await
-    {
-        Ok(res) => {
-            println!("{:?}", res);
-            return Ok(create_success_response(&None).await);
-        }
-        Err(e) => {
-            println!("{}", e);
-            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
-        }
-    }
+        .await?;
+
+    Ok(create_success_pool_response(&None).await)
 }
 
 pub async fn cancel_trade(
@@ -674,39 +667,33 @@ pub async fn cancel_trade(
     _user_id: &String,
     _pool_name: &String,
     _trade_id: u32,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
-    if pool.is_none() {
-        return Ok(create_error_response("Pool name does not exist.".to_string()).await);
+    if pool.nb_trade < _trade_id {
+        return Err(AppError::CustomError {
+            msg: "This trade does not exist.".to_string(),
+        });
     }
 
-    let pool_unwrap = pool.unwrap();
-
-    if pool_unwrap.nb_trade < _trade_id {
-        return Ok(create_error_response("This trade does not exist.".to_string()).await);
-    }
-
-    let mut trades = pool_unwrap.trades.unwrap().clone();
+    let mut trades = pool.trades.unwrap().clone();
 
     // validate that the status of the trade is NEW
 
     if !matches!(trades[_trade_id as usize].status, TradeStatus::NEW) {
-        return Ok(create_error_response(
-            "The trade is not in a valid state to be cancelled.".to_string(),
-        )
-        .await);
+        return Err(AppError::CustomError {
+            msg: "The trade is not in a valid state to be cancelled.".to_string(),
+        });
     }
 
     // validate only the owner can cancel a trade
 
     if trades[_trade_id as usize].proposed_by != *_user_id {
-        return Ok(create_error_response(
-            "Only the one that created the trade can cancel it.".to_string(),
-        )
-        .await);
+        return Err(AppError::CustomError {
+            msg: "Only the one that created the trade can cancel it.".to_string(),
+        });
     }
 
     trades[_trade_id as usize].status = TradeStatus::CANCELLED;
@@ -718,19 +705,11 @@ pub async fn cancel_trade(
         }
     };
 
-    match collection
+    collection
         .update_one(doc! {"name": _pool_name}, updated_fields, None)
-        .await
-    {
-        Ok(res) => {
-            println!("{:?}", res);
-            return Ok(create_success_response(&None).await);
-        }
-        Err(e) => {
-            println!("{}", e);
-            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
-        }
-    }
+        .await?;
+
+    Ok(create_success_pool_response(&None).await)
 }
 
 pub async fn respond_trade(
@@ -739,42 +718,36 @@ pub async fn respond_trade(
     _pool_name: &String,
     _is_accepted: bool,
     _trade_id: u32,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
-    if pool.is_none() {
-        return Ok(create_error_response("Pool name does not exist.".to_string()).await);
+    if pool.nb_trade < _trade_id {
+        return Err(AppError::CustomError {
+            msg: "This trade does not exist.".to_string(),
+        });
     }
 
-    let pool_unwrap = pool.unwrap();
-
-    if pool_unwrap.nb_trade < _trade_id {
-        return Ok(create_error_response("This trade does not exist.".to_string()).await);
-    }
-
-    let mut trades = pool_unwrap.trades.clone().unwrap();
-    let mut pool_context = pool_unwrap.context.clone().unwrap();
+    let mut trades = pool.trades.clone().unwrap();
+    let mut pool_context = pool.context.clone().unwrap();
 
     // validate that the status of the trade is NEW
 
     if !matches!(trades[_trade_id as usize].status, TradeStatus::NEW) {
-        return Ok(create_error_response(
-            "The trade is not in a valid state to be responded.".to_string(),
-        )
-        .await);
+        return Err(AppError::CustomError {
+            msg: "The trade is not in a valid state to be responded.".to_string(),
+        });
     }
 
-    // validate that only the one that was ask for the trade can accept it.
+    // validate that only the one that was ask for the trade or the owner can accept it.
 
     if trades[_trade_id as usize].ask_to != *_user_id
-        && !has_owner_and_assitants_rights(_user_id, &pool_unwrap).await
+        && !has_owner_and_assitants_rights(_user_id, &pool).await
     {
-        return Ok(create_error_response(
-            "Only the one that was ask for the trade can accept it.".to_string(),
-        )
-        .await);
+        return Err(AppError::CustomError {
+            msg: "Only the one that was ask for the trade or the owner can accept it.".to_string(),
+        });
     }
 
     // validate that 24h have been passed since the trade was created.
@@ -782,19 +755,20 @@ pub async fn respond_trade(
     let now = Utc::now().timestamp_millis();
 
     if trades[_trade_id as usize].date_created + 8640000 > now
-        && !has_owner_and_assitants_rights(_user_id, &pool_unwrap).await
+        && !has_owner_and_assitants_rights(_user_id, &pool).await
     {
-        return Ok(create_error_response(
-            "The trade needs to be active for 24h before being able to accept it.".to_string(),
-        )
-        .await);
+        return Err(AppError::CustomError {
+            msg: "The trade needs to be active for 24h before being able to accept it.".to_string(),
+        });
     }
 
     // validate that both trade parties own those items
 
     if _is_accepted {
         if !trade_roster_items(&mut pool_context, &trades[_trade_id as usize]).await {
-            return Ok(create_error_response("Trading items is not valid.".to_string()).await);
+            return Err(AppError::CustomError {
+                msg: "Trading items is not valid.".to_string(),
+            });
         }
 
         trades[_trade_id as usize].status = TradeStatus::ACCEPTED;
@@ -813,19 +787,11 @@ pub async fn respond_trade(
         }
     };
 
-    match collection
+    collection
         .update_one(doc! {"name": _pool_name}, updated_fields, None)
-        .await
-    {
-        Ok(res) => {
-            println!("{:?}", res);
-            return Ok(create_success_response(&None).await);
-        }
-        Err(e) => {
-            println!("{}", e);
-            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
-        }
-    }
+        .await?;
+
+    Ok(create_success_pool_response(&None).await)
 }
 
 pub async fn fill_spot(
@@ -833,24 +799,17 @@ pub async fn fill_spot(
     _user_id: &String,
     _pool_name: &String,
     _player: &Player,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
-    if pool.is_none() {
-        return Ok(create_error_response("Pool name does not exist.".to_string()).await);
-    }
-
-    let pool_unwrap = pool.unwrap();
-
-    let mut pooler_roster = pool_unwrap.context.unwrap().pooler_roster;
+    let mut pooler_roster = pool.context.unwrap().pooler_roster;
 
     if !pooler_roster.contains_key(_user_id) {
-        return Ok(create_error_response(
-            "The pooler is not a participant of the pool.".to_string(),
-        )
-        .await);
+        return Err(AppError::CustomError {
+            msg: "The pooler is not a participant of the pool.".to_string(),
+        });
     }
 
     if pooler_roster[_user_id].chosen_forwards.contains(_player)
@@ -858,17 +817,16 @@ pub async fn fill_spot(
         || pooler_roster[_user_id].chosen_goalies.contains(_player)
         || !pooler_roster[_user_id].chosen_reservists.contains(_player)
     {
-        return Ok(create_error_response(
-            "The player should only be in the reservist pooler's list.".to_string(),
-        )
-        .await);
+        return Err(AppError::CustomError {
+            msg: "The player should only be in the reservist pooler's list.".to_string(),
+        });
     }
 
     let mut is_added = false;
 
     match _player.position {
         Position::F => {
-            if (pooler_roster[_user_id].chosen_forwards.len() as u8) < pool_unwrap.number_forwards {
+            if (pooler_roster[_user_id].chosen_forwards.len() as u8) < pool.number_forwards {
                 if let Some(x) = pooler_roster.get_mut(_user_id) {
                     x.chosen_forwards.push(_player.clone());
                     is_added = true;
@@ -876,8 +834,7 @@ pub async fn fill_spot(
             }
         }
         Position::D => {
-            if (pooler_roster[_user_id].chosen_defenders.len() as u8) < pool_unwrap.number_defenders
-            {
+            if (pooler_roster[_user_id].chosen_defenders.len() as u8) < pool.number_defenders {
                 if let Some(x) = pooler_roster.get_mut(_user_id) {
                     x.chosen_defenders.push(_player.clone());
                     is_added = true;
@@ -885,7 +842,7 @@ pub async fn fill_spot(
             }
         }
         Position::G => {
-            if (pooler_roster[_user_id].chosen_goalies.len() as u8) < pool_unwrap.number_goalies {
+            if (pooler_roster[_user_id].chosen_goalies.len() as u8) < pool.number_goalies {
                 if let Some(x) = pooler_roster.get_mut(_user_id) {
                     x.chosen_goalies.push(_player.clone());
                     is_added = true;
@@ -895,7 +852,9 @@ pub async fn fill_spot(
     }
 
     if !is_added {
-        return Ok(create_error_response("There is no space for that player.".to_string()).await);
+        return Err(AppError::CustomError {
+            msg: "There is no space for that player.".to_string(),
+        });
     }
 
     if let Some(x) = pooler_roster.get_mut(_user_id) {
@@ -909,57 +868,46 @@ pub async fn fill_spot(
         }
     };
 
-    match collection
+    collection
         .update_one(doc! {"name": _pool_name}, updated_fields, None)
-        .await
-    {
-        Ok(res) => {
-            println!("{:?}", res);
-            return Ok(create_success_response(&None).await);
-        }
-        Err(e) => {
-            println!("{}", e);
-            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
-        }
-    }
+        .await?;
+
+    Ok(create_success_pool_response(&None).await)
 }
 
 pub async fn undo_select_player(
     db: &Database,
     _user_id: &str,
     _pool_name: &str,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
-    if pool.is_none() {
-        return Ok(create_error_response("Pool name does not exist.".to_string()).await);
-    }
-
-    let pool_unwrap = pool.unwrap();
-
     // validate that the user making the request is the pool owner.
 
-    if pool_unwrap.owner != _user_id {
-        return Ok(create_error_response("Only the owner of the pool can undo.".to_string()).await);
+    if pool.owner != _user_id {
+        return Err(AppError::CustomError {
+            msg: "Only the owner of the pool can undo.".to_string(),
+        });
     }
 
     // validate that the pool is into the draft status.
 
-    if !matches!(pool_unwrap.status, PoolState::Draft) {
-        return Ok(create_error_response(
-            "The pool must be into the draft status to perform an undo.".to_string(),
-        )
-        .await);
+    if !matches!(pool.status, PoolState::Draft) {
+        return Err(AppError::CustomError {
+            msg: "The pool must be into the draft status to perform an undo.".to_string(),
+        });
     }
 
-    let mut pool_context = pool_unwrap.context.unwrap();
+    let mut pool_context = pool.context.unwrap();
 
     // validate there is something to undo.
 
     if pool_context.players_name_drafted.is_empty() {
-        return Ok(create_error_response("There is nothing to undo".to_string()).await);
+        return Err(AppError::CustomError {
+            msg: "There is nothing to undo".to_string(),
+        });
     }
 
     let mut latest_pick;
@@ -974,24 +922,21 @@ pub async fn undo_select_player(
     let pick_number = pool_context.players_name_drafted.len();
     let latest_drafter;
 
-    if pool_unwrap.final_rank.is_some() {
+    if pool.final_rank.is_some() {
         // This comes from a Dynastie draft.
 
-        let final_rank = pool_unwrap.final_rank.clone().unwrap(); // the final rank is used to see who picks
+        let final_rank = pool.final_rank.clone().unwrap(); // the final rank is used to see who picks
 
-        let index = pool_unwrap.number_poolers as usize
-            - 1
-            - (pick_number % pool_unwrap.number_poolers as usize);
+        let index = pool.number_poolers as usize - 1 - (pick_number % pool.number_poolers as usize);
 
         let next_drafter = &final_rank[index];
 
-        if pick_number < (pool_unwrap.tradable_picks * pool_unwrap.number_poolers) as usize {
+        if pick_number < (pool.tradable_picks * pool.number_poolers) as usize {
             // use the tradable_picks to see who will draft next.
             let tradable_picks = pool_context.tradable_picks.clone().unwrap();
 
-            latest_drafter = tradable_picks[pick_number / pool_unwrap.number_poolers as usize]
-                [next_drafter]
-                .clone();
+            latest_drafter =
+                tradable_picks[pick_number / pool.number_poolers as usize][next_drafter].clone();
         } else {
             // Use the final_rank to see who draft next.
             latest_drafter = next_drafter.clone();
@@ -999,9 +944,9 @@ pub async fn undo_select_player(
     } else {
         // this comes from a new draft.
 
-        let participants = pool_unwrap.participants.unwrap(); // the participants is used to see who picks
+        let participants = pool.participants.unwrap(); // the participants is used to see who picks
 
-        let index = pick_number % pool_unwrap.number_poolers as usize;
+        let index = pick_number % pool.number_poolers as usize;
         latest_drafter = participants[index].clone();
     }
 
@@ -1024,18 +969,19 @@ pub async fn undo_select_player(
 
     let new_pool = collection
         .find_one_and_update(
-            doc! {"name": pool_unwrap.name},
+            doc! {"name": pool.name},
             updated_fields,
             find_one_and_update_options,
         )
-        .await
-        .unwrap();
+        .await?;
 
     if new_pool.is_none() {
-        return Ok(create_error_response("The pool could not be updated.".to_string()).await);
+        return Err(AppError::CustomError {
+            msg: "The pool could not be updated.".to_string(),
+        });
     }
 
-    Ok(create_success_response(&new_pool).await)
+    Ok(create_success_pool_response(&new_pool).await)
 }
 
 pub async fn modify_roster(
@@ -1046,7 +992,7 @@ pub async fn modify_roster(
     _def_selected: &Vec<Player>,
     _goal_selected: &Vec<Player>,
     _reserv_selected: &Vec<Player>,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let start_season_date =
         Local.from_utc_date(&NaiveDate::parse_from_str(START_SEASON_DATE, "%Y-%m-%d").unwrap());
     let end_season_date =
@@ -1081,53 +1027,46 @@ pub async fn modify_roster(
         }
 
         if !bAllowed {
-            return Ok(create_error_response(
-                "You are not allowed to modify your roster today.".to_string(),
-            )
-            .await);
+            return Err(AppError::CustomError {
+                msg: "You are not allowed to modify your roster today.".to_string(),
+            });
         }
     }
 
     let collection = db.collection::<Pool>("pools");
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
-    if pool.is_none() {
-        return Ok(create_error_response("Pool name does not exist.".to_string()).await);
-    }
-
-    let pool_unwrap = pool.unwrap();
-    let pool_context = pool_unwrap.context.unwrap();
+    let pool_context = pool.context.unwrap();
     let mut pool_roster = pool_context.pooler_roster;
 
     if !pool_roster.contains_key(_user_id) {
-        return Ok(create_error_response("User is not in the pool.".to_string()).await);
+        return Err(AppError::CustomError {
+            msg: "User is not in the pool.".to_string(),
+        });
     }
 
     // Validate the total amount of forwards selected
 
-    if _forw_selected.len() != pool_unwrap.number_forwards as usize {
-        return Ok(create_error_response(
-            "The amount of forwards selected is not valid".to_string(),
-        )
-        .await);
+    if _forw_selected.len() != pool.number_forwards as usize {
+        return Err(AppError::CustomError {
+            msg: "The amount of forwards selected is not valid".to_string(),
+        });
     }
 
     // Validate the total amount of defenders selected
 
-    if _def_selected.len() != pool_unwrap.number_defenders as usize {
-        return Ok(create_error_response(
-            "The amount of defenders selected is not valid".to_string(),
-        )
-        .await);
+    if _def_selected.len() != pool.number_defenders as usize {
+        return Err(AppError::CustomError {
+            msg: "The amount of defenders selected is not valid".to_string(),
+        });
     }
 
     // Validate the total amount of goalies selected
 
-    if _goal_selected.len() != pool_unwrap.number_goalies as usize {
-        return Ok(create_error_response(
-            "The amount of goalies selected is not valid".to_string(),
-        )
-        .await);
+    if _goal_selected.len() != pool.number_goalies as usize {
+        return Err(AppError::CustomError {
+            msg: "The amount of goalies selected is not valid".to_string(),
+        });
     }
 
     // Validate the total amount of players selected (It should be the same as before)
@@ -1144,10 +1083,9 @@ pub async fn modify_roster(
             + roster.chosen_reservists.len();
 
         if amount_players_before != amount_selected_players {
-            return Ok(create_error_response(
-                "The amount of selected players is not valid.".to_string(),
-            )
-            .await);
+            return Err(AppError::CustomError {
+                msg: "The amount of selected players is not valid.".to_string(),
+            });
         }
     }
 
@@ -1160,17 +1098,15 @@ pub async fn modify_roster(
 
     for forward in _forw_selected {
         if selected_player_map.contains_key(&forward.id) {
-            return Ok(create_error_response(format!(
-                "The player {} was dupplicated",
-                forward.name
-            ))
-            .await);
+            return Err(AppError::CustomError {
+                msg: format!("The player {} was dupplicated", forward.name),
+            });
         }
         selected_player_map.insert(forward.id, true);
         if !validate_player_possession(forward, &pool_roster[_user_id]).await {
-            return Ok(
-                create_error_response(format!("You do not possess {}.", forward.name)).await,
-            );
+            return Err(AppError::CustomError {
+                msg: format!("You do not possess {}.", forward.name),
+            });
         }
     }
 
@@ -1178,13 +1114,15 @@ pub async fn modify_roster(
 
     for defender in _def_selected {
         if selected_player_map.contains_key(&defender.id) {
-            return Ok(create_error_response(format!("{} was dupplicated.", defender.name)).await);
+            return Err(AppError::CustomError {
+                msg: format!("{} was dupplicated.", defender.name),
+            });
         }
         selected_player_map.insert(defender.id, true);
         if !validate_player_possession(defender, &pool_roster[_user_id]).await {
-            return Ok(
-                create_error_response(format!("You do not possess {}.", defender.name)).await,
-            );
+            return Err(AppError::CustomError {
+                msg: format!("You do not possess {}.", defender.name),
+            });
         }
     }
 
@@ -1192,11 +1130,15 @@ pub async fn modify_roster(
 
     for goaly in _goal_selected {
         if selected_player_map.contains_key(&goaly.id) {
-            return Ok(create_error_response(format!("{} was dupplicated", goaly.name)).await);
+            return Err(AppError::CustomError {
+                msg: format!("{} was dupplicated", goaly.name),
+            });
         }
         selected_player_map.insert(goaly.id, true);
         if !validate_player_possession(goaly, &pool_roster[_user_id]).await {
-            return Ok(create_error_response(format!("You do not possess {}.", goaly.name)).await);
+            return Err(AppError::CustomError {
+                msg: format!("You do not possess {}.", goaly.name),
+            });
         }
     }
 
@@ -1204,13 +1146,15 @@ pub async fn modify_roster(
 
     for reservist in _reserv_selected {
         if selected_player_map.contains_key(&reservist.id) {
-            return Ok(create_error_response(format!("{} was dupplicated", reservist.name)).await);
+            return Err(AppError::CustomError {
+                msg: format!("{} was dupplicated", reservist.name),
+            });
         }
         selected_player_map.insert(reservist.id, true);
         if !validate_player_possession(reservist, &pool_roster[_user_id]).await {
-            return Ok(
-                create_error_response(format!("You do not possess {}.", reservist.name)).await,
-            );
+            return Err(AppError::CustomError {
+                msg: format!("You do not possess {}.", reservist.name),
+            });
         }
     }
 
@@ -1229,19 +1173,11 @@ pub async fn modify_roster(
         }
     };
 
-    match collection
+    collection
         .update_one(doc! {"name": _pool_name}, updated_fields, None)
-        .await
-    {
-        Ok(res) => {
-            println!("{:?}", res);
-            return Ok(create_success_response(&None).await);
-        }
-        Err(e) => {
-            println!("{}", e);
-            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
-        }
-    }
+        .await?;
+
+    Ok(create_success_pool_response(&None).await)
 }
 
 pub async fn protect_players(
@@ -1252,44 +1188,45 @@ pub async fn protect_players(
     _def_protected: &Vec<Player>,
     _goal_protected: &Vec<Player>,
     _reserv_protected: &Vec<Player>,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
-    if pool.is_none() {
-        return Ok(create_error_response("Pool name does not exist.".to_string()).await);
-    }
-
-    let pool_unwrap = pool.unwrap();
-
-    let mut pool_context = pool_unwrap.context.unwrap();
+    let mut pool_context = pool.context.unwrap();
 
     // make sure the user making the resquest is a pool participants.
 
     if !pool_context.pooler_roster.contains_key(_user_id) {
-        return Ok(create_error_response(
-            "The pooler is not a participant of the pool.".to_string(),
-        )
-        .await);
+        return Err(AppError::CustomError {
+            msg: "The pooler is not a participant of the pool.".to_string(),
+        });
     }
 
     // validate that the numbers of players protected is ok.
 
-    if (_forw_protected.len() as u8) > pool_unwrap.number_forwards {
-        return Ok(create_error_response("To much forwards protected".to_string()).await);
+    if (_forw_protected.len() as u8) > pool.number_forwards {
+        return Err(AppError::CustomError {
+            msg: "To much forwards protected".to_string(),
+        });
     }
 
-    if (_def_protected.len() as u8) > pool_unwrap.number_defenders {
-        return Ok(create_error_response("To much defenders protected".to_string()).await);
+    if (_def_protected.len() as u8) > pool.number_defenders {
+        return Err(AppError::CustomError {
+            msg: "To much defenders protected".to_string(),
+        });
     }
 
-    if (_goal_protected.len() as u8) > pool_unwrap.number_goalies {
-        return Ok(create_error_response("To much goalies protected".to_string()).await);
+    if (_goal_protected.len() as u8) > pool.number_goalies {
+        return Err(AppError::CustomError {
+            msg: "To much goalies protected".to_string(),
+        });
     }
 
-    if (_reserv_protected.len() as u8) > pool_unwrap.number_reservists {
-        return Ok(create_error_response("To much reservists protected".to_string()).await);
+    if (_reserv_protected.len() as u8) > pool.number_reservists {
+        return Err(AppError::CustomError {
+            msg: "To much reservists protected".to_string(),
+        });
     }
 
     let tot_player_protected = _forw_protected.len()
@@ -1297,11 +1234,10 @@ pub async fn protect_players(
         + _goal_protected.len()
         + _reserv_protected.len();
 
-    if tot_player_protected as u8 != pool_unwrap.next_season_number_players_protected {
-        return Ok(create_error_response(
-            "The number of selected players is not valid".to_string(),
-        )
-        .await);
+    if tot_player_protected as u8 != pool.next_season_number_players_protected {
+        return Err(AppError::CustomError {
+            msg: "The number of selected players is not valid".to_string(),
+        });
     }
 
     // Validate that the participant realy possess the selected players.
@@ -1313,10 +1249,9 @@ pub async fn protect_players(
             validate_player_possession(player, &pool_context.pooler_roster[_user_id]).await;
 
         if !is_selected_players_valid {
-            return Ok(create_error_response(
-                "The pooler does not poccess  one of the selected forwards".to_string(),
-            )
-            .await);
+            return Err(AppError::CustomError {
+                msg: "The pooler does not poccess  one of the selected forwards".to_string(),
+            });
         }
     }
 
@@ -1325,10 +1260,9 @@ pub async fn protect_players(
             validate_player_possession(player, &pool_context.pooler_roster[_user_id]).await;
 
         if !is_selected_players_valid {
-            return Ok(create_error_response(
-                "The pooler does not poccess  one of the selected defenders".to_string(),
-            )
-            .await);
+            return Err(AppError::CustomError {
+                msg: "The pooler does not poccess  one of the selected defenders".to_string(),
+            });
         }
     }
 
@@ -1337,10 +1271,9 @@ pub async fn protect_players(
             validate_player_possession(player, &pool_context.pooler_roster[_user_id]).await;
 
         if !is_selected_players_valid {
-            return Ok(create_error_response(
-                "The pooler does not poccess  one of the selected goalies".to_string(),
-            )
-            .await);
+            return Err(AppError::CustomError {
+                msg: "The pooler does not poccess  one of the selected goalies".to_string(),
+            });
         }
     }
 
@@ -1349,10 +1282,9 @@ pub async fn protect_players(
             validate_player_possession(player, &pool_context.pooler_roster[_user_id]).await;
 
         if !is_selected_players_valid {
-            return Ok(create_error_response(
-                "The pooler does not poccess  one of the selected reservists".to_string(),
-            )
-            .await);
+            return Err(AppError::CustomError {
+                msg: "The pooler does not poccess  one of the selected reservists".to_string(),
+            });
         }
     }
 
@@ -1367,14 +1299,14 @@ pub async fn protect_players(
 
     // Look if all participants have protected their players
 
-    let participants = &pool_unwrap.participants.unwrap();
+    let participants = &pool.participants.unwrap();
     let mut is_done = true;
 
     let users_players_count =
         get_users_players_count(&pool_context.pooler_roster, participants).await;
 
     for participant in participants.iter() {
-        if users_players_count[participant] != pool_unwrap.next_season_number_players_protected {
+        if users_players_count[participant] != pool.next_season_number_players_protected {
             is_done = false; // not all participants are ready
             break;
         }
@@ -1390,43 +1322,28 @@ pub async fn protect_players(
 
     // Update the fields in the mongoDB pool document.
 
-    match collection
+    collection
         .update_one(doc! {"name": _pool_name}, updated_fields, None)
-        .await
-    {
-        Ok(res) => {
-            println!("{:?}", res);
-            return Ok(create_success_response(&None).await);
-        }
-        Err(e) => {
-            println!("{}", e);
-            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
-        }
-    }
+        .await?;
+
+    Ok(create_success_pool_response(&None).await)
 }
 
 pub async fn update_pool_settings(
     db: &Database,
     _user_id: &String,
     _update: &UpdatePoolSettingsRequest,
-) -> mongodb::error::Result<PoolMessageResponse> {
+) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, &_update.name).await?;
 
-    if pool.is_none() {
-        return Ok(create_error_response("Pool name does not exist.".to_string()).await);
-    }
-
-    let pool_unwrap = pool.unwrap();
-
     // make sure the user making the resquest is a pool participants.
 
-    if !has_owner_and_assitants_rights(_user_id, &pool_unwrap).await {
-        return Ok(create_error_response(
-            "You don't have the rights to update pool settings".to_string(),
-        )
-        .await);
+    if !has_owner_and_assitants_rights(_user_id, &pool).await {
+        return Err(AppError::CustomError {
+            msg: "You don't have the rights to update pool settings".to_string(),
+        });
     }
 
     // Update the fields in the mongoDB pool document.
@@ -1439,55 +1356,46 @@ pub async fn update_pool_settings(
             .next_season_number_players_protected
             .is_some()
         || _update.pool_settings.tradable_picks.is_some())
-        && matches!(pool_unwrap.status, PoolState::InProgress)
+        && matches!(pool.status, PoolState::InProgress)
     {
-        return Ok(create_error_response(
-            "These settings cannot be updated while the pool is in progress.".to_string(),
-        )
-        .await); // Need to make this robust, potentially need another pool status
+        return Err(AppError::CustomError {
+            msg: "These settings cannot be updated while the pool is in progress.".to_string(),
+        }); // Need to make this robust, potentially need another pool status
     }
 
     let updated_fields = doc! {
         "$set": doc!{
-            "number_forwards": to_bson(&_update.pool_settings.number_forwards.unwrap_or(pool_unwrap.number_forwards)).unwrap(),
-            "number_defenders": to_bson(&_update.pool_settings.number_defenders.unwrap_or(pool_unwrap.number_defenders)).unwrap(),
-            "number_goalies": to_bson(&_update.pool_settings.number_goalies.unwrap_or(pool_unwrap.number_goalies)).unwrap(),
-            "number_reservists": to_bson(&_update.pool_settings.number_reservists.unwrap_or(pool_unwrap.number_reservists)).unwrap(),
-            "next_season_number_players_protected": to_bson(&_update.pool_settings.next_season_number_players_protected.unwrap_or(pool_unwrap.next_season_number_players_protected)).unwrap(),
-            "tradable_picks": to_bson(&_update.pool_settings.tradable_picks.unwrap_or(pool_unwrap.tradable_picks)).unwrap(),
+            "number_forwards": to_bson(&_update.pool_settings.number_forwards.unwrap_or(pool.number_forwards)).unwrap(),
+            "number_defenders": to_bson(&_update.pool_settings.number_defenders.unwrap_or(pool.number_defenders)).unwrap(),
+            "number_goalies": to_bson(&_update.pool_settings.number_goalies.unwrap_or(pool.number_goalies)).unwrap(),
+            "number_reservists": to_bson(&_update.pool_settings.number_reservists.unwrap_or(pool.number_reservists)).unwrap(),
+            "next_season_number_players_protected": to_bson(&_update.pool_settings.next_season_number_players_protected.unwrap_or(pool.next_season_number_players_protected)).unwrap(),
+            "tradable_picks": to_bson(&_update.pool_settings.tradable_picks.unwrap_or(pool.tradable_picks)).unwrap(),
             //Points per forwards
-            "forward_pts_goals": to_bson(&_update.pool_settings.forward_pts_goals.unwrap_or(pool_unwrap.forward_pts_goals)).unwrap(),
-            "forward_pts_assists": to_bson(&_update.pool_settings.forward_pts_assists.unwrap_or(pool_unwrap.forward_pts_assists)).unwrap(),
-            "forward_pts_hattricks": to_bson(&_update.pool_settings.forward_pts_hattricks.unwrap_or(pool_unwrap.forward_pts_hattricks)).unwrap(),
-            "forward_pts_shootout_goals": to_bson(&_update.pool_settings.forward_pts_shootout_goals.unwrap_or(pool_unwrap.forward_pts_shootout_goals)).unwrap(),
+            "forward_pts_goals": to_bson(&_update.pool_settings.forward_pts_goals.unwrap_or(pool.forward_pts_goals)).unwrap(),
+            "forward_pts_assists": to_bson(&_update.pool_settings.forward_pts_assists.unwrap_or(pool.forward_pts_assists)).unwrap(),
+            "forward_pts_hattricks": to_bson(&_update.pool_settings.forward_pts_hattricks.unwrap_or(pool.forward_pts_hattricks)).unwrap(),
+            "forward_pts_shootout_goals": to_bson(&_update.pool_settings.forward_pts_shootout_goals.unwrap_or(pool.forward_pts_shootout_goals)).unwrap(),
             //Points per Defenders
-            "defender_pts_goals": to_bson(&_update.pool_settings.defender_pts_goals.unwrap_or(pool_unwrap.defender_pts_goals)).unwrap(),
-            "defender_pts_assists": to_bson(&_update.pool_settings.defender_pts_assists.unwrap_or(pool_unwrap.defender_pts_assists)).unwrap(),
-            "defender_pts_hattricks": to_bson(&_update.pool_settings.defender_pts_hattricks.unwrap_or(pool_unwrap.defender_pts_hattricks)).unwrap(),
-            "defender_pts_shootout_goals": to_bson(&_update.pool_settings.defender_pts_shootout_goals.unwrap_or(pool_unwrap.defender_pts_shootout_goals)).unwrap(),
+            "defender_pts_goals": to_bson(&_update.pool_settings.defender_pts_goals.unwrap_or(pool.defender_pts_goals)).unwrap(),
+            "defender_pts_assists": to_bson(&_update.pool_settings.defender_pts_assists.unwrap_or(pool.defender_pts_assists)).unwrap(),
+            "defender_pts_hattricks": to_bson(&_update.pool_settings.defender_pts_hattricks.unwrap_or(pool.defender_pts_hattricks)).unwrap(),
+            "defender_pts_shootout_goals": to_bson(&_update.pool_settings.defender_pts_shootout_goals.unwrap_or(pool.defender_pts_shootout_goals)).unwrap(),
             //Points per Goalies
-            "goalies_pts_wins": to_bson(&_update.pool_settings.goalies_pts_wins.unwrap_or(pool_unwrap.goalies_pts_wins)).unwrap(),
-            "goalies_pts_shutouts": to_bson(&_update.pool_settings.goalies_pts_shutouts.unwrap_or(pool_unwrap.goalies_pts_shutouts)).unwrap(),
-            "goalies_pts_overtimes": to_bson(&_update.pool_settings.goalies_pts_overtimes.unwrap_or(pool_unwrap.goalies_pts_overtimes)).unwrap(),
-            "goalies_pts_goals": to_bson(&_update.pool_settings.goalies_pts_goals.unwrap_or(pool_unwrap.goalies_pts_goals)).unwrap(),
-            "goalies_pts_assists": to_bson(&_update.pool_settings.goalies_pts_assists.unwrap_or(pool_unwrap.goalies_pts_assists)).unwrap(),
+            "goalies_pts_wins": to_bson(&_update.pool_settings.goalies_pts_wins.unwrap_or(pool.goalies_pts_wins)).unwrap(),
+            "goalies_pts_shutouts": to_bson(&_update.pool_settings.goalies_pts_shutouts.unwrap_or(pool.goalies_pts_shutouts)).unwrap(),
+            "goalies_pts_overtimes": to_bson(&_update.pool_settings.goalies_pts_overtimes.unwrap_or(pool.goalies_pts_overtimes)).unwrap(),
+            "goalies_pts_goals": to_bson(&_update.pool_settings.goalies_pts_goals.unwrap_or(pool.goalies_pts_goals)).unwrap(),
+            "goalies_pts_assists": to_bson(&_update.pool_settings.goalies_pts_assists.unwrap_or(pool.goalies_pts_assists)).unwrap(),
 
         }
     };
 
-    match collection
+    collection
         .update_one(doc! {"name": &_update.name}, updated_fields, None)
-        .await
-    {
-        Ok(res) => {
-            println!("{:?}", res);
-            return Ok(create_success_response(&None).await);
-        }
-        Err(e) => {
-            println!("{}", e);
-            return Ok(create_error_response("The pool could not be updated.".to_string()).await);
-        }
-    }
+        .await?;
+
+    Ok(create_success_pool_response(&None).await)
 }
 
 async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> bool {
@@ -1715,15 +1623,7 @@ async fn validate_player_possession_with_id(
         || _pooler_roster.chosen_reservists.contains(&player)
 }
 
-async fn create_error_response(_message: String) -> PoolMessageResponse {
-    PoolMessageResponse {
-        success: false,
-        message: _message,
-        pool: None,
-    }
-}
-
-async fn create_success_response(_pool: &Option<Pool>) -> PoolMessageResponse {
+async fn create_success_pool_response(_pool: &Option<Pool>) -> PoolMessageResponse {
     PoolMessageResponse {
         success: true,
         message: "".to_string(),
