@@ -1,17 +1,17 @@
 use hex::FromHexError;
 use mongodb;
-use std::fmt;
+use std::{f32::consts::E, fmt};
 use web3;
 
-#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+#[derive(Debug)]
 pub enum AppError {
     CustomError { msg: String },
     AuthError { msg: String },
-    MongoError { msg: String },
-    ParseError { msg: String },
-    BcryptError { msg: String },
-    HexError { msg: String },
-    RecoveryError { msg: String },
+    MongoError { e: mongodb::error::Error },
+    ParseError { e: chrono::format::ParseError },
+    BcryptError { e: bcrypt::BcryptError },
+    HexError { e: FromHexError },
+    RecoveryError { e: web3::signing::RecoveryError },
 }
 
 impl std::error::Error for AppError {}
@@ -21,42 +21,42 @@ impl fmt::Display for AppError {
         match self {
             AppError::CustomError { msg } => write!(f, "Custom Error: {}", msg),
             AppError::AuthError { msg } => write!(f, "Authentification Error: {}", msg),
-            AppError::MongoError { msg } => write!(f, "Mongo Error: {}", msg),
-            AppError::ParseError { msg } => write!(f, "Parse Error: {}", msg),
-            AppError::BcryptError { msg } => write!(f, "Bcrypt Error: {}", msg),
-            AppError::HexError { msg } => write!(f, "Hex Error: {}", msg),
-            AppError::RecoveryError { msg } => write!(f, "Recovery Error: {}", msg),
+            AppError::MongoError { e } => write!(f, "Mongo Error: {}", e),
+            AppError::ParseError { e } => write!(f, "Parse Error: {}", e),
+            AppError::BcryptError { e } => write!(f, "Bcrypt Error: {}", e),
+            AppError::HexError { e } => write!(f, "Hex Error: {}", e),
+            AppError::RecoveryError { e } => write!(f, "Recovery Error: {}", e),
         }
     }
 }
 
 impl From<mongodb::error::Error> for AppError {
     fn from(e: mongodb::error::Error) -> Self {
-        AppError::MongoError { msg: e.to_string() }
+        AppError::MongoError { e }
     }
 }
 
 impl From<chrono::format::ParseError> for AppError {
     fn from(e: chrono::format::ParseError) -> Self {
-        AppError::ParseError { msg: e.to_string() }
+        AppError::ParseError { e }
     }
 }
 
 impl From<bcrypt::BcryptError> for AppError {
     fn from(e: bcrypt::BcryptError) -> Self {
-        AppError::BcryptError { msg: e.to_string() }
+        AppError::BcryptError { e }
     }
 }
 
 impl From<FromHexError> for AppError {
     fn from(e: FromHexError) -> Self {
-        AppError::HexError { msg: e.to_string() }
+        AppError::HexError { e }
     }
 }
 
 impl From<web3::signing::RecoveryError> for AppError {
     fn from(e: web3::signing::RecoveryError) -> Self {
-        AppError::RecoveryError { msg: e.to_string() }
+        AppError::RecoveryError { e }
     }
 }
 

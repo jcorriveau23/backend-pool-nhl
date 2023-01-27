@@ -23,9 +23,7 @@ pub async fn get_pool_by_name(
     token: Result<UserToken, AppError>,
     _name: String,
 ) -> Result<Json<Pool>, AppError> {
-    pool::find_pool_by_name(db, &_name)
-        .await
-        .map(|data| Json(data))
+    pool::find_pool_by_name(db, &_name).await.map(Json)
 }
 
 /// get Pool document by _name
@@ -39,7 +37,7 @@ pub async fn get_pool_by_name_with_range(
 ) -> Result<Json<Pool>, AppError> {
     pool::find_pool_by_name_with_range(db, &_name, &_from)
         .await
-        .map(|data| Json(data))
+        .map(Json)
 }
 
 /// get all Pool documents
@@ -49,7 +47,7 @@ pub async fn get_pools(
     db: &State<Database>,
     token: Result<UserToken, AppError>,
 ) -> Result<Json<Vec<ProjectedPoolShort>>, AppError> {
-    pool::find_pools(db).await.map(|data| Json(data))
+    pool::find_pools(db).await.map(Json)
 }
 
 #[post("/create-pool", format = "json", data = "<body>")]
@@ -71,7 +69,7 @@ pub async fn delete_pool(
 ) -> Result<Json<PoolMessageResponse>, AppError> {
     pool::delete_pool(db, &token?._id.to_string(), &body.name)
         .await
-        .map(|data| Json(data))
+        .map(Json)
 }
 
 #[post("/start-draft", format = "json", data = "<body>")]
@@ -82,7 +80,7 @@ pub async fn start_draft(
 ) -> Result<Json<PoolMessageResponse>, AppError> {
     pool::start_draft(db, &token?._id.to_string(), &mut body.poolInfo)
         .await
-        .map(|data| Json(data))
+        .map(Json)
 }
 
 #[post("/select-player", format = "json", data = "<body>")]
@@ -93,7 +91,7 @@ pub async fn select_player(
 ) -> Result<Json<PoolMessageResponse>, AppError> {
     pool::select_player(db, &token?._id.to_string(), &body.name, &body.player)
         .await
-        .map(|data| Json(data))
+        .map(Json)
 }
 
 #[post("/undo-select-player", format = "json", data = "<body>")]
@@ -104,7 +102,7 @@ pub async fn undo_select_player(
 ) -> Result<Json<PoolMessageResponse>, AppError> {
     pool::undo_select_player(db, &token?._id.to_string(), &body.name)
         .await
-        .map(|data| Json(data))
+        .map(Json)
 }
 
 #[post("/create-trade", format = "json", data = "<body>")]
@@ -120,7 +118,7 @@ pub async fn create_trade(
         &mut body.trade.clone(),
     )
     .await
-    .map(|data| Json(data))
+    .map(Json)
 }
 
 #[post("/cancel-trade", format = "json", data = "<body>")]
@@ -131,7 +129,7 @@ pub async fn cancel_trade(
 ) -> Result<Json<PoolMessageResponse>, AppError> {
     pool::cancel_trade(db, &token?._id.to_string(), &body.name, body.trade_id)
         .await
-        .map(|data| Json(data))
+        .map(Json)
 }
 
 #[post("/respond-trade", format = "json", data = "<body>")]
@@ -148,7 +146,7 @@ pub async fn respond_trade(
         body.trade_id,
     )
     .await
-    .map(|data| Json(data))
+    .map(Json)
 }
 
 #[post("/fill-spot", format = "json", data = "<body>")]
@@ -159,7 +157,7 @@ pub async fn fill_spot(
 ) -> Result<Json<PoolMessageResponse>, AppError> {
     pool::fill_spot(db, &token?._id.to_string(), &body.name, &body.player)
         .await
-        .map(|data| Json(data))
+        .map(Json)
 }
 
 #[post("/protect-players", format = "json", data = "<body>")]
@@ -178,7 +176,7 @@ pub async fn protect_players(
         &body.reserv_protected,
     )
     .await
-    .map(|data| Json(data))
+    .map(Json)
 }
 
 #[post("/modify-roster", format = "json", data = "<body>")]
@@ -197,7 +195,7 @@ pub async fn modify_roster(
         &body.reserv_protected,
     )
     .await
-    .map(|data| Json(data))
+    .map(Json)
 }
 
 #[post("/update-pool-settings", format = "json", data = "<body>")]
@@ -208,5 +206,5 @@ pub async fn update_pool_settings(
 ) -> Result<Json<PoolMessageResponse>, AppError> {
     pool::update_pool_settings(db, &token?._id.to_string(), &body)
         .await
-        .map(|data| Json(data))
+        .map(Json)
 }
