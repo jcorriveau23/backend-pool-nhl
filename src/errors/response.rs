@@ -1,6 +1,6 @@
 use hex::FromHexError;
 use mongodb;
-use std::{f32::consts::E, fmt};
+use std::fmt;
 use web3;
 
 #[derive(Debug)]
