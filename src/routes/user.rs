@@ -4,7 +4,6 @@ use rocket::State;
 
 use crate::db::user;
 use crate::errors::response::AppError;
-use crate::routes::jwt::UserToken;
 
 /// Get user by _name
 //  http://127.0.0.1:8000/api-rust/user/_name
@@ -21,10 +20,7 @@ pub async fn get_user_by_name(db: &State<Database>, _name: String) -> Result<Str
 /// Get all users
 //  http://127.0.0.1:8000/users
 #[get("/users")]
-pub async fn get_users(
-    db: &State<Database>,
-    token: Result<UserToken, AppError>,
-) -> Result<String, AppError> {
+pub async fn get_users(db: &State<Database>) -> Result<String, AppError> {
     user::find_users(db)
         .await
         .map(|data| serde_json::to_string(&data).unwrap())

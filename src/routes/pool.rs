@@ -1,4 +1,3 @@
-use chrono::Local;
 use mongodb::bson::doc;
 use mongodb::Database;
 
@@ -20,7 +19,6 @@ use crate::routes::jwt::UserToken;
 #[get("/pool/<_name>")]
 pub async fn get_pool_by_name(
     db: &State<Database>,
-    token: Result<UserToken, AppError>,
     _name: String,
 ) -> Result<Json<Pool>, AppError> {
     pool::find_pool_by_name(db, &_name).await.map(Json)
@@ -31,7 +29,6 @@ pub async fn get_pool_by_name(
 #[get("/pool/<_name>/<_from>")]
 pub async fn get_pool_by_name_with_range(
     db: &State<Database>,
-    token: Result<UserToken, AppError>,
     _name: String,
     _from: String,
 ) -> Result<Json<Pool>, AppError> {
@@ -45,7 +42,6 @@ pub async fn get_pool_by_name_with_range(
 #[get("/pools")]
 pub async fn get_pools(
     db: &State<Database>,
-    token: Result<UserToken, AppError>,
 ) -> Result<Json<Vec<ProjectedPoolShort>>, AppError> {
     pool::find_pools(db).await.map(Json)
 }
