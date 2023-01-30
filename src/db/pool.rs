@@ -300,7 +300,7 @@ pub async fn start_draft(
         // updated fields.
 
         let updated_fields = doc! {
-            "$set": to_bson(&_pool_info).unwrap()
+            "$set": to_bson(&_pool_info)?
         };
 
         // Update the fields in the mongoDB pool document.
@@ -526,8 +526,8 @@ pub async fn select_player(
 
     let updated_fields = doc! {
         "$set": doc!{
-            "context": to_bson(&pool_context).unwrap(),
-            "status": to_bson(&status).unwrap()
+            "context": to_bson(&pool_context)?,
+            "status": to_bson(&status)?
         }
     };
 
@@ -650,7 +650,7 @@ pub async fn create_trade(
 
     let updated_fields = doc! {
         "$set": doc!{
-            "trades": to_bson(&trades).unwrap(),
+            "trades": to_bson(&trades)?,
             "nb_trade": pool.nb_trade + 1
         }
     };
@@ -701,7 +701,7 @@ pub async fn cancel_trade(
 
     let updated_fields = doc! {
         "$set": doc!{
-            "trades": to_bson(&trades).unwrap(),
+            "trades": to_bson(&trades)?,
         }
     };
 
@@ -781,9 +781,9 @@ pub async fn respond_trade(
 
     let updated_fields = doc! {
         "$set": doc!{
-            "trades": to_bson(&trades).unwrap(),
-            "context.pooler_roster": to_bson(&pool_context.pooler_roster ).unwrap(),
-            "context.tradable_picks": to_bson(&pool_context.tradable_picks ).unwrap()
+            "trades": to_bson(&trades)?,
+            "context.pooler_roster": to_bson(&pool_context.pooler_roster )?,
+            "context.tradable_picks": to_bson(&pool_context.tradable_picks )?
         }
     };
 
@@ -864,7 +864,7 @@ pub async fn fill_spot(
 
     let updated_fields = doc! {
         "$set": doc!{
-            "context.pooler_roster": to_bson(&pooler_roster).unwrap()
+            "context.pooler_roster": to_bson(&pooler_roster)?
         }
     };
 
@@ -956,8 +956,8 @@ pub async fn undo_select_player(
 
     let updated_fields = doc! {
         "$set": doc!{
-            "context.pooler_roster": to_bson(&pool_context.pooler_roster).unwrap(),
-            "context.players_name_drafted": to_bson(&pool_context.players_name_drafted).unwrap(),
+            "context.pooler_roster": to_bson(&pool_context.pooler_roster)?,
+            "context.players_name_drafted": to_bson(&pool_context.players_name_drafted)?,
         }
     };
 
@@ -1169,7 +1169,7 @@ pub async fn modify_roster(
 
     let updated_fields = doc! {
         "$set": doc!{
-            "context.pooler_roster": to_bson(&pool_roster).unwrap(),
+            "context.pooler_roster": to_bson(&pool_roster)?,
         }
     };
 
@@ -1314,9 +1314,9 @@ pub async fn protect_players(
 
     let updated_fields = doc! {
         "$set": doc!{
-            "context.pooler_roster": to_bson(&pool_context.pooler_roster).unwrap(),
+            "context.pooler_roster": to_bson(&pool_context.pooler_roster)?,
             //"context.score_by_day": Some(), // TODO: clear this field since it is not usefull for the new season.
-            "status": if is_done {to_bson(&PoolState::Draft).unwrap()} else {to_bson(&PoolState::Dynastie).unwrap()}
+            "status": if is_done {to_bson(&PoolState::Draft)?} else {to_bson(&PoolState::Dynastie)?}
         }
     };
 
@@ -1365,28 +1365,28 @@ pub async fn update_pool_settings(
 
     let updated_fields = doc! {
         "$set": doc!{
-            "number_forwards": to_bson(&_update.pool_settings.number_forwards.unwrap_or(pool.number_forwards)).unwrap(),
-            "number_defenders": to_bson(&_update.pool_settings.number_defenders.unwrap_or(pool.number_defenders)).unwrap(),
-            "number_goalies": to_bson(&_update.pool_settings.number_goalies.unwrap_or(pool.number_goalies)).unwrap(),
-            "number_reservists": to_bson(&_update.pool_settings.number_reservists.unwrap_or(pool.number_reservists)).unwrap(),
-            "next_season_number_players_protected": to_bson(&_update.pool_settings.next_season_number_players_protected.unwrap_or(pool.next_season_number_players_protected)).unwrap(),
-            "tradable_picks": to_bson(&_update.pool_settings.tradable_picks.unwrap_or(pool.tradable_picks)).unwrap(),
+            "number_forwards": to_bson(&_update.pool_settings.number_forwards.unwrap_or(pool.number_forwards))?,
+            "number_defenders": to_bson(&_update.pool_settings.number_defenders.unwrap_or(pool.number_defenders))?,
+            "number_goalies": to_bson(&_update.pool_settings.number_goalies.unwrap_or(pool.number_goalies))?,
+            "number_reservists": to_bson(&_update.pool_settings.number_reservists.unwrap_or(pool.number_reservists))?,
+            "next_season_number_players_protected": to_bson(&_update.pool_settings.next_season_number_players_protected.unwrap_or(pool.next_season_number_players_protected))?,
+            "tradable_picks": to_bson(&_update.pool_settings.tradable_picks.unwrap_or(pool.tradable_picks))?,
             //Points per forwards
-            "forward_pts_goals": to_bson(&_update.pool_settings.forward_pts_goals.unwrap_or(pool.forward_pts_goals)).unwrap(),
-            "forward_pts_assists": to_bson(&_update.pool_settings.forward_pts_assists.unwrap_or(pool.forward_pts_assists)).unwrap(),
-            "forward_pts_hattricks": to_bson(&_update.pool_settings.forward_pts_hattricks.unwrap_or(pool.forward_pts_hattricks)).unwrap(),
-            "forward_pts_shootout_goals": to_bson(&_update.pool_settings.forward_pts_shootout_goals.unwrap_or(pool.forward_pts_shootout_goals)).unwrap(),
+            "forward_pts_goals": to_bson(&_update.pool_settings.forward_pts_goals.unwrap_or(pool.forward_pts_goals))?,
+            "forward_pts_assists": to_bson(&_update.pool_settings.forward_pts_assists.unwrap_or(pool.forward_pts_assists))?,
+            "forward_pts_hattricks": to_bson(&_update.pool_settings.forward_pts_hattricks.unwrap_or(pool.forward_pts_hattricks))?,
+            "forward_pts_shootout_goals": to_bson(&_update.pool_settings.forward_pts_shootout_goals.unwrap_or(pool.forward_pts_shootout_goals))?,
             //Points per Defenders
-            "defender_pts_goals": to_bson(&_update.pool_settings.defender_pts_goals.unwrap_or(pool.defender_pts_goals)).unwrap(),
-            "defender_pts_assists": to_bson(&_update.pool_settings.defender_pts_assists.unwrap_or(pool.defender_pts_assists)).unwrap(),
-            "defender_pts_hattricks": to_bson(&_update.pool_settings.defender_pts_hattricks.unwrap_or(pool.defender_pts_hattricks)).unwrap(),
-            "defender_pts_shootout_goals": to_bson(&_update.pool_settings.defender_pts_shootout_goals.unwrap_or(pool.defender_pts_shootout_goals)).unwrap(),
+            "defender_pts_goals": to_bson(&_update.pool_settings.defender_pts_goals.unwrap_or(pool.defender_pts_goals))?,
+            "defender_pts_assists": to_bson(&_update.pool_settings.defender_pts_assists.unwrap_or(pool.defender_pts_assists))?,
+            "defender_pts_hattricks": to_bson(&_update.pool_settings.defender_pts_hattricks.unwrap_or(pool.defender_pts_hattricks))?,
+            "defender_pts_shootout_goals": to_bson(&_update.pool_settings.defender_pts_shootout_goals.unwrap_or(pool.defender_pts_shootout_goals))?,
             //Points per Goalies
-            "goalies_pts_wins": to_bson(&_update.pool_settings.goalies_pts_wins.unwrap_or(pool.goalies_pts_wins)).unwrap(),
-            "goalies_pts_shutouts": to_bson(&_update.pool_settings.goalies_pts_shutouts.unwrap_or(pool.goalies_pts_shutouts)).unwrap(),
-            "goalies_pts_overtimes": to_bson(&_update.pool_settings.goalies_pts_overtimes.unwrap_or(pool.goalies_pts_overtimes)).unwrap(),
-            "goalies_pts_goals": to_bson(&_update.pool_settings.goalies_pts_goals.unwrap_or(pool.goalies_pts_goals)).unwrap(),
-            "goalies_pts_assists": to_bson(&_update.pool_settings.goalies_pts_assists.unwrap_or(pool.goalies_pts_assists)).unwrap(),
+            "goalies_pts_wins": to_bson(&_update.pool_settings.goalies_pts_wins.unwrap_or(pool.goalies_pts_wins))?,
+            "goalies_pts_shutouts": to_bson(&_update.pool_settings.goalies_pts_shutouts.unwrap_or(pool.goalies_pts_shutouts))?,
+            "goalies_pts_overtimes": to_bson(&_update.pool_settings.goalies_pts_overtimes.unwrap_or(pool.goalies_pts_overtimes))?,
+            "goalies_pts_goals": to_bson(&_update.pool_settings.goalies_pts_goals.unwrap_or(pool.goalies_pts_goals))?,
+            "goalies_pts_assists": to_bson(&_update.pool_settings.goalies_pts_assists.unwrap_or(pool.goalies_pts_assists))?,
 
         }
     };

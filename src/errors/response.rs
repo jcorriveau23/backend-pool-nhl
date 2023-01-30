@@ -1,5 +1,6 @@
 use hex::FromHexError;
 use mongodb;
+use serde;
 use std::fmt;
 use web3;
 
@@ -12,6 +13,7 @@ pub enum AppError {
     BcryptError { e: bcrypt::BcryptError },
     HexError { e: FromHexError },
     RecoveryError { e: web3::signing::RecoveryError },
+    SerializationError { e: mongodb::bson::ser::Error },
 }
 
 impl std::error::Error for AppError {}
@@ -26,6 +28,7 @@ impl fmt::Display for AppError {
             AppError::BcryptError { e } => write!(f, "Bcrypt Error: {}", e),
             AppError::HexError { e } => write!(f, "Hex Error: {}", e),
             AppError::RecoveryError { e } => write!(f, "Recovery Error: {}", e),
+            AppError::SerializationError { e } => write!(f, "Serialization Error: {}", e),
         }
     }
 }
@@ -60,6 +63,12 @@ impl From<web3::signing::RecoveryError> for AppError {
     }
 }
 
+impl From<mongodb::bson::ser::Error> for AppError {
+    fn from(e: mongodb::bson::ser::Error) -> Self {
+        AppError::SerializationError { e }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, AppError>;
 
 impl AppError {
@@ -72,6 +81,7 @@ impl AppError {
             Self::BcryptError { .. } => 504,
             Self::HexError { .. } => 505,
             Self::RecoveryError { .. } => 506,
+            Self::SerializationError { .. } => 507,
         }
     }
 }
