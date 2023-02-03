@@ -157,31 +157,32 @@ pub async fn wallet_login(
 
     let user = find_optional_user_with_address(db, &wallet_login_req.addr).await?;
 
-    if user.is_none() {
-        // create the account if it does not exist
-        let d = doc! {
-            "name": wallet_login_req.addr.clone(),
-            "addr": wallet_login_req.addr.clone(),
-            "pool_list": []
-        };
+    match user {
+        Some(user) => Ok(user),
+        None => {
+            // create the account if it does not exist
+            let d = doc! {
+                "name": wallet_login_req.addr.clone(),
+                "addr": wallet_login_req.addr.clone(),
+                "pool_list": []
+            };
 
-        let insert_one_result = collection.insert_one(d, None).await?;
+            let insert_one_result = collection.insert_one(d, None).await?;
 
-        // creating the data instead of find into the database.
-        let new_user = User {
-            _id: insert_one_result.inserted_id.as_object_id().unwrap(),
-            name: wallet_login_req.addr.clone(),
-            password: None,
-            email: None,
-            phone: None,
-            addr: Some(wallet_login_req.addr.clone()),
-            pool_list: Vec::new(),
-        };
+            // creating the data instead of find into the database.
+            let new_user = User {
+                _id: insert_one_result.inserted_id.as_object_id().unwrap(),
+                name: wallet_login_req.addr.clone(),
+                password: None,
+                email: None,
+                phone: None,
+                addr: Some(wallet_login_req.addr.clone()),
+                pool_list: Vec::new(),
+            };
 
-        return Ok(new_user);
+            return Ok(new_user);
+        }
     }
-
-    Ok(user.unwrap())
 }
 
 pub async fn update_user_name(db: &Database, _user_id: &str, _new_name: &str) -> Result<User> {

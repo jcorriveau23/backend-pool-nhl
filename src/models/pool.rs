@@ -250,6 +250,14 @@ pub struct SelectPlayerRequest {
     pub player: Player,
 }
 
+// payload to sent when adding/removing player by the owner of the pool.
+#[derive(Debug, Deserialize, JsonSchema, Clone)]
+pub struct AddRemovePlayerRequest {
+    pub name: String,
+    pub added_to_user_id: String,
+    pub player: Player,
+}
+
 // payload to sent when creating a trade.
 #[derive(Debug, Deserialize, JsonSchema, Clone)]
 pub struct CreateTradeRequest {
@@ -279,7 +287,7 @@ pub struct FillSpotRequest {
     pub player: Player,
 }
 
-// payload to sent when filling a spot with a reservist.
+// payload to sent when protecting the list of players for dynastie draft.
 #[derive(Debug, Deserialize, JsonSchema, Clone)]
 pub struct ProtectPlayersRequest {
     pub name: String,

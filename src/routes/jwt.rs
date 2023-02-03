@@ -29,7 +29,6 @@ pub struct UserToken {
 impl<'r> FromRequest<'r> for UserToken {
     type Error = AppError;
     async fn from_request(req: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
-        //let conn = req.guard::<Database>().unwrap();
         if let Some(authen_header) = req.headers().get_one("Authorization") {
             let authen_str = authen_header.to_string();
             if authen_str.starts_with("Bearer") {

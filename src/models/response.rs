@@ -15,5 +15,5 @@ pub struct PoolMessageResponse {
     /// This is a message from the server.
     pub success: bool,
     pub message: String,
-    pub pool: Option<Pool>,
+    pub pool: Pool,
 }

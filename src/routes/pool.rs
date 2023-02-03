@@ -7,9 +7,10 @@ use rocket::State;
 use crate::db::pool;
 use crate::errors::response::AppError;
 use crate::models::pool::{
-    CancelTradeRequest, CreateTradeRequest, FillSpotRequest, Pool, PoolCreationRequest,
-    PoolDeletionRequest, PoolUndoSelectionRequest, ProjectedPoolShort, ProtectPlayersRequest,
-    RespondTradeRequest, SelectPlayerRequest, StartDraftRequest, UpdatePoolSettingsRequest,
+    AddRemovePlayerRequest, CancelTradeRequest, CreateTradeRequest, FillSpotRequest, Pool,
+    PoolCreationRequest, PoolDeletionRequest, PoolUndoSelectionRequest, ProjectedPoolShort,
+    ProtectPlayersRequest, RespondTradeRequest, SelectPlayerRequest, StartDraftRequest,
+    UpdatePoolSettingsRequest,
 };
 use crate::models::response::PoolMessageResponse;
 use crate::routes::jwt::UserToken;
@@ -17,10 +18,7 @@ use crate::routes::jwt::UserToken;
 /// get Pool document by _name
 //  http://127.0.0.1:8000/rust-api/pool/test4
 #[get("/pool/<_name>")]
-pub async fn get_pool_by_name(
-    db: &State<Database>,
-    _name: String,
-) -> Result<Json<Pool>, AppError> {
+pub async fn get_pool_by_name(db: &State<Database>, _name: String) -> Result<Json<Pool>, AppError> {
     pool::find_pool_by_name(db, &_name).await.map(Json)
 }
 
@@ -40,9 +38,7 @@ pub async fn get_pool_by_name_with_range(
 /// get all Pool documents
 //  http://127.0.0.1:8000/rust-api/pools
 #[get("/pools")]
-pub async fn get_pools(
-    db: &State<Database>,
-) -> Result<Json<Vec<ProjectedPoolShort>>, AppError> {
+pub async fn get_pools(db: &State<Database>) -> Result<Json<Vec<ProjectedPoolShort>>, AppError> {
     pool::find_pools(db).await.map(Json)
 }
 
@@ -88,6 +84,40 @@ pub async fn select_player(
     pool::select_player(db, &token?._id.to_string(), &body.name, &body.player)
         .await
         .map(Json)
+}
+
+#[post("/add-player", format = "json", data = "<body>")]
+pub async fn add_player(
+    db: &State<Database>,
+    token: Result<UserToken, AppError>,
+    body: Json<AddRemovePlayerRequest>,
+) -> Result<Json<PoolMessageResponse>, AppError> {
+    pool::add_player(
+        db,
+        &token?._id.to_string(),
+        &body.added_to_user_id,
+        &body.name,
+        &body.player,
+    )
+    .await
+    .map(Json)
+}
+
+#[post("/remove-player", format = "json", data = "<body>")]
+pub async fn remove_player(
+    db: &State<Database>,
+    token: Result<UserToken, AppError>,
+    body: Json<AddRemovePlayerRequest>,
+) -> Result<Json<PoolMessageResponse>, AppError> {
+    pool::remove_player(
+        db,
+        &token?._id.to_string(),
+        &body.added_to_user_id,
+        &body.name,
+        &body.player,
+    )
+    .await
+    .map(Json)
 }
 
 #[post("/undo-select-player", format = "json", data = "<body>")]

@@ -29,6 +29,8 @@ async fn rocket() -> _ {
             routes::pool::delete_pool,
             routes::pool::start_draft,
             routes::pool::select_player,
+            routes::pool::add_player,
+            routes::pool::remove_player,
             routes::pool::undo_select_player,
             routes::pool::create_trade,
             routes::pool::cancel_trade,
