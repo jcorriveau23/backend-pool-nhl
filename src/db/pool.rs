@@ -534,7 +534,7 @@ pub async fn add_player(
 
     let updated_fields = doc! {
         "$set": doc!{
-            "context": to_bson(&pool_context)?,
+            "context.pooler_roster": to_bson(&pool_context.pooler_roster)?,
         }
     };
 
