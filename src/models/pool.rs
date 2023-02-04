@@ -254,7 +254,7 @@ pub struct SelectPlayerRequest {
 #[derive(Debug, Deserialize, JsonSchema, Clone)]
 pub struct AddRemovePlayerRequest {
     pub name: String,
-    pub added_to_user_id: String,
+    pub user_id: String,
     pub player: Player,
 }
 

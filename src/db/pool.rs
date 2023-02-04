@@ -25,14 +25,6 @@ const END_SEASON_DATE: &str = "2023-04-13";
 
 const TRADE_DEADLINE_DATE: &str = "2023-03-03";
 
-const FIRST_SATHURDAY_OF_MONTHS: [&str; 5] = [
-    "2022-11-05",
-    "2022-12-03",
-    "2023-01-07",
-    "2023-02-04",
-    "2023-03-04",
-];
-
 // Return the complete Pool information
 pub async fn find_pool_by_name(db: &Database, _name: &String) -> Result<Pool> {
     let collection = db.collection::<Pool>("pools");
@@ -198,9 +190,7 @@ pub async fn create_pool(
         date_updated: 0,
         season_start: START_SEASON_DATE.to_string(),
         season_end: END_SEASON_DATE.to_string(),
-        roster_modification_date: FIRST_SATHURDAY_OF_MONTHS
-            .map(|date| date.to_string())
-            .to_vec(),
+        roster_modification_date: Vec::new(),
     };
 
     collection.insert_one(&pool, None).await?;
@@ -520,7 +510,7 @@ pub async fn add_player(
         });
     }
 
-    if has_owner_rights(_user_id, &pool.owner) && !has_assitants_rights(_user_id, &pool.assistants)
+    if !has_owner_rights(_user_id, &pool.owner) && !has_assitants_rights(_user_id, &pool.assistants)
     {
         return Err(AppError::CustomError {
             msg: "This action is reserved for owner or assistants.".to_string(),
@@ -570,7 +560,7 @@ pub async fn remove_player(
         });
     }
 
-    if has_owner_rights(_user_id, &pool.owner) && !has_assitants_rights(_user_id, &pool.assistants)
+    if !has_owner_rights(_user_id, &pool.owner) && !has_assitants_rights(_user_id, &pool.assistants)
     {
         return Err(AppError::CustomError {
             msg: "This action is reserved for owner or assistants.".to_string(),
@@ -910,7 +900,7 @@ pub async fn undo_select_player(
 
     // validate that the user making the request is the pool owner.
 
-    if has_owner_rights(_user_id, &pool.owner) {
+    if !has_owner_rights(_user_id, &pool.owner) {
         return Err(AppError::CustomError {
             msg: "Only the owner of the pool can undo.".to_string(),
         });
@@ -1017,10 +1007,13 @@ pub async fn modify_roster(
         today = today + Duration::days(1);
     }
 
+    let collection = db.collection::<Pool>("pools");
+    let pool = find_short_pool_by_name(&collection, _pool_name).await?;
+
     if today >= start_season_date && today <= end_season_date {
         let mut bAllowed = false;
 
-        for DATE in FIRST_SATHURDAY_OF_MONTHS {
+        for DATE in &pool.roster_modification_date {
             let sathurday = Local.from_utc_date(&NaiveDate::parse_from_str(DATE, "%Y-%m-%d")?);
 
             if sathurday == today {
@@ -1035,9 +1028,6 @@ pub async fn modify_roster(
             });
         }
     }
-
-    let collection = db.collection::<Pool>("pools");
-    let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
     let mut pool_roster = get_pool_context(pool.context)?.pooler_roster;
 
@@ -1332,7 +1322,7 @@ pub async fn update_pool_settings(
 
     // make sure the user making the resquest is a pool participants.
 
-    if has_owner_rights(_user_id, &pool.owner) && !has_assitants_rights(_user_id, &pool.assistants)
+    if !has_owner_rights(_user_id, &pool.owner) && !has_assitants_rights(_user_id, &pool.assistants)
     {
         return Err(AppError::CustomError {
             msg: "You don't have the rights to update pool settings".to_string(),

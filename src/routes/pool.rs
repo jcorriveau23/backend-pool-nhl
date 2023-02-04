@@ -95,7 +95,7 @@ pub async fn add_player(
     pool::add_player(
         db,
         &token?._id.to_string(),
-        &body.added_to_user_id,
+        &body.user_id,
         &body.name,
         &body.player,
     )
@@ -112,7 +112,7 @@ pub async fn remove_player(
     pool::remove_player(
         db,
         &token?._id.to_string(),
-        &body.added_to_user_id,
+        &body.user_id,
         &body.name,
         &body.player,
     )
