@@ -7,10 +7,10 @@ use rocket::State;
 use crate::db::pool;
 use crate::errors::response::AppError;
 use crate::models::pool::{
-    AddRemovePlayerRequest, CancelTradeRequest, CreateTradeRequest, FillSpotRequest, Pool,
-    PoolCreationRequest, PoolDeletionRequest, PoolUndoSelectionRequest, ProjectedPoolShort,
-    ProtectPlayersRequest, RespondTradeRequest, SelectPlayerRequest, StartDraftRequest,
-    UpdatePoolSettingsRequest,
+    AddRemovePlayerRequest, CancelTradeRequest, CreateTradeRequest, FillSpotRequest,
+    ModifyRosterRequest, Pool, PoolCreationRequest, PoolDeletionRequest, PoolUndoSelectionRequest,
+    ProjectedPoolShort, ProtectPlayersRequest, RespondTradeRequest, SelectPlayerRequest,
+    StartDraftRequest, UpdatePoolSettingsRequest,
 };
 use crate::models::response::PoolMessageResponse;
 use crate::routes::jwt::UserToken;
@@ -209,16 +209,17 @@ pub async fn protect_players(
 pub async fn modify_roster(
     db: &State<Database>,
     token: Result<UserToken, AppError>,
-    body: Json<ProtectPlayersRequest>,
+    body: Json<ModifyRosterRequest>,
 ) -> Result<Json<PoolMessageResponse>, AppError> {
     pool::modify_roster(
         db,
         &token?._id.to_string(),
         &body.name,
-        &body.forw_protected,
-        &body.def_protected,
-        &body.goal_protected,
-        &body.reserv_protected,
+        &body.user_id,
+        &body.forw_list,
+        &body.def_list,
+        &body.goal_list,
+        &body.reserv_list,
     )
     .await
     .map(Json)

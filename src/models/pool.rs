@@ -287,6 +287,17 @@ pub struct FillSpotRequest {
     pub player: Player,
 }
 
+// payload to sent when modifying roster of a pooler
+#[derive(Debug, Deserialize, JsonSchema, Clone)]
+pub struct ModifyRosterRequest {
+    pub name: String,
+    pub user_id: String,
+    pub forw_list: Vec<Player>,
+    pub def_list: Vec<Player>,
+    pub goal_list: Vec<Player>,
+    pub reserv_list: Vec<Player>,
+}
+
 // payload to sent when protecting the list of players for dynastie draft.
 #[derive(Debug, Deserialize, JsonSchema, Clone)]
 pub struct ProtectPlayersRequest {

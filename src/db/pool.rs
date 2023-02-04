@@ -982,11 +982,24 @@ pub async fn modify_roster(
     db: &Database,
     _user_id: &str,
     _pool_name: &str,
+    _user_modified_id: &str,
     _forw_selected: &Vec<Player>,
     _def_selected: &Vec<Player>,
     _goal_selected: &Vec<Player>,
     _reserv_selected: &Vec<Player>,
 ) -> Result<PoolMessageResponse> {
+    let collection = db.collection::<Pool>("pools");
+    let pool = find_short_pool_by_name(&collection, _pool_name).await?;
+
+    if _user_id != _user_modified_id
+        && !has_owner_rights(_user_id, &pool.owner)
+        && !has_assitants_rights(_user_id, &pool.assistants)
+    {
+        return Err(AppError::CustomError {
+            msg: "You do not have the right to modify this pooler roster.".to_string(),
+        });
+    }
+
     let start_season_date =
         Local.from_utc_date(&NaiveDate::parse_from_str(START_SEASON_DATE, "%Y-%m-%d")?);
     let end_season_date =
@@ -996,19 +1009,11 @@ pub async fn modify_roster(
 
     let time = Local::now();
 
-    println!(
-        "Roster modification by {}, performed at {} {}",
-        _user_id, today, time
-    );
-
     // At 12PM we start to count the action for the next day.
 
     if time.hour() >= 12 {
         today = today + Duration::days(1);
     }
-
-    let collection = db.collection::<Pool>("pools");
-    let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
     if today >= start_season_date && today <= end_season_date {
         let mut bAllowed = false;
@@ -1031,7 +1036,7 @@ pub async fn modify_roster(
 
     let mut pool_roster = get_pool_context(pool.context)?.pooler_roster;
 
-    if !pool_roster.contains_key(_user_id) {
+    if !pool_roster.contains_key(_user_modified_id) {
         return Err(AppError::CustomError {
             msg: "User is not in the pool.".to_string(),
         });
@@ -1063,7 +1068,7 @@ pub async fn modify_roster(
 
     // Validate the total amount of players selected (It should be the same as before)
 
-    if let Some(roster) = pool_roster.get(_user_id) {
+    if let Some(roster) = pool_roster.get(_user_modified_id) {
         let amount_selected_players = _forw_selected.len()
             + _def_selected.len()
             + _goal_selected.len()
@@ -1095,7 +1100,7 @@ pub async fn modify_roster(
             });
         }
         selected_player_map.insert(forward.id, true);
-        if !validate_player_possession(forward, &pool_roster[_user_id]).await {
+        if !validate_player_possession(forward, &pool_roster[_user_modified_id]).await {
             return Err(AppError::CustomError {
                 msg: format!("You do not possess {}.", forward.name),
             });
@@ -1111,7 +1116,7 @@ pub async fn modify_roster(
             });
         }
         selected_player_map.insert(defender.id, true);
-        if !validate_player_possession(defender, &pool_roster[_user_id]).await {
+        if !validate_player_possession(defender, &pool_roster[_user_modified_id]).await {
             return Err(AppError::CustomError {
                 msg: format!("You do not possess {}.", defender.name),
             });
@@ -1127,7 +1132,7 @@ pub async fn modify_roster(
             });
         }
         selected_player_map.insert(goaly.id, true);
-        if !validate_player_possession(goaly, &pool_roster[_user_id]).await {
+        if !validate_player_possession(goaly, &pool_roster[_user_modified_id]).await {
             return Err(AppError::CustomError {
                 msg: format!("You do not possess {}.", goaly.name),
             });
@@ -1143,14 +1148,14 @@ pub async fn modify_roster(
             });
         }
         selected_player_map.insert(reservist.id, true);
-        if !validate_player_possession(reservist, &pool_roster[_user_id]).await {
+        if !validate_player_possession(reservist, &pool_roster[_user_modified_id]).await {
             return Err(AppError::CustomError {
                 msg: format!("You do not possess {}.", reservist.name),
             });
         }
     }
 
-    if let Some(roster) = pool_roster.get_mut(_user_id) {
+    if let Some(roster) = pool_roster.get_mut(_user_modified_id) {
         roster.chosen_forwards = _forw_selected.clone();
         roster.chosen_defenders = _def_selected.clone();
         roster.chosen_goalies = _goal_selected.clone();
