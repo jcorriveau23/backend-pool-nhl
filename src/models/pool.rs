@@ -82,17 +82,18 @@ pub struct ProjectedPoolContext {
 pub struct PoolContext {
     pub pooler_roster: HashMap<String, PoolerRoster>,
     pub players_name_drafted: Vec<u32>,
-    pub score_by_day: Option<HashMap<String, HashMap<String, DailyRosterPoints>>>,
+    pub score_by_day: HashMap<String, HashMap<String, DailyRosterPoints>>,
     pub tradable_picks: Option<Vec<HashMap<String, String>>>,
     pub past_tradable_picks: Option<Vec<HashMap<String, String>>>,
+    pub players: HashMap<u32, Player>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)] // Copy
 pub struct PoolerRoster {
-    pub chosen_forwards: Vec<Player>,
-    pub chosen_defenders: Vec<Player>,
-    pub chosen_goalies: Vec<Player>,
-    pub chosen_reservists: Vec<Player>,
+    pub chosen_forwards: Vec<u32>,
+    pub chosen_defenders: Vec<u32>,
+    pub chosen_goalies: Vec<u32>,
+    pub chosen_reservists: Vec<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
@@ -255,7 +256,7 @@ pub struct SelectPlayerRequest {
 pub struct AddRemovePlayerRequest {
     pub name: String,
     pub user_id: String,
-    pub player: Player,
+    pub player_id: u32,
 }
 
 // payload to sent when creating a trade.
@@ -284,7 +285,7 @@ pub struct RespondTradeRequest {
 #[derive(Debug, Deserialize, JsonSchema, Clone)]
 pub struct FillSpotRequest {
     pub name: String,
-    pub player: Player,
+    pub player_id: u32,
 }
 
 // payload to sent when modifying roster of a pooler
@@ -292,20 +293,20 @@ pub struct FillSpotRequest {
 pub struct ModifyRosterRequest {
     pub name: String,
     pub user_id: String,
-    pub forw_list: Vec<Player>,
-    pub def_list: Vec<Player>,
-    pub goal_list: Vec<Player>,
-    pub reserv_list: Vec<Player>,
+    pub forw_list: Vec<u32>,
+    pub def_list: Vec<u32>,
+    pub goal_list: Vec<u32>,
+    pub reserv_list: Vec<u32>,
 }
 
 // payload to sent when protecting the list of players for dynastie draft.
 #[derive(Debug, Deserialize, JsonSchema, Clone)]
 pub struct ProtectPlayersRequest {
     pub name: String,
-    pub forw_protected: Vec<Player>,
-    pub def_protected: Vec<Player>,
-    pub goal_protected: Vec<Player>,
-    pub reserv_protected: Vec<Player>,
+    pub forw_protected: Vec<u32>,
+    pub def_protected: Vec<u32>,
+    pub goal_protected: Vec<u32>,
+    pub reserv_protected: Vec<u32>,
 }
 
 // payload to sent when undoing a selection in a pool by the owner.

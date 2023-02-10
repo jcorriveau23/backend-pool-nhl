@@ -50,7 +50,7 @@ pub async fn create_pool(
 ) -> Result<Json<PoolMessageResponse>, AppError> {
     pool::create_pool(db, token?._id.to_string(), body.0)
         .await
-        .map(|data| Json(data))
+        .map(Json)
 }
 
 #[post("/delete-pool", format = "json", data = "<body>")]
@@ -97,7 +97,7 @@ pub async fn add_player(
         &token?._id.to_string(),
         &body.user_id,
         &body.name,
-        &body.player,
+        body.player_id,
     )
     .await
     .map(Json)
@@ -114,7 +114,7 @@ pub async fn remove_player(
         &token?._id.to_string(),
         &body.user_id,
         &body.name,
-        &body.player,
+        body.player_id,
     )
     .await
     .map(Json)
@@ -181,7 +181,7 @@ pub async fn fill_spot(
     token: Result<UserToken, AppError>,
     body: Json<FillSpotRequest>,
 ) -> Result<Json<PoolMessageResponse>, AppError> {
-    pool::fill_spot(db, &token?._id.to_string(), &body.name, &body.player)
+    pool::fill_spot(db, &token?._id.to_string(), &body.name, body.player_id)
         .await
         .map(Json)
 }
