@@ -57,19 +57,23 @@ pub async fn add_pool_to_users(
     _collection: &Collection<User>,
     _pool_name: &String,
     _user_ids: &Vec<String>,
-) {
+) -> Result<()> {
     // Add the new pool to the list of pool in each users.
 
     let participants_objectId: Vec<ObjectId> = _user_ids
         .iter()
-        .map(|id| ObjectId::from_str(id).unwrap())
+        .map(|id| {
+            ObjectId::from_str(id).expect("The user id list should all be valid at that point.")
+        })
         .collect();
 
     let query = doc! {"_id": {"$in": participants_objectId}};
 
     let update = doc! {"$push": {"pool_list": _pool_name}}; // Add the name of the pool
 
-    _collection.update_many(query, update, None).await;
+    _collection.update_many(query, update, None).await?;
+
+    Ok(())
 }
 
 pub async fn create_user_from_register(
@@ -103,18 +107,21 @@ pub async fn create_user_from_register(
 
     let insert_one_result = collection.insert_one(d, None).await?;
 
-    // creating the data instead of find into the database.
-    let new_user = User {
-        _id: insert_one_result.inserted_id.as_object_id().unwrap(),
-        name: register_req.name.clone(),
-        password: Some(register_req.password.clone()),
-        email: Some(register_req.email.clone()),
-        phone: Some(register_req.phone.clone()),
-        addr: None,
-        pool_list: Vec::new(),
-    };
-
-    Ok(new_user)
+    match insert_one_result.inserted_id.as_object_id() {
+        // creating the data instead of find into the database.
+        Some(inserted_id) => Ok(User {
+            _id: inserted_id,
+            name: register_req.name.clone(),
+            password: Some(register_req.password.clone()),
+            email: Some(register_req.email.clone()),
+            phone: Some(register_req.phone.clone()),
+            addr: None,
+            pool_list: Vec::new(),
+        }),
+        None => Err(AppError::CustomError {
+            msg: "The user could not be added to the data base.".to_string(),
+        }),
+    }
 }
 
 pub async fn login(db: &Database, login_req: &LoginRequest) -> Result<User> {
@@ -122,21 +129,21 @@ pub async fn login(db: &Database, login_req: &LoginRequest) -> Result<User> {
 
     let user = find_user_with_name(db, &login_req.name).await?;
 
-    if user.password.is_none() {
-        return Err(
-            AppError::CustomError {
+    match &user.password {
+        Some(psw) => {
+            let is_valid_password = bcrypt::verify(&login_req.password, psw)?;
+
+            if !is_valid_password {
+                return Err(AppError::CustomError {
+                    msg: "The password provided is not valid.".to_string(),
+                });
+            }
+        }
+        None => {
+            return Err(AppError::CustomError {
                 msg: "This account does not store any password.".to_string(),
-            }, // happens when someone loging with a wallet (no password stored)
-        );
-    }
-
-    let psw = &user.password.as_ref().unwrap();
-    let is_valid_password = bcrypt::verify(&login_req.password, psw)?;
-
-    if !is_valid_password {
-        return Err(AppError::CustomError {
-            msg: "The password provided is not valid.".to_string(),
-        });
+            })
+        }
     }
 
     Ok(user)
@@ -169,18 +176,21 @@ pub async fn wallet_login(
 
             let insert_one_result = collection.insert_one(d, None).await?;
 
-            // creating the data instead of find into the database.
-            let new_user = User {
-                _id: insert_one_result.inserted_id.as_object_id().unwrap(),
-                name: wallet_login_req.addr.clone(),
-                password: None,
-                email: None,
-                phone: None,
-                addr: Some(wallet_login_req.addr.clone()),
-                pool_list: Vec::new(),
-            };
-
-            return Ok(new_user);
+            match insert_one_result.inserted_id.as_object_id() {
+                // creating the data instead of find into the database.
+                Some(inserted_id) => Ok(User {
+                    _id: inserted_id,
+                    name: wallet_login_req.addr.clone(),
+                    password: None,
+                    email: None,
+                    phone: None,
+                    addr: Some(wallet_login_req.addr.clone()),
+                    pool_list: Vec::new(),
+                }),
+                None => Err(AppError::CustomError {
+                    msg: "The user could not be added to the data base.".to_string(),
+                }),
+            }
         }
     }
 }
@@ -192,7 +202,7 @@ pub async fn update_user_name(db: &Database, _user_id: &str, _new_name: &str) ->
         .return_document(ReturnDocument::After)
         .build();
 
-    let filter = doc! {"_id": ObjectId::from_str(_user_id).unwrap()};
+    let filter = doc! {"_id": ObjectId::from_str(_user_id)?};
 
     let doc = doc! {
         "$set":  doc!{
@@ -218,7 +228,7 @@ pub async fn update_password(db: &Database, _user_id: &str, _new_password: &str)
         .return_document(ReturnDocument::After)
         .build();
 
-    let filter = doc! {"_id": ObjectId::from_str(_user_id).unwrap()};
+    let filter = doc! {"_id": ObjectId::from_str(_user_id)?};
 
     let updated_fields = doc! {
         "$set":  doc!{
@@ -238,10 +248,16 @@ pub async fn update_password(db: &Database, _user_id: &str, _new_password: &str)
 async fn verify_message(addr: &str, sig: &str) -> Result<bool> {
     let message = "Unlock wallet to access nhl-pool-ethereum.";
 
-    let signature = hex::decode(sig.strip_prefix("0x").unwrap())?;
-    let signer_addr = web3::signing::recover(&eth_message(message), &signature[..64], 0)?;
-
-    Ok(format!("{:02X?}", signer_addr) == *addr.to_lowercase())
+    match sig.strip_prefix("0x") {
+        Some(hex) => {
+            let signer_addr =
+                web3::signing::recover(&eth_message(message), &hex::decode(hex)?[..64], 0)?;
+            Ok(format!("{:02X?}", signer_addr) == *addr.to_lowercase())
+        }
+        None => Err(AppError::CustomError {
+            msg: "Could not deserialize the signature provided".to_string(),
+        }),
+    }
 }
 
 pub fn eth_message(message: &str) -> [u8; 32] {

@@ -1,6 +1,6 @@
 use hex::FromHexError;
+use jsonwebtoken;
 use mongodb;
-use serde;
 use std::fmt;
 use web3;
 
@@ -13,7 +13,9 @@ pub enum AppError {
     BcryptError { e: bcrypt::BcryptError },
     HexError { e: FromHexError },
     RecoveryError { e: web3::signing::RecoveryError },
-    SerializationError { e: mongodb::bson::ser::Error },
+    BsonError { e: mongodb::bson::ser::Error },
+    JwtError { e: jsonwebtoken::errors::Error },
+    ObjectIdError { e: mongodb::bson::oid::Error },
 }
 
 impl std::error::Error for AppError {}
@@ -28,7 +30,9 @@ impl fmt::Display for AppError {
             AppError::BcryptError { e } => write!(f, "Bcrypt Error: {}", e),
             AppError::HexError { e } => write!(f, "Hex Error: {}", e),
             AppError::RecoveryError { e } => write!(f, "Recovery Error: {}", e),
-            AppError::SerializationError { e } => write!(f, "Serialization Error: {}", e),
+            AppError::BsonError { e } => write!(f, "Bson Serialization Error: {}", e),
+            AppError::JwtError { e } => write!(f, "Jwt Decoding Error: {}", e),
+            AppError::ObjectIdError { e } => write!(f, "string to object ID Error: {}", e),
         }
     }
 }
@@ -65,7 +69,19 @@ impl From<web3::signing::RecoveryError> for AppError {
 
 impl From<mongodb::bson::ser::Error> for AppError {
     fn from(e: mongodb::bson::ser::Error) -> Self {
-        AppError::SerializationError { e }
+        AppError::BsonError { e }
+    }
+}
+
+impl From<jsonwebtoken::errors::Error> for AppError {
+    fn from(e: jsonwebtoken::errors::Error) -> Self {
+        AppError::JwtError { e }
+    }
+}
+
+impl From<mongodb::bson::oid::Error> for AppError {
+    fn from(e: mongodb::bson::oid::Error) -> Self {
+        AppError::ObjectIdError { e }
     }
 }
 
@@ -81,7 +97,9 @@ impl AppError {
             Self::BcryptError { .. } => 504,
             Self::HexError { .. } => 505,
             Self::RecoveryError { .. } => 506,
-            Self::SerializationError { .. } => 507,
+            Self::BsonError { .. } => 507,
+            Self::JwtError { .. } => 508,
+            Self::ObjectIdError { .. } => 509,
         }
     }
 }

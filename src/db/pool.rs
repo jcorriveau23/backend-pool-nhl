@@ -45,7 +45,6 @@ pub async fn find_optional_short_pool_by_name(
         .build();
 
     let short_pool = collection
-        .clone_with_type::<Pool>()
         .find_one(doc! {"name": &_name}, find_option)
         .await?;
 
@@ -101,7 +100,7 @@ pub async fn find_pool_by_name_with_range(
         let str_date = start_date
             .to_string()
             .strip_suffix("UTC")
-            .unwrap()
+            .expect("A Date<Utc> should always be stripable with UTC.")
             .to_string();
 
         if str_date == *_from {
@@ -207,11 +206,7 @@ pub async fn delete_pool(
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
-    if !has_owner_rights(_user_id, &pool.owner) {
-        return Err(AppError::CustomError {
-            msg: "Only the owner of the pool can delete the pool.".to_string(),
-        });
-    }
+    has_owner_privileges(_user_id, &pool)?;
 
     let delete_result = collection
         .delete_one(doc! {"name": _pool_name}, None)
@@ -244,18 +239,14 @@ pub async fn start_draft(
             });
         }
 
-        if !has_owner_rights(_user_id, &_pool_info.owner) {
-            return Err(AppError::CustomError {
-                msg: "Only the owner of the pool can start the draft.".to_string(),
-            });
-        }
+        has_owner_privileges(_user_id, &_pool_info)?;
 
         // TODO: Validate that the list of users provided all exist.
 
         // Add the new pool to the list of pool in each users.
 
         let collection_users = db.collection::<User>("users");
-        add_pool_to_users(&collection_users, &_pool_info.name, participants).await;
+        add_pool_to_users(&collection_users, &_pool_info.name, participants).await?;
 
         let collection = db.collection::<Pool>("pools");
 
@@ -266,6 +257,7 @@ pub async fn start_draft(
             tradable_picks: Some(Vec::new()),
             past_tradable_picks: Some(Vec::new()),
             players_name_drafted: Vec::new(),
+            players: HashMap::new(),
         };
 
         // Initialize all participants roster object.
@@ -326,7 +318,7 @@ pub async fn select_player(
     let participants = get_participants(pool.participants)?;
 
     for participant in participants.iter() {
-        if validate_player_possession(_player, &pool_context.pooler_roster[participant]).await {
+        if validate_player_possession(_player.id, &pool_context.pooler_roster[participant]).await {
             return Err(AppError::CustomError {
                 msg: "This player is already picked.".to_string(),
             });
@@ -340,64 +332,71 @@ pub async fn select_player(
         pool.number_forwards + pool.number_defenders + pool.number_goalies + pool.number_reservists;
 
     // validate it is the user turn.
-    if pool.final_rank.is_some() {
-        // This comes from a Dynastie draft.
 
-        let final_rank = pool.final_rank.unwrap(); // the final rank is used to see who picks
-        let tradable_picks = pool_context.tradable_picks.as_ref().unwrap();
+    match pool.final_rank {
+        Some(final_rank) => {
+            // This is a dynastie type pool.
 
-        loop {
-            let players_drafted = pool_context.players_name_drafted.len();
+            let tradable_picks = pool_context
+                .tradable_picks
+                .as_ref()
+                .expect("This member should never be optional in dynastie type pool.");
 
-            let index =
-                pool.number_poolers as usize - 1 - (players_drafted % pool.number_poolers as usize);
-            let next_drafter = &final_rank[index];
+            loop {
+                let players_drafted = pool_context.players_name_drafted.len();
 
-            if players_drafted < (pool.tradable_picks * pool.number_poolers) as usize {
-                // use the tradable_picks to see who will draft next.
+                let index = pool.number_poolers as usize
+                    - 1
+                    - (players_drafted % pool.number_poolers as usize);
+                let next_drafter = &final_rank[index];
 
-                let real_next_drafter =
-                    &tradable_picks[players_drafted / pool.number_poolers as usize][next_drafter];
+                if players_drafted < (pool.tradable_picks * pool.number_poolers) as usize {
+                    // use the tradable_picks to see who will draft next.
 
-                if users_players_count[real_next_drafter] >= tot_players_in_roster {
-                    pool_context.players_name_drafted.push(0); // Id 0 means the players did not draft because is roster is already full
-                    continue;
+                    let real_next_drafter = &tradable_picks
+                        [players_drafted / pool.number_poolers as usize][next_drafter];
+
+                    if users_players_count[real_next_drafter] >= tot_players_in_roster {
+                        pool_context.players_name_drafted.push(0); // Id 0 means the players did not draft because is roster is already full
+                        continue;
+                    }
+
+                    if real_next_drafter != _user_id {
+                        return Err(AppError::CustomError {
+                            msg: format!("It is {}'s turn.", real_next_drafter),
+                        });
+                    }
+                    break;
+                } else {
+                    // Use the final_rank to see who draft next.
+
+                    if users_players_count[next_drafter] >= tot_players_in_roster {
+                        pool_context.players_name_drafted.push(0); // Id 0 means the players did not draft because is roster is already full
+                        continue;
+                    }
+
+                    if next_drafter != _user_id {
+                        return Err(AppError::CustomError {
+                            msg: format!("It is {}'s turn.", next_drafter),
+                        });
+                    }
+                    break;
                 }
-
-                if real_next_drafter != _user_id {
-                    return Err(AppError::CustomError {
-                        msg: format!("It is {}'s turn.", real_next_drafter),
-                    });
-                }
-                break;
-            } else {
-                // Use the final_rank to see who draft next.
-
-                if users_players_count[next_drafter] >= tot_players_in_roster {
-                    pool_context.players_name_drafted.push(0); // Id 0 means the players did not draft because is roster is already full
-                    continue;
-                }
-
-                if next_drafter != _user_id {
-                    return Err(AppError::CustomError {
-                        msg: format!("It is {}'s turn.", next_drafter),
-                    });
-                }
-                break;
             }
         }
-    } else {
-        // this comes from a new draft.
+        None => {
+            // there is no final rank so this is the newly created draft logic.
 
-        let players_drafted = pool_context.players_name_drafted.len();
+            let players_drafted = pool_context.players_name_drafted.len();
 
-        let index = players_drafted % pool.number_poolers as usize;
-        let next_drafter = &participants[index];
+            let index = players_drafted % pool.number_poolers as usize;
+            let next_drafter = &participants[index];
 
-        if next_drafter != _user_id {
-            return Err(AppError::CustomError {
-                msg: format!("It is {}'s turn.", next_drafter),
-            });
+            if next_drafter != _user_id {
+                return Err(AppError::CustomError {
+                    msg: format!("It is {}'s turn.", next_drafter),
+                });
+            }
         }
     }
 
@@ -410,19 +409,19 @@ pub async fn select_player(
         match _player.position {
             Position::F => {
                 if (pooler_roster.chosen_forwards.len() as u8) < pool.number_forwards {
-                    pooler_roster.chosen_forwards.push(_player.clone());
+                    pooler_roster.chosen_forwards.push(_player.id);
                     is_added = true;
                 }
             }
             Position::D => {
                 if (pooler_roster.chosen_defenders.len() as u8) < pool.number_defenders {
-                    pooler_roster.chosen_defenders.push(_player.clone());
+                    pooler_roster.chosen_defenders.push(_player.id);
                     is_added = true;
                 }
             }
             Position::G => {
                 if (pooler_roster.chosen_goalies.len() as u8) < pool.number_goalies {
-                    pooler_roster.chosen_goalies.push(_player.clone());
+                    pooler_roster.chosen_goalies.push(_player.id);
                     is_added = true;
                 }
             }
@@ -430,7 +429,7 @@ pub async fn select_player(
 
         if !is_added {
             if (pooler_roster.chosen_reservists.len() as u8) < pool.number_reservists {
-                pooler_roster.chosen_reservists.push(_player.clone());
+                pooler_roster.chosen_reservists.push(_player.id);
             } else {
                 return Err(AppError::CustomError {
                     msg: "Not enough space for this player.".to_string(),
@@ -438,6 +437,9 @@ pub async fn select_player(
             }
         }
 
+        pool_context
+            .players
+            .insert(_player.id.to_string(), _player.clone());
         pool_context.players_name_drafted.push(_player.id);
 
         if let Some(nCount) = users_players_count.get_mut(_user_id) {
@@ -502,6 +504,8 @@ pub async fn add_player(
 ) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
+    has_privileges(_user_id, &pool)?;
+
     let mut pool_context = get_pool_context(pool.context)?;
 
     if !pool_context.pooler_roster.contains_key(_added_to_user_id) {
@@ -510,31 +514,27 @@ pub async fn add_player(
         });
     }
 
-    if !has_owner_rights(_user_id, &pool.owner) && !has_assitants_rights(_user_id, &pool.assistants)
-    {
-        return Err(AppError::CustomError {
-            msg: "This action is reserved for owner or assistants.".to_string(),
-        });
-    }
-
     // First, validate that the player selected is not picked by any of the other poolers.
     for participant in get_participants(pool.participants)?.iter() {
-        if validate_player_possession(_player, &pool_context.pooler_roster[participant]).await {
+        if validate_player_possession(_player.id, &pool_context.pooler_roster[participant]).await {
             return Err(AppError::CustomError {
                 msg: "This player is already picked.".to_string(),
             });
         }
     }
 
-    if let Some(pooler_roster) = pool_context.pooler_roster.get_mut(_added_to_user_id) {
-        pooler_roster.chosen_reservists.push(_player.clone());
-    }
+    add_player_to_roster(&mut pool_context, _player.id, _added_to_user_id)?;
+
+    pool_context
+        .players
+        .insert(_player.id.to_string(), _player.clone());
 
     // updated fields.
 
     let updated_fields = doc! {
         "$set": doc!{
             "context.pooler_roster": to_bson(&pool_context.pooler_roster)?,
+            "context.players": to_bson(&pool_context.players)?
         }
     };
 
@@ -548,10 +548,12 @@ pub async fn remove_player(
     _user_id: &str,
     _removed_to_user_id: &str,
     _pool_name: &str,
-    _player: &Player,
+    _player_id: u32,
 ) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
+    has_privileges(_user_id, &pool)?;
+
     let mut pool_context = get_pool_context(pool.context)?;
 
     if !pool_context.pooler_roster.contains_key(_removed_to_user_id) {
@@ -560,22 +562,16 @@ pub async fn remove_player(
         });
     }
 
-    if !has_owner_rights(_user_id, &pool.owner) && !has_assitants_rights(_user_id, &pool.assistants)
-    {
-        return Err(AppError::CustomError {
-            msg: "This action is reserved for owner or assistants.".to_string(),
-        });
-    }
-
     // First, validate that the player selected is not picked by any of the other poolers.
-    if !validate_player_possession(_player, &pool_context.pooler_roster[_removed_to_user_id]).await
+    if !validate_player_possession(_player_id, &pool_context.pooler_roster[_removed_to_user_id])
+        .await
     {
         return Err(AppError::CustomError {
             msg: "This player is not own by the user.".to_string(),
         });
     }
 
-    remove_roster_player(&mut pool_context, _player.id, _removed_to_user_id);
+    remove_player_from_roster(&mut pool_context, _player_id, _removed_to_user_id);
 
     // updated fields.
 
@@ -623,11 +619,7 @@ pub async fn create_trade(
         });
     }
 
-    if pool.trades.is_none() {
-        pool.trades = Some(Vec::new());
-    }
-
-    let mut trades = pool.trades.unwrap();
+    let mut trades = get_trades(pool.trades)?;
 
     // Make sure that user can only have 1 active trade at a time. return an error if already one trade active in this pool. (Active trade = NEW, ACCEPTED, )
 
@@ -661,14 +653,8 @@ pub async fn create_trade(
 
     // Does the pooler really poccess the players ?
 
-    if !validate_trade_possession(&_trade.from_items, &pool_context, &_trade.proposed_by).await
-        || !validate_trade_possession(&_trade.to_items, &pool_context, &_trade.ask_to).await
-    {
-        return Err(AppError::CustomError {
-            msg: "One of the pooler does not poccess the items list provided for the trade."
-                .to_string(),
-        });
-    }
+    validate_trade_possession(&_trade.from_items, &pool_context, &_trade.proposed_by).await?;
+    validate_trade_possession(&_trade.to_items, &pool_context, &_trade.ask_to).await?;
 
     _trade.date_created = Utc::now().timestamp_millis();
     _trade.status = TradeStatus::NEW;
@@ -703,7 +689,7 @@ pub async fn cancel_trade(
         });
     }
 
-    let mut trades = pool.trades.unwrap();
+    let mut trades = get_trades(pool.trades)?;
 
     // validate that the status of the trade is NEW
 
@@ -750,7 +736,7 @@ pub async fn respond_trade(
         });
     }
 
-    let mut trades = pool.trades.unwrap();
+    let mut trades = get_trades(pool.trades)?;
     let mut pool_context = get_pool_context(pool.context)?;
 
     // validate that the status of the trade is NEW
@@ -761,38 +747,34 @@ pub async fn respond_trade(
         });
     }
 
-    // validate that only the one that was ask for the trade or the owner can accept it.
-
-    if trades[_trade_id as usize].ask_to != *_user_id
-        && (!has_owner_rights(_user_id, &pool.owner)
-            && !has_assitants_rights(_user_id, &pool.assistants))
+    if !has_owner_rights(_user_id, &pool.owner)
+        && !has_assistants_rights(_user_id, &pool.assistants)
     {
-        return Err(AppError::CustomError {
-            msg: "Only the one that was ask for the trade or the owner can accept it.".to_string(),
-        });
-    }
+        // validate that only the one that was ask for the trade or the owner can accept it.
 
-    // validate that 24h have been passed since the trade was created.
-
-    let now = Utc::now().timestamp_millis();
-
-    if trades[_trade_id as usize].date_created + 8640000 > now
-        && (!has_owner_rights(_user_id, &pool.owner)
-            && !has_assitants_rights(_user_id, &pool.assistants))
-    {
-        return Err(AppError::CustomError {
-            msg: "The trade needs to be active for 24h before being able to accept it.".to_string(),
-        });
-    }
-
-    // validate that both trade parties own those items
-
-    if _is_accepted {
-        if !trade_roster_items(&mut pool_context, &trades[_trade_id as usize]).await {
+        if trades[_trade_id as usize].ask_to != *_user_id {
             return Err(AppError::CustomError {
-                msg: "Trading items is not valid.".to_string(),
+                msg: "Only the one that was ask for the trade or the owner can accept it."
+                    .to_string(),
             });
         }
+
+        // validate that 24h have been passed since the trade was created.
+
+        let now = Utc::now().timestamp_millis();
+
+        if trades[_trade_id as usize].date_created + 8640000 > now {
+            return Err(AppError::CustomError {
+                msg: "The trade needs to be active for 24h before being able to accept it."
+                    .to_string(),
+            });
+        }
+    }
+
+    // validate that both trade parties own their corresponding trade items
+
+    if _is_accepted {
+        trade_roster_items(&mut pool_context, &trades[_trade_id as usize]).await?;
 
         trades[_trade_id as usize].status = TradeStatus::ACCEPTED;
         trades[_trade_id as usize].date_accepted = Utc::now().timestamp_millis();
@@ -816,23 +798,45 @@ pub async fn respond_trade(
 pub async fn fill_spot(
     db: &Database,
     _user_id: &str,
+    _user_modified_id: &str,
     _pool_name: &str,
-    _player: &Player,
+    _player_id: u32,
 ) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
-    let mut pooler_roster = get_pool_context(pool.context)?.pooler_roster;
 
-    if !pooler_roster.contains_key(_user_id) {
+    if _user_id != _user_modified_id {
+        has_privileges(_user_id, &pool)?;
+    }
+
+    let mut pool_context = get_pool_context(pool.context)?;
+
+    if !pool_context.pooler_roster.contains_key(_user_modified_id) {
         return Err(AppError::CustomError {
             msg: "The pooler is not a participant of the pool.".to_string(),
         });
     }
 
-    if pooler_roster[_user_id].chosen_forwards.contains(_player)
-        || pooler_roster[_user_id].chosen_defenders.contains(_player)
-        || pooler_roster[_user_id].chosen_goalies.contains(_player)
-        || !pooler_roster[_user_id].chosen_reservists.contains(_player)
+    let player =
+        pool_context
+            .players
+            .get(&_player_id.to_string())
+            .ok_or(AppError::CustomError {
+                msg: "This player is not included in the pool.".to_string(),
+            })?;
+
+    if pool_context.pooler_roster[_user_modified_id]
+        .chosen_forwards
+        .contains(&player.id)
+        || pool_context.pooler_roster[_user_modified_id]
+            .chosen_defenders
+            .contains(&player.id)
+        || pool_context.pooler_roster[_user_modified_id]
+            .chosen_goalies
+            .contains(&player.id)
+        || !pool_context.pooler_roster[_user_modified_id]
+            .chosen_reservists
+            .contains(&player.id)
     {
         return Err(AppError::CustomError {
             msg: "The player should only be in the reservist pooler's list.".to_string(),
@@ -841,27 +845,39 @@ pub async fn fill_spot(
 
     let mut is_added = false;
 
-    match _player.position {
+    match player.position {
         Position::F => {
-            if (pooler_roster[_user_id].chosen_forwards.len() as u8) < pool.number_forwards {
-                if let Some(x) = pooler_roster.get_mut(_user_id) {
-                    x.chosen_forwards.push(_player.clone());
+            if (pool_context.pooler_roster[_user_modified_id]
+                .chosen_forwards
+                .len() as u8)
+                < pool.number_forwards
+            {
+                if let Some(x) = pool_context.pooler_roster.get_mut(_user_modified_id) {
+                    x.chosen_forwards.push(player.id);
                     is_added = true;
                 }
             }
         }
         Position::D => {
-            if (pooler_roster[_user_id].chosen_defenders.len() as u8) < pool.number_defenders {
-                if let Some(x) = pooler_roster.get_mut(_user_id) {
-                    x.chosen_defenders.push(_player.clone());
+            if (pool_context.pooler_roster[_user_modified_id]
+                .chosen_defenders
+                .len() as u8)
+                < pool.number_defenders
+            {
+                if let Some(x) = pool_context.pooler_roster.get_mut(_user_modified_id) {
+                    x.chosen_defenders.push(player.id);
                     is_added = true;
                 }
             }
         }
         Position::G => {
-            if (pooler_roster[_user_id].chosen_goalies.len() as u8) < pool.number_goalies {
-                if let Some(x) = pooler_roster.get_mut(_user_id) {
-                    x.chosen_goalies.push(_player.clone());
+            if (pool_context.pooler_roster[_user_modified_id]
+                .chosen_goalies
+                .len() as u8)
+                < pool.number_goalies
+            {
+                if let Some(x) = pool_context.pooler_roster.get_mut(_user_modified_id) {
+                    x.chosen_goalies.push(player.id);
                     is_added = true;
                 }
             }
@@ -874,14 +890,15 @@ pub async fn fill_spot(
         });
     }
 
-    if let Some(x) = pooler_roster.get_mut(_user_id) {
-        x.chosen_reservists.retain(|player| player != _player);
+    if let Some(x) = pool_context.pooler_roster.get_mut(_user_modified_id) {
+        x.chosen_reservists
+            .retain(|playerId| playerId != &player.id);
     }
     // Update fields with the filled spot
 
     let updated_fields = doc! {
         "$set": doc!{
-            "context.pooler_roster": to_bson(&pooler_roster)?
+            "context.pooler_roster": to_bson(&pool_context.pooler_roster)?
         }
     };
 
@@ -896,15 +913,8 @@ pub async fn undo_select_player(
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
+    has_owner_privileges(_user_id, &pool)?;
     let mut pool_context = get_pool_context(pool.context)?;
-
-    // validate that the user making the request is the pool owner.
-
-    if !has_owner_rights(_user_id, &pool.owner) {
-        return Err(AppError::CustomError {
-            msg: "Only the owner of the pool can undo.".to_string(),
-        });
-    }
 
     // validate that the pool is into the draft status.
 
@@ -925,46 +935,63 @@ pub async fn undo_select_player(
     let mut latest_pick;
 
     loop {
-        latest_pick = pool_context.players_name_drafted.pop().unwrap();
-        if latest_pick > 0 {
-            break;
+        match pool_context.players_name_drafted.pop() {
+            Some(player_id) => {
+                if player_id > 0 {
+                    latest_pick = player_id; // found the last drafted player.
+                    break;
+                }
+            }
+            None => {
+                return Err(AppError::CustomError {
+                    msg: "The is nothing to undo.".to_string(),
+                })
+            }
         }
     }
 
     let pick_number = pool_context.players_name_drafted.len();
     let latest_drafter;
 
-    if pool.final_rank.is_some() {
-        // This comes from a Dynastie draft.
+    match pool.final_rank {
+        Some(final_rank) => {
+            // This comes from a Dynastie draft.
 
-        let final_rank = pool.final_rank.clone().unwrap(); // the final rank is used to see who picks
+            let tradable_picks = pool_context
+                .tradable_picks
+                .as_ref()
+                .expect("This member should never be optional in dynastie type pool.");
 
-        let index = pool.number_poolers as usize - 1 - (pick_number % pool.number_poolers as usize);
+            let index =
+                pool.number_poolers as usize - 1 - (pick_number % pool.number_poolers as usize);
 
-        let next_drafter = &final_rank[index];
+            let next_drafter = &final_rank[index];
 
-        if pick_number < (pool.tradable_picks * pool.number_poolers) as usize {
-            // use the tradable_picks to see who will draft next.
-            let tradable_picks = pool_context.tradable_picks.clone().unwrap();
+            if pick_number < (pool.tradable_picks * pool.number_poolers) as usize {
+                // use the tradable_picks to see who will draft next.
 
-            latest_drafter =
-                tradable_picks[pick_number / pool.number_poolers as usize][next_drafter].clone();
-        } else {
-            // Use the final_rank to see who draft next.
-            latest_drafter = next_drafter.clone();
+                latest_drafter = tradable_picks[pick_number / pool.number_poolers as usize]
+                    [next_drafter]
+                    .clone();
+            } else {
+                // Use the final_rank to see who draft next.
+                latest_drafter = next_drafter.clone();
+            }
         }
-    } else {
-        // this comes from a new draft.
+        None => {
+            // this comes from a newly created draft.
 
-        let participants = get_participants(pool.participants)?; // the participants is used to see who picks
+            let participants = get_participants(pool.participants)?; // the participants is used to see who picks
 
-        let index = pick_number % pool.number_poolers as usize;
-        latest_drafter = participants[index].clone();
+            let index = pick_number % pool.number_poolers as usize;
+            latest_drafter = participants[index].clone();
+        }
     }
 
     // Remove the player from the player roster.
 
-    remove_roster_player(&mut pool_context, latest_pick, &latest_drafter);
+    remove_player_from_roster(&mut pool_context, latest_pick, &latest_drafter)?;
+    pool_context.players.remove(&latest_pick.to_string()); // Also remove the player from the pool players list.
 
     let updated_fields = doc! {
         "$set": doc!{
@@ -983,21 +1010,16 @@ pub async fn modify_roster(
     _user_id: &str,
     _pool_name: &str,
     _user_modified_id: &str,
-    _forw_selected: &Vec<Player>,
-    _def_selected: &Vec<Player>,
-    _goal_selected: &Vec<Player>,
-    _reserv_selected: &Vec<Player>,
+    _forw_selected: &Vec<u32>,
+    _def_selected: &Vec<u32>,
+    _goal_selected: &Vec<u32>,
+    _reserv_selected: &Vec<u32>,
 ) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
-    if _user_id != _user_modified_id
-        && !has_owner_rights(_user_id, &pool.owner)
-        && !has_assitants_rights(_user_id, &pool.assistants)
-    {
-        return Err(AppError::CustomError {
-            msg: "You do not have the right to modify this pooler roster.".to_string(),
-        });
+    if _user_id != _user_modified_id {
+        has_privileges(_user_id, &pool)?;
     }
 
     let start_season_date =
@@ -1034,9 +1056,9 @@ pub async fn modify_roster(
         }
     }
 
-    let mut pool_roster = get_pool_context(pool.context)?.pooler_roster;
+    let mut pool_context = get_pool_context(pool.context)?;
 
-    if !pool_roster.contains_key(_user_modified_id) {
+    if !pool_context.pooler_roster.contains_key(_user_modified_id) {
         return Err(AppError::CustomError {
             msg: "User is not in the pool.".to_string(),
         });
@@ -1068,7 +1090,7 @@ pub async fn modify_roster(
 
     // Validate the total amount of players selected (It should be the same as before)
 
-    if let Some(roster) = pool_roster.get(_user_modified_id) {
+    if let Some(roster) = pool_context.pooler_roster.get(_user_modified_id) {
         let amount_selected_players = _forw_selected.len()
             + _def_selected.len()
             + _goal_selected.len()
@@ -1091,71 +1113,38 @@ pub async fn modify_roster(
 
     let mut selected_player_map = HashMap::<u32, bool>::new(); // used to validate dupplication
 
-    // Forwards validation
+    // Validate that the roster modification does not contains Dupplication and also validate that the user possess those players.
 
-    for forward in _forw_selected {
-        if selected_player_map.contains_key(&forward.id) {
+    for player_id in _forw_selected.iter().chain(
+        _def_selected
+            .iter()
+            .chain(_goal_selected.iter())
+            .chain(_reserv_selected.iter()),
+    ) {
+        let player =
+            pool_context
+                .players
+                .get(&player_id.to_string())
+                .ok_or(AppError::CustomError {
+                    msg: "This player is not included in this pool".to_string(),
+                })?;
+
+        if selected_player_map.contains_key(&player.id) {
             return Err(AppError::CustomError {
-                msg: format!("The player {} was dupplicated", forward.name),
+                msg: format!("The player {} was dupplicated", player.name),
             });
         }
-        selected_player_map.insert(forward.id, true);
-        if !validate_player_possession(forward, &pool_roster[_user_modified_id]).await {
+        selected_player_map.insert(player.id, true);
+        if !validate_player_possession(player.id, &pool_context.pooler_roster[_user_modified_id])
+            .await
+        {
             return Err(AppError::CustomError {
-                msg: format!("You do not possess {}.", forward.name),
-            });
-        }
-    }
-
-    // Defenders validation
-
-    for defender in _def_selected {
-        if selected_player_map.contains_key(&defender.id) {
-            return Err(AppError::CustomError {
-                msg: format!("{} was dupplicated.", defender.name),
-            });
-        }
-        selected_player_map.insert(defender.id, true);
-        if !validate_player_possession(defender, &pool_roster[_user_modified_id]).await {
-            return Err(AppError::CustomError {
-                msg: format!("You do not possess {}.", defender.name),
-            });
-        }
-    }
-
-    // Goalies validation
-
-    for goaly in _goal_selected {
-        if selected_player_map.contains_key(&goaly.id) {
-            return Err(AppError::CustomError {
-                msg: format!("{} was dupplicated", goaly.name),
-            });
-        }
-        selected_player_map.insert(goaly.id, true);
-        if !validate_player_possession(goaly, &pool_roster[_user_modified_id]).await {
-            return Err(AppError::CustomError {
-                msg: format!("You do not possess {}.", goaly.name),
+                msg: format!("You do not possess {}.", player.name),
             });
         }
     }
 
-    // Reservists validation
-
-    for reservist in _reserv_selected {
-        if selected_player_map.contains_key(&reservist.id) {
-            return Err(AppError::CustomError {
-                msg: format!("{} was dupplicated", reservist.name),
-            });
-        }
-        selected_player_map.insert(reservist.id, true);
-        if !validate_player_possession(reservist, &pool_roster[_user_modified_id]).await {
-            return Err(AppError::CustomError {
-                msg: format!("You do not possess {}.", reservist.name),
-            });
-        }
-    }
-
-    if let Some(roster) = pool_roster.get_mut(_user_modified_id) {
+    if let Some(roster) = pool_context.pooler_roster.get_mut(_user_modified_id) {
         roster.chosen_forwards = _forw_selected.clone();
         roster.chosen_defenders = _def_selected.clone();
         roster.chosen_goalies = _goal_selected.clone();
@@ -1166,7 +1155,7 @@ pub async fn modify_roster(
 
     let updated_fields = doc! {
         "$set": doc!{
-            "context.pooler_roster": to_bson(&pool_roster)?,
+            "context.pooler_roster": to_bson(&pool_context.pooler_roster)?,
         }
     };
 
@@ -1177,10 +1166,10 @@ pub async fn protect_players(
     db: &Database,
     _user_id: &str,
     _pool_name: &str,
-    _forw_protected: &Vec<Player>,
-    _def_protected: &Vec<Player>,
-    _goal_protected: &Vec<Player>,
-    _reserv_protected: &Vec<Player>,
+    _forw_protected: &Vec<u32>,
+    _def_protected: &Vec<u32>,
+    _goal_protected: &Vec<u32>,
+    _reserv_protected: &Vec<u32>,
 ) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
@@ -1231,61 +1220,44 @@ pub async fn protect_players(
         });
     }
 
-    // Validate that the participant realy possess the selected players.
+    // Validate that the players protection list does not contains dupplication and also validate that the user possess those players.
 
-    let mut is_selected_players_valid: bool;
+    let mut selected_player_map = HashMap::<u32, bool>::new(); // used to validate dupplication
 
-    for player in _forw_protected.iter() {
-        is_selected_players_valid =
-            validate_player_possession(player, &pool_context.pooler_roster[_user_id]).await;
+    for player_id in _forw_protected.iter().chain(
+        _def_protected
+            .iter()
+            .chain(_goal_protected.iter())
+            .chain(_reserv_protected.iter()),
+    ) {
+        let player =
+            pool_context
+                .players
+                .get(&player_id.to_string())
+                .ok_or(AppError::CustomError {
+                    msg: "This player is not included in this pool".to_string(),
+                })?;
 
-        if !is_selected_players_valid {
+        if selected_player_map.contains_key(&player.id) {
             return Err(AppError::CustomError {
-                msg: "The pooler does not poccess  one of the selected forwards".to_string(),
+                msg: format!("The player {} was dupplicated", player.name),
             });
         }
-    }
-
-    for player in _def_protected.iter() {
-        is_selected_players_valid =
-            validate_player_possession(player, &pool_context.pooler_roster[_user_id]).await;
-
-        if !is_selected_players_valid {
+        selected_player_map.insert(player.id, true);
+        if !validate_player_possession(player.id, &pool_context.pooler_roster[_user_id]).await {
             return Err(AppError::CustomError {
-                msg: "The pooler does not poccess  one of the selected defenders".to_string(),
-            });
-        }
-    }
-
-    for player in _goal_protected.iter() {
-        is_selected_players_valid =
-            validate_player_possession(player, &pool_context.pooler_roster[_user_id]).await;
-
-        if !is_selected_players_valid {
-            return Err(AppError::CustomError {
-                msg: "The pooler does not poccess  one of the selected goalies".to_string(),
-            });
-        }
-    }
-
-    for player in _reserv_protected.iter() {
-        is_selected_players_valid =
-            validate_player_possession(player, &pool_context.pooler_roster[_user_id]).await;
-
-        if !is_selected_players_valid {
-            return Err(AppError::CustomError {
-                msg: "The pooler does not poccess  one of the selected reservists".to_string(),
+                msg: format!("You do not possess {}.", player.name),
             });
         }
     }
 
     // clear previous season roster and add those players list to the new roster.
 
-    if let Some(x) = pool_context.pooler_roster.get_mut(_user_id) {
-        x.chosen_forwards = _forw_protected.clone();
-        x.chosen_defenders = _def_protected.clone();
-        x.chosen_goalies = _goal_protected.clone();
-        x.chosen_reservists = _reserv_protected.clone();
+    if let Some(roster) = pool_context.pooler_roster.get_mut(_user_id) {
+        roster.chosen_forwards = _forw_protected.clone();
+        roster.chosen_defenders = _def_protected.clone();
+        roster.chosen_goalies = _goal_protected.clone();
+        roster.chosen_reservists = _reserv_protected.clone();
     }
 
     // Look if all participants have protected their players
@@ -1324,15 +1296,7 @@ pub async fn update_pool_settings(
     let collection = db.collection::<Pool>("pools");
 
     let pool = find_short_pool_by_name(&collection, &_update.name).await?;
-
-    // make sure the user making the resquest is a pool participants.
-
-    if !has_owner_rights(_user_id, &pool.owner) && !has_assitants_rights(_user_id, &pool.assistants)
-    {
-        return Err(AppError::CustomError {
-            msg: "You don't have the rights to update pool settings".to_string(),
-        });
-    }
+    has_privileges(_user_id, &pool)?;
 
     // Update the fields in the mongoDB pool document.
     if (_update.pool_settings.number_forwards.is_some()
@@ -1382,13 +1346,11 @@ pub async fn update_pool_settings(
     update_pool(updated_fields, &collection, &_update.name).await
 }
 
-async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> bool {
-    if !validate_trade_possession(&_trade.from_items, _pool_context, &_trade.proposed_by).await
-        || !validate_trade_possession(&_trade.from_items, _pool_context, &_trade.proposed_by).await
-    {
-        return false;
-    }
+async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> Result<()> {
+    validate_trade_possession(&_trade.from_items, _pool_context, &_trade.proposed_by).await?;
+    validate_trade_possession(&_trade.from_items, _pool_context, &_trade.proposed_by).await?;
 
+    // Migrate players "from" -> "to"
     for player_id in _trade.from_items.players.iter() {
         trade_roster_player(
             _pool_context,
@@ -1396,9 +1358,10 @@ async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> 
             &_trade.proposed_by,
             &_trade.ask_to,
         )
-        .await;
+        .await?;
     }
 
+    // Migrate players "to" -> "from"
     for player_id in _trade.to_items.players.iter() {
         trade_roster_player(
             _pool_context,
@@ -1406,9 +1369,10 @@ async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> 
             &_trade.ask_to,
             &_trade.proposed_by,
         )
-        .await;
+        .await?;
     }
 
+    // Migrate picks "from" -> "to"
     for pick in _trade.from_items.picks.iter() {
         if let Some(tradable_picks) = &mut _pool_context.tradable_picks {
             if let Some(owner) = tradable_picks[pick.round as usize].get_mut(&pick.from) {
@@ -1418,6 +1382,7 @@ async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> 
         }
     }
 
+    // Migrate picks "to" -> "from"
     for pick in _trade.to_items.picks.iter() {
         if let Some(tradable_picks) = &mut _pool_context.tradable_picks {
             if let Some(owner) = tradable_picks[pick.round as usize].get_mut(&pick.from) {
@@ -1427,107 +1392,94 @@ async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> 
         }
     }
 
-    true
+    Ok(())
 }
 
-fn remove_roster_player(_pool_context: &mut PoolContext, _player_id: u32, _user_id: &str) {
-    if let Some(x) = _pool_context.pooler_roster.get_mut(_user_id) {
-        x.chosen_forwards.retain(|player| player.id != _player_id);
+fn remove_player_from_roster(
+    _pool_context: &mut PoolContext,
+    _player_id: u32,
+    _user_id: &str,
+) -> Result<()> {
+    if let Some(roster) = _pool_context.pooler_roster.get_mut(_user_id) {
+        if _remove_player_from_roster(&mut roster.chosen_forwards, _player_id) {
+            return Ok(());
+        };
+        if _remove_player_from_roster(&mut roster.chosen_defenders, _player_id) {
+            return Ok(());
+        };
+        if _remove_player_from_roster(&mut roster.chosen_goalies, _player_id) {
+            return Ok(());
+        };
+        if _remove_player_from_roster(&mut roster.chosen_reservists, _player_id) {
+            return Ok(());
+        };
     }
-    if let Some(x) = _pool_context.pooler_roster.get_mut(_user_id) {
-        x.chosen_defenders.retain(|player| player.id != _player_id);
+
+    Err(AppError::CustomError {
+        msg: "The player could not be removed".to_string(),
+    }) // could not be removed
+}
+
+fn _remove_player_from_roster(_chosen_players: &mut Vec<u32>, _player_id: u32) -> bool {
+    _chosen_players
+        .iter()
+        .position(|player_id| player_id == &_player_id)
+        .map(|index| _chosen_players.remove(index))
+        .is_some()
+}
+
+fn add_player_to_roster(
+    _pool_context: &mut PoolContext,
+    _player_id: u32,
+    _user_id: &str,
+) -> Result<()> {
+    if let Some(roster) = _pool_context.pooler_roster.get_mut(_user_id) {
+        roster.chosen_reservists.push(_player_id);
+        return Ok(());
     }
-    if let Some(x) = _pool_context.pooler_roster.get_mut(_user_id) {
-        x.chosen_goalies.retain(|player| player.id != _player_id);
-    }
-    if let Some(x) = _pool_context.pooler_roster.get_mut(_user_id) {
-        x.chosen_reservists.retain(|player| player.id != _player_id);
-    }
+
+    Err(AppError::CustomError {
+        msg: "The player could not be added".to_string(),
+    }) // could not be added
 }
 
 async fn trade_roster_player(
     _pool_context: &mut PoolContext,
     _player_id: u32,
-    _participant_giver: &str,
-    _participant_receiver: &str,
-) -> bool {
-    let mut player: Option<Player> = None; // The player traded from the giver.
-
-    if let Some(giver) = _pool_context.pooler_roster.get_mut(_participant_giver) {
-        if let Some(index) = giver
-            .chosen_forwards
-            .iter()
-            .position(|r| r.id == _player_id)
-        {
-            // 1) Look into Forwards
-
-            player = Some(giver.chosen_forwards[index].clone());
-            giver.chosen_forwards.remove(index);
-        } else if let Some(index) = giver
-            .chosen_defenders
-            .iter()
-            .position(|r| r.id == _player_id)
-        {
-            // 2) Look into Defenders
-
-            player = Some(giver.chosen_defenders[index].clone());
-            giver.chosen_defenders.remove(index);
-        } else if let Some(index) = giver.chosen_goalies.iter().position(|r| r.id == _player_id) {
-            // 3) Look into Goalies
-
-            player = Some(giver.chosen_goalies[index].clone());
-            giver.chosen_goalies.remove(index);
-        } else if let Some(index) = giver
-            .chosen_reservists
-            .iter()
-            .position(|r| r.id == _player_id)
-        {
-            // 4) Look into Reservists
-
-            player = Some(giver.chosen_reservists[index].clone());
-            giver.chosen_reservists.remove(index);
-        } else {
-            return false;
-        }
-    }
+    _user_giver: &str,
+    _user_receiver: &str,
+) -> Result<()> {
+    remove_player_from_roster(_pool_context, _player_id, _user_giver)?;
 
     // Add the player to the receiver's reservists.
 
-    if let Some(receiver) = _pool_context.pooler_roster.get_mut(_participant_receiver) {
-        if let Some(p) = player {
-            receiver.chosen_reservists.push(p);
-            return true;
-        }
-    }
-
-    false
+    add_player_to_roster(_pool_context, _player_id, _user_receiver)
 }
 
 async fn validate_trade_possession(
     _trading_list: &TradeItems,
     _pool_context: &PoolContext,
-    _participant: &str,
-) -> bool {
+    _user: &str,
+) -> Result<()> {
     for player_id in _trading_list.players.iter() {
-        if !validate_player_possession_with_id(
-            *player_id,
-            &_pool_context.pooler_roster[_participant],
-        )
-        .await
-        {
-            return false;
+        if !validate_player_possession(*player_id, &_pool_context.pooler_roster[_user]).await {
+            return Err(AppError::CustomError {
+                msg: "ther user does not possess one of the traded player!".to_string(),
+            });
         }
     }
 
     if let Some(tradable_picks) = &_pool_context.tradable_picks {
         for pick in _trading_list.picks.iter() {
-            if tradable_picks[pick.round as usize][&pick.from] != *_participant {
-                return false;
+            if tradable_picks[pick.round as usize][&pick.from] != *_user {
+                return Err(AppError::CustomError {
+                    msg: "ther user does not possess the traded pick!".to_string(),
+                });
             }
         }
     }
 
-    true
+    Ok(())
 }
 
 // return a hash map of number of players for each participant in a pool.
@@ -1550,50 +1502,11 @@ async fn get_users_players_count(
     hashCount
 }
 
-async fn validate_player_possession(_player: &Player, _pooler_roster: &PoolerRoster) -> bool {
-    match _player.position {
-        Position::F => {
-            if !_pooler_roster.chosen_forwards.contains(_player)
-                && !_pooler_roster.chosen_reservists.contains(_player)
-            {
-                return false;
-            }
-        }
-        Position::D => {
-            if !_pooler_roster.chosen_defenders.contains(_player)
-                && !_pooler_roster.chosen_reservists.contains(_player)
-            {
-                return false;
-            }
-        }
-        Position::G => {
-            if !_pooler_roster.chosen_goalies.contains(_player)
-                && !_pooler_roster.chosen_reservists.contains(_player)
-            {
-                return false;
-            }
-        }
-    }
-
-    true
-}
-
-async fn validate_player_possession_with_id(
-    _player_id: u32,
-    _pooler_roster: &PoolerRoster,
-) -> bool {
-    let player = Player {
-        id: _player_id,
-        position: Position::F,
-        name: "".to_string(),
-        team: 0,
-        caps: None,
-    };
-
-    _pooler_roster.chosen_forwards.contains(&player)
-        || _pooler_roster.chosen_defenders.contains(&player)
-        || _pooler_roster.chosen_goalies.contains(&player)
-        || _pooler_roster.chosen_reservists.contains(&player)
+async fn validate_player_possession(_player_id: u32, _pooler_roster: &PoolerRoster) -> bool {
+    _pooler_roster.chosen_forwards.contains(&_player_id)
+        || _pooler_roster.chosen_defenders.contains(&_player_id)
+        || _pooler_roster.chosen_goalies.contains(&_player_id)
+        || _pooler_roster.chosen_reservists.contains(&_player_id)
 }
 
 async fn create_success_pool_response(_pool: Pool) -> PoolMessageResponse {
@@ -1604,12 +1517,34 @@ async fn create_success_pool_response(_pool: Pool) -> PoolMessageResponse {
     }
 }
 
-fn has_assitants_rights(_user_id: &str, _assistants: &Vec<String>) -> bool {
+fn has_assistants_rights(_user_id: &str, _assistants: &Vec<String>) -> bool {
     _assistants.contains(&_user_id.to_string())
 }
 
 fn has_owner_rights(_user_id: &str, _owner: &str) -> bool {
     _user_id == _owner
+}
+
+fn has_privileges(_user_id: &str, _pool: &Pool) -> Result<()> {
+    if !has_assistants_rights(_user_id, &_pool.assistants)
+        && !has_owner_rights(_user_id, &_pool.owner)
+    {
+        return Err(AppError::CustomError {
+            msg: "This action require privileged rights.".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn has_owner_privileges(_user_id: &str, _pool: &Pool) -> Result<()> {
+    if !has_owner_rights(_user_id, &_pool.owner) {
+        return Err(AppError::CustomError {
+            msg: "This action require privileged rights.".to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 fn get_pool_context(_pool_context: Option<PoolContext>) -> Result<PoolContext> {
@@ -1626,6 +1561,15 @@ fn get_participants(_participants: Option<Vec<String>>) -> Result<Vec<String>> {
         Some(participants) => Ok(participants),
         None => Err(AppError::CustomError {
             msg: "There is no participants in the pool.".to_string(),
+        }),
+    }
+}
+
+fn get_trades(_trades: Option<Vec<Trade>>) -> Result<Vec<Trade>> {
+    match _trades {
+        Some(_trades) => Ok(_trades),
+        None => Err(AppError::CustomError {
+            msg: "Trade are not activated in the pool settings.".to_string(),
         }),
     }
 }

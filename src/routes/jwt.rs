@@ -1,16 +1,15 @@
 use chrono::Utc;
 
-use jsonwebtoken::errors::Result;
-use jsonwebtoken::TokenData;
-use jsonwebtoken::{DecodingKey, EncodingKey};
-use jsonwebtoken::{Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation};
 use mongodb::bson::oid::ObjectId;
 use rocket::http::Status;
 use rocket::outcome::Outcome;
 use rocket::request::{self, FromRequest, Request};
+use rocket::serde::json::{json, Value};
 use serde::{Deserialize, Serialize};
 
-use crate::errors::response::AppError;
+use crate::errors::response::{AppError, Result};
+
 use crate::models::user::User;
 
 static ONE_WEEK: i64 = 60 * 60 * 24 * 7; // in seconds
@@ -33,7 +32,11 @@ impl<'r> FromRequest<'r> for UserToken {
             let authen_str = authen_header.to_string();
             if authen_str.starts_with("Bearer") {
                 let token = authen_str[6..authen_str.len()].trim();
-                if let Ok(token_data) = decode_token(token.to_string()) {
+                if let Ok(token_data) = jsonwebtoken::decode::<UserToken>(
+                    &token,
+                    &DecodingKey::from_secret(include_bytes!("secret.key")),
+                    &Validation::default(),
+                ) {
                     return verify_token(token_data.claims);
                 } else {
                     return Outcome::Failure((
@@ -55,7 +58,7 @@ impl<'r> FromRequest<'r> for UserToken {
     }
 }
 
-pub fn generate_token(_user: &User) -> String {
+pub fn generate_token(_user: &User) -> Result<String> {
     let now = Utc::now().timestamp_nanos() / 1_000_000_000; // nanosecond -> second
     let payload = UserToken {
         iat: now,
@@ -63,20 +66,16 @@ pub fn generate_token(_user: &User) -> String {
         _id: _user._id,
     };
 
-    jsonwebtoken::encode(
+    Ok(jsonwebtoken::encode(
         &Header::default(),
         &payload,
         &EncodingKey::from_secret(include_bytes!("secret.key")),
-    )
-    .unwrap()
+    )?)
 }
 
-fn decode_token(token: String) -> Result<TokenData<UserToken>> {
-    jsonwebtoken::decode::<UserToken>(
-        &token,
-        &DecodingKey::from_secret(include_bytes!("secret.key")),
-        &Validation::default(),
-    )
+pub fn generate_user_token(_user: &User) -> Result<Value> {
+    let token = generate_token(_user)?;
+    Ok(json! ({"user": _user, "token": token}))
 }
 
 fn verify_token(token: UserToken) -> request::Outcome<UserToken, AppError> {
