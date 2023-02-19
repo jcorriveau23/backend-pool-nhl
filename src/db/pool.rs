@@ -45,7 +45,6 @@ pub async fn find_optional_short_pool_by_name(
         .build();
 
     let short_pool = collection
-        .clone_with_type::<Pool>()
         .find_one(doc! {"name": &_name}, find_option)
         .await?;
 
@@ -247,14 +246,14 @@ pub async fn start_draft(
         // Add the new pool to the list of pool in each users.
 
         let collection_users = db.collection::<User>("users");
-        add_pool_to_users(&collection_users, &_pool_info.name, participants).await;
+        add_pool_to_users(&collection_users, &_pool_info.name, participants).await?;
 
         let collection = db.collection::<Pool>("pools");
 
         // create pool context
         let mut pool_context = PoolContext {
             pooler_roster: HashMap::new(),
-            score_by_day: HashMap::new(),
+            score_by_day: Some(HashMap::new()),
             tradable_picks: Some(Vec::new()),
             past_tradable_picks: Some(Vec::new()),
             players_name_drafted: Vec::new(),
@@ -438,7 +437,9 @@ pub async fn select_player(
             }
         }
 
-        pool_context.players.insert(_player.id, _player.clone());
+        pool_context
+            .players
+            .insert(_player.id.to_string(), _player.clone());
         pool_context.players_name_drafted.push(_player.id);
 
         if let Some(nCount) = users_players_count.get_mut(_user_id) {
@@ -499,7 +500,7 @@ pub async fn add_player(
     _user_id: &str,
     _added_to_user_id: &str,
     _pool_name: &str,
-    _player_id: u32,
+    _player: &Player,
 ) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
@@ -515,22 +516,25 @@ pub async fn add_player(
 
     // First, validate that the player selected is not picked by any of the other poolers.
     for participant in get_participants(pool.participants)?.iter() {
-        if validate_player_possession(_player_id, &pool_context.pooler_roster[participant]).await {
+        if validate_player_possession(_player.id, &pool_context.pooler_roster[participant]).await {
             return Err(AppError::CustomError {
                 msg: "This player is already picked.".to_string(),
             });
         }
     }
 
-    if let Some(pooler_roster) = pool_context.pooler_roster.get_mut(_added_to_user_id) {
-        pooler_roster.chosen_reservists.push(_player_id);
-    }
+    add_player_to_roster(&mut pool_context, _player.id, _added_to_user_id)?;
+
+    pool_context
+        .players
+        .insert(_player.id.to_string(), _player.clone());
 
     // updated fields.
 
     let updated_fields = doc! {
         "$set": doc!{
             "context.pooler_roster": to_bson(&pool_context.pooler_roster)?,
+            "context.players": to_bson(&pool_context.players)?
         }
     };
 
@@ -794,36 +798,43 @@ pub async fn respond_trade(
 pub async fn fill_spot(
     db: &Database,
     _user_id: &str,
+    _user_modified_id: &str,
     _pool_name: &str,
     _player_id: u32,
 ) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
+
+    if _user_id != _user_modified_id {
+        has_privileges(_user_id, &pool)?;
+    }
+
     let mut pool_context = get_pool_context(pool.context)?;
 
-    if !pool_context.pooler_roster.contains_key(_user_id) {
+    if !pool_context.pooler_roster.contains_key(_user_modified_id) {
         return Err(AppError::CustomError {
             msg: "The pooler is not a participant of the pool.".to_string(),
         });
     }
 
-    let player = pool_context
-        .players
-        .get(&_player_id)
-        .ok_or(AppError::CustomError {
-            msg: "This player is not included in the pool.".to_string(),
-        })?;
+    let player =
+        pool_context
+            .players
+            .get(&_player_id.to_string())
+            .ok_or(AppError::CustomError {
+                msg: "This player is not included in the pool.".to_string(),
+            })?;
 
-    if pool_context.pooler_roster[_user_id]
+    if pool_context.pooler_roster[_user_modified_id]
         .chosen_forwards
         .contains(&player.id)
-        || pool_context.pooler_roster[_user_id]
+        || pool_context.pooler_roster[_user_modified_id]
             .chosen_defenders
             .contains(&player.id)
-        || pool_context.pooler_roster[_user_id]
+        || pool_context.pooler_roster[_user_modified_id]
             .chosen_goalies
             .contains(&player.id)
-        || !pool_context.pooler_roster[_user_id]
+        || !pool_context.pooler_roster[_user_modified_id]
             .chosen_reservists
             .contains(&player.id)
     {
@@ -836,30 +847,36 @@ pub async fn fill_spot(
 
     match player.position {
         Position::F => {
-            if (pool_context.pooler_roster[_user_id].chosen_forwards.len() as u8)
+            if (pool_context.pooler_roster[_user_modified_id]
+                .chosen_forwards
+                .len() as u8)
                 < pool.number_forwards
             {
-                if let Some(x) = pool_context.pooler_roster.get_mut(_user_id) {
+                if let Some(x) = pool_context.pooler_roster.get_mut(_user_modified_id) {
                     x.chosen_forwards.push(player.id);
                     is_added = true;
                 }
             }
         }
         Position::D => {
-            if (pool_context.pooler_roster[_user_id].chosen_defenders.len() as u8)
+            if (pool_context.pooler_roster[_user_modified_id]
+                .chosen_defenders
+                .len() as u8)
                 < pool.number_defenders
             {
-                if let Some(x) = pool_context.pooler_roster.get_mut(_user_id) {
+                if let Some(x) = pool_context.pooler_roster.get_mut(_user_modified_id) {
                     x.chosen_defenders.push(player.id);
                     is_added = true;
                 }
             }
         }
         Position::G => {
-            if (pool_context.pooler_roster[_user_id].chosen_goalies.len() as u8)
+            if (pool_context.pooler_roster[_user_modified_id]
+                .chosen_goalies
+                .len() as u8)
                 < pool.number_goalies
             {
-                if let Some(x) = pool_context.pooler_roster.get_mut(_user_id) {
+                if let Some(x) = pool_context.pooler_roster.get_mut(_user_modified_id) {
                     x.chosen_goalies.push(player.id);
                     is_added = true;
                 }
@@ -873,7 +890,7 @@ pub async fn fill_spot(
         });
     }
 
-    if let Some(x) = pool_context.pooler_roster.get_mut(_user_id) {
+    if let Some(x) = pool_context.pooler_roster.get_mut(_user_modified_id) {
         x.chosen_reservists
             .retain(|playerId| playerId != &player.id);
     }
@@ -974,7 +991,7 @@ pub async fn undo_select_player(
     // Remove the player from the player roster.
 
     remove_player_from_roster(&mut pool_context, latest_pick, &latest_drafter)?;
-    pool_context.players.remove(&latest_pick); // Also remove the player from the pool players list.
+    pool_context.players.remove(&latest_pick.to_string()); // Also remove the player from the pool players list.
 
     let updated_fields = doc! {
         "$set": doc!{
@@ -1104,12 +1121,13 @@ pub async fn modify_roster(
             .chain(_goal_selected.iter())
             .chain(_reserv_selected.iter()),
     ) {
-        let player = pool_context
-            .players
-            .get(player_id)
-            .ok_or(AppError::CustomError {
-                msg: "This player is not included in this pool".to_string(),
-            })?;
+        let player =
+            pool_context
+                .players
+                .get(&player_id.to_string())
+                .ok_or(AppError::CustomError {
+                    msg: "This player is not included in this pool".to_string(),
+                })?;
 
         if selected_player_map.contains_key(&player.id) {
             return Err(AppError::CustomError {
@@ -1212,12 +1230,13 @@ pub async fn protect_players(
             .chain(_goal_protected.iter())
             .chain(_reserv_protected.iter()),
     ) {
-        let player = pool_context
-            .players
-            .get(player_id)
-            .ok_or(AppError::CustomError {
-                msg: "This player is not included in this pool".to_string(),
-            })?;
+        let player =
+            pool_context
+                .players
+                .get(&player_id.to_string())
+                .ok_or(AppError::CustomError {
+                    msg: "This player is not included in this pool".to_string(),
+                })?;
 
         if selected_player_map.contains_key(&player.id) {
             return Err(AppError::CustomError {
@@ -1420,7 +1439,7 @@ fn add_player_to_roster(
     }
 
     Err(AppError::CustomError {
-        msg: "The player could not be removed".to_string(),
+        msg: "The player could not be added".to_string(),
     }) // could not be added
 }
 

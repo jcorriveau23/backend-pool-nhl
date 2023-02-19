@@ -82,10 +82,10 @@ pub struct ProjectedPoolContext {
 pub struct PoolContext {
     pub pooler_roster: HashMap<String, PoolerRoster>,
     pub players_name_drafted: Vec<u32>,
-    pub score_by_day: HashMap<String, HashMap<String, DailyRosterPoints>>,
+    pub score_by_day: Option<HashMap<String, HashMap<String, DailyRosterPoints>>>,
     pub tradable_picks: Option<Vec<HashMap<String, String>>>,
     pub past_tradable_picks: Option<Vec<HashMap<String, String>>>,
-    pub players: HashMap<u32, Player>,
+    pub players: HashMap<String, Player>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)] // Copy
@@ -251,9 +251,17 @@ pub struct SelectPlayerRequest {
     pub player: Player,
 }
 
-// payload to sent when adding/removing player by the owner of the pool.
+// payload to sent when adding player by the owner of the pool.
 #[derive(Debug, Deserialize, JsonSchema, Clone)]
-pub struct AddRemovePlayerRequest {
+pub struct AddPlayerRequest {
+    pub name: String,
+    pub user_id: String,
+    pub player: Player,
+}
+
+// payload to sent when removing player by the owner of the pool.
+#[derive(Debug, Deserialize, JsonSchema, Clone)]
+pub struct RemovePlayerRequest {
     pub name: String,
     pub user_id: String,
     pub player_id: u32,
@@ -285,6 +293,7 @@ pub struct RespondTradeRequest {
 #[derive(Debug, Deserialize, JsonSchema, Clone)]
 pub struct FillSpotRequest {
     pub name: String,
+    pub user_id: String,
     pub player_id: u32,
 }
 

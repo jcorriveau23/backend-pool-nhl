@@ -7,9 +7,9 @@ use rocket::State;
 use crate::db::pool;
 use crate::errors::response::AppError;
 use crate::models::pool::{
-    AddRemovePlayerRequest, CancelTradeRequest, CreateTradeRequest, FillSpotRequest,
-    ModifyRosterRequest, Pool, PoolCreationRequest, PoolDeletionRequest, PoolUndoSelectionRequest,
-    ProjectedPoolShort, ProtectPlayersRequest, RespondTradeRequest, SelectPlayerRequest,
+    AddPlayerRequest, CancelTradeRequest, CreateTradeRequest, FillSpotRequest, ModifyRosterRequest,
+    Pool, PoolCreationRequest, PoolDeletionRequest, PoolUndoSelectionRequest, ProjectedPoolShort,
+    ProtectPlayersRequest, RemovePlayerRequest, RespondTradeRequest, SelectPlayerRequest,
     StartDraftRequest, UpdatePoolSettingsRequest,
 };
 use crate::models::response::PoolMessageResponse;
@@ -90,14 +90,14 @@ pub async fn select_player(
 pub async fn add_player(
     db: &State<Database>,
     token: Result<UserToken, AppError>,
-    body: Json<AddRemovePlayerRequest>,
+    body: Json<AddPlayerRequest>,
 ) -> Result<Json<PoolMessageResponse>, AppError> {
     pool::add_player(
         db,
         &token?._id.to_string(),
         &body.user_id,
         &body.name,
-        body.player_id,
+        &body.player,
     )
     .await
     .map(Json)
@@ -107,7 +107,7 @@ pub async fn add_player(
 pub async fn remove_player(
     db: &State<Database>,
     token: Result<UserToken, AppError>,
-    body: Json<AddRemovePlayerRequest>,
+    body: Json<RemovePlayerRequest>,
 ) -> Result<Json<PoolMessageResponse>, AppError> {
     pool::remove_player(
         db,
@@ -181,9 +181,15 @@ pub async fn fill_spot(
     token: Result<UserToken, AppError>,
     body: Json<FillSpotRequest>,
 ) -> Result<Json<PoolMessageResponse>, AppError> {
-    pool::fill_spot(db, &token?._id.to_string(), &body.name, body.player_id)
-        .await
-        .map(Json)
+    pool::fill_spot(
+        db,
+        &token?._id.to_string(),
+        &body.user_id,
+        &body.name,
+        body.player_id,
+    )
+    .await
+    .map(Json)
 }
 
 #[post("/protect-players", format = "json", data = "<body>")]

@@ -2,7 +2,6 @@ use crate::errors::response::AppError;
 use crate::errors::response::Result;
 use futures::stream::TryStreamExt;
 use mongodb::bson::{doc, oid::ObjectId, Document};
-use mongodb::options::InsertOneOptions;
 use mongodb::options::{FindOneAndUpdateOptions, ReturnDocument};
 use mongodb::{Collection, Database};
 use std::str::FromStr;
