@@ -8,4 +8,4 @@ https://github.com/jcorriveau23/frontend-pool-nhl
 
 Run the serveur:
 
-cargo run
+- cargo run
