@@ -6,12 +6,13 @@ pub struct DailyLeaders {
     pub date: String,
     pub goalies: Vec<DailyGoaly>,
     pub skaters: Vec<DailySkater>,
+    pub played: Vec<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct DailyGoaly {
     pub name: String,
-    pub id: i32,
+    pub id: u32,
     pub team: u32,
     pub stats: GoalyStats,
 }
@@ -19,7 +20,7 @@ pub struct DailyGoaly {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct DailySkater {
     pub name: String,
-    pub id: i32,
+    pub id: u32,
     pub team: u32,
     pub stats: SkaterStats,
 }
@@ -73,4 +74,5 @@ pub struct SkaterStats {
     // pub evenTimeOnIce: String,
     // pub powerPlayTimeOnIce: String,
     // pub shortHandedTimeOnIce: String,
+    pub shootoutGoals: u8,
 }
