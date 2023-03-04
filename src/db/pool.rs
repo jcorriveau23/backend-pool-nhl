@@ -592,12 +592,10 @@ pub async fn create_trade(
     _pool_name: &String,
     _trade: &mut Trade,
 ) -> Result<PoolMessageResponse> {
-    let trade_deadline_date = Date::<Utc>::from_utc(
-        NaiveDate::parse_from_str(TRADE_DEADLINE_DATE, "%Y-%m-%d")?,
-        Utc,
-    );
+    let trade_deadline_date =
+        Local.from_utc_date(&NaiveDate::parse_from_str(TRADE_DEADLINE_DATE, "%Y-%m-%d")?);
 
-    let today = Utc::today();
+    let today = Local::today();
 
     if today > trade_deadline_date {
         return Err(AppError::CustomError {
