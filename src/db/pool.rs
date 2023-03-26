@@ -700,8 +700,16 @@ pub async fn cancel_trade(
 
     // validate only the owner can cancel a trade
 
-    if trades[_trade_id as usize].proposed_by != *_user_id {
-        has_privileges(_user_id, &pool)?;
+    if !has_owner_rights(_user_id, &pool.owner)
+        && !has_assistants_rights(_user_id, &pool.assistants)
+    {
+        // validate that only the one that was ask for the trade or the owner can accept it.
+
+        if trades[_trade_id as usize].proposed_by != *_user_id {
+            return Err(AppError::CustomError {
+                msg: "Only the one that created the trade can cancel it.".to_string(),
+            });
+        }
     }
 
     trades[_trade_id as usize].status = TradeStatus::CANCELLED;
