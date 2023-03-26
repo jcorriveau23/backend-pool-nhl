@@ -26,7 +26,7 @@ const END_SEASON_DATE: &str = "2023-04-13";
 const TRADE_DEADLINE_DATE: &str = "2023-03-03";
 
 // Return the complete Pool information
-pub async fn find_pool_by_name(db: &Database, _name: &String) -> Result<Pool> {
+pub async fn find_pool_by_name(db: &Database, _name: &str) -> Result<Pool> {
     let collection = db.collection::<Pool>("pools");
 
     let pool = collection.find_one(doc! {"name": _name}, None).await?;
@@ -61,11 +61,7 @@ pub async fn find_short_pool_by_name(collection: &Collection<Pool>, _name: &str)
 }
 
 // Return the pool information with a requested range of day for the score_by_day member
-pub async fn find_pool_by_name_with_range(
-    db: &Database,
-    _name: &String,
-    _from: &String,
-) -> Result<Pool> {
+pub async fn find_pool_by_name_with_range(db: &Database, _name: &str, _from: &str) -> Result<Pool> {
     let from_date = Date::<Utc>::from_utc(NaiveDate::parse_from_str(_from, "%Y-%m-%d")?, Utc);
 
     let mut start_date = Date::<Utc>::from_utc(
@@ -588,8 +584,8 @@ pub async fn remove_player(
 
 pub async fn create_trade(
     db: &Database,
-    _user_id: &String,
-    _pool_name: &String,
+    _user_id: &str,
+    _pool_name: &str,
     _trade: &mut Trade,
 ) -> Result<PoolMessageResponse> {
     let trade_deadline_date =
@@ -604,7 +600,12 @@ pub async fn create_trade(
     }
 
     let collection = db.collection::<Pool>("pools");
-    let mut pool = find_short_pool_by_name(&collection, _pool_name).await?;
+    let pool = find_short_pool_by_name(&collection, _pool_name).await?;
+
+    if _user_id != &_trade.proposed_by {
+        has_privileges(_user_id, &pool)?;
+    }
+
     let pool_context = get_pool_context(pool.context)?;
 
     // does the proposedBy and askTo field are valid
@@ -622,7 +623,7 @@ pub async fn create_trade(
     // Make sure that user can only have 1 active trade at a time. return an error if already one trade active in this pool. (Active trade = NEW, ACCEPTED, )
 
     for trade in trades.iter() {
-        if (matches!(trade.status, TradeStatus::NEW)) && (trade.proposed_by == *_user_id) {
+        if (matches!(trade.status, TradeStatus::NEW)) && (trade.proposed_by == _trade.proposed_by) {
             return Err(AppError::CustomError {
                 msg: "User can only have one active trade at a time.".to_string(),
             });
@@ -673,8 +674,8 @@ pub async fn create_trade(
 
 pub async fn cancel_trade(
     db: &Database,
-    _user_id: &String,
-    _pool_name: &String,
+    _user_id: &str,
+    _pool_name: &str,
     _trade_id: u32,
 ) -> Result<PoolMessageResponse> {
     let collection = db.collection::<Pool>("pools");
@@ -700,9 +701,7 @@ pub async fn cancel_trade(
     // validate only the owner can cancel a trade
 
     if trades[_trade_id as usize].proposed_by != *_user_id {
-        return Err(AppError::CustomError {
-            msg: "Only the one that created the trade can cancel it.".to_string(),
-        });
+        has_privileges(_user_id, &pool)?;
     }
 
     trades[_trade_id as usize].status = TradeStatus::CANCELLED;
