@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use crate::models::user::{LoginRequest, RegisterRequest, User, WalletLoginRegisterRequest};
 
-pub async fn find_optional_user_with_name(db: &Database, _name: &String) -> Result<Option<User>> {
+pub async fn find_optional_user_with_name(db: &Database, _name: &str) -> Result<Option<User>> {
     let collection = db.collection::<User>("users");
 
     let user = collection.find_one(doc! {"name": _name}, None).await?;
@@ -16,7 +16,7 @@ pub async fn find_optional_user_with_name(db: &Database, _name: &String) -> Resu
     Ok(user)
 }
 
-pub async fn find_user_with_name(db: &Database, _name: &String) -> Result<User> {
+pub async fn find_user_with_name(db: &Database, _name: &str) -> Result<User> {
     let user = find_optional_user_with_name(db, _name).await?;
 
     user.ok_or_else(move || AppError::CustomError {
@@ -24,10 +24,7 @@ pub async fn find_user_with_name(db: &Database, _name: &String) -> Result<User> 
     })
 }
 
-pub async fn find_optional_user_with_address(
-    db: &Database,
-    _addr: &String,
-) -> Result<Option<User>> {
+pub async fn find_optional_user_with_address(db: &Database, _addr: &str) -> Result<Option<User>> {
     let collection = db.collection::<User>("users");
 
     let user = collection.find_one(doc! {"addr": _addr}, None).await?;
@@ -35,7 +32,7 @@ pub async fn find_optional_user_with_address(
     Ok(user)
 }
 
-pub async fn find_user_with_address(db: &Database, _addr: &String) -> Result<User> {
+pub async fn find_user_with_address(db: &Database, _addr: &str) -> Result<User> {
     let user = find_optional_user_with_address(db, _addr).await?;
 
     user.ok_or_else(move || AppError::CustomError {
@@ -43,10 +40,28 @@ pub async fn find_user_with_address(db: &Database, _addr: &String) -> Result<Use
     })
 }
 
-pub async fn find_users(db: &Database) -> Result<Vec<User>> {
+pub async fn find_users(db: &Database, _names: &Option<Vec<String>>) -> Result<Vec<User>> {
     let collection = db.collection::<User>("users");
 
-    let cursor = collection.find(None, None).await?;
+    let cursor;
+
+    // if no list of users is passed, send all users.
+
+    let filter = if let Some(names) = _names {
+        let participants_objectId: Vec<ObjectId> = names
+            .iter()
+            .map(|id| {
+                ObjectId::from_str(id).expect("The user id list should all be valid at that point.")
+            })
+            .collect();
+
+        Some(doc! {"_id": {"$in": participants_objectId}}) // Only the users from the list provided will be retrieved.
+    } else {
+        println!("Nothing as been passed");
+        None // No filter so all users will be retrieved.
+    };
+
+    cursor = collection.find(filter, None).await?;
 
     let users: Vec<User> = cursor.try_collect().await?;
 
@@ -55,7 +70,7 @@ pub async fn find_users(db: &Database) -> Result<Vec<User>> {
 
 pub async fn add_pool_to_users(
     _collection: &Collection<User>,
-    _pool_name: &String,
+    _pool_name: &str,
     _user_ids: &Vec<String>,
 ) -> Result<()> {
     // Add the new pool to the list of pool in each users.

@@ -16,6 +16,7 @@ async fn rocket() -> _ {
             routes::daily_leaders::get_daily_leaders_by_date,
             routes::user::get_user_by_name,
             routes::user::get_users,
+            routes::user::get_users_with_id,
             routes::auth::register_user,
             routes::auth::login_user,
             routes::auth::wallet_login_user,
