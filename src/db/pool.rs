@@ -1,5 +1,6 @@
 use crate::errors::response::AppError;
 use crate::errors::response::Result;
+use crate::models::pool::DynastieSettings;
 use chrono::{Date, Duration, Local, NaiveDate, TimeZone, Timelike, Utc};
 use futures::stream::TryStreamExt;
 use mongodb::bson::Document;
@@ -9,8 +10,8 @@ use mongodb::{Collection, Database};
 use std::collections::HashMap;
 
 use crate::models::pool::{
-    Player, Pool, PoolContext, PoolCreationRequest, PoolState, PoolerRoster, Position,
-    ProjectedPoolShort, Trade, TradeItems, TradeStatus, UpdatePoolSettingsRequest,
+    Player, Pool, PoolContext, PoolCreationRequest, PoolSettings, PoolState, PoolerRoster,
+    Position, ProjectedPoolShort, Trade, TradeItems, TradeStatus, UpdatePoolSettingsRequest,
 };
 
 use crate::db::user::add_pool_to_users;
@@ -157,25 +158,28 @@ pub async fn create_pool(
         assistants: Vec::new(),
         number_poolers: _pool_info.number_pooler,
         participants: None,
-        number_forwards: 9,
-        number_defenders: 4,
-        number_goalies: 2,
-        number_reservists: 2,
-        forward_pts_goals: 2,
-        forward_pts_assists: 1,
-        forward_pts_hattricks: 3,
-        forward_pts_shootout_goals: 1,
-        defender_pts_goals: 3,
-        defender_pts_assists: 2,
-        defender_pts_hattricks: 2,
-        defender_pts_shootout_goals: 1,
-        goalies_pts_wins: 2,
-        goalies_pts_shutouts: 3,
-        goalies_pts_goals: 3,
-        goalies_pts_assists: 2,
-        goalies_pts_overtimes: 1,
-        next_season_number_players_protected: 8,
-        tradable_picks: 3,
+        settings: PoolSettings {
+            number_forwards: 9,
+            number_defenders: 4,
+            number_goalies: 2,
+            number_reservists: 2,
+            roster_modification_date: Vec::new(),
+            forward_pts_goals: 2,
+            forward_pts_assists: 1,
+            forward_pts_hattricks: 3,
+            forward_pts_shootout_goals: 1,
+            defender_pts_goals: 3,
+            defender_pts_assists: 2,
+            defender_pts_hattricks: 2,
+            defender_pts_shootout_goals: 1,
+            goalies_pts_wins: 2,
+            goalies_pts_shutouts: 3,
+            goalies_pts_goals: 3,
+            goalies_pts_assists: 2,
+            goalies_pts_overtimes: 1,
+            can_trade: false,
+            dynastie_settings: None,
+        },
         status: PoolState::Created,
         final_rank: None,
         nb_player_drafted: 0,
@@ -185,7 +189,6 @@ pub async fn create_pool(
         date_updated: 0,
         season_start: START_SEASON_DATE.to_string(),
         season_end: END_SEASON_DATE.to_string(),
-        roster_modification_date: Vec::new(),
     };
 
     collection.insert_one(&pool, None).await?;
@@ -324,8 +327,10 @@ pub async fn select_player(
     let mut users_players_count =
         get_users_players_count(&pool_context.pooler_roster, &participants).await;
 
-    let tot_players_in_roster =
-        pool.number_forwards + pool.number_defenders + pool.number_goalies + pool.number_reservists;
+    let tot_players_in_roster = pool.settings.number_forwards
+        + pool.settings.number_defenders
+        + pool.settings.number_goalies
+        + pool.settings.number_reservists;
 
     // validate it is the user turn.
 
@@ -338,6 +343,13 @@ pub async fn select_player(
                 .as_ref()
                 .expect("This member should never be optional in dynastie type pool.");
 
+            let nb_tradable_picks = pool
+                .settings
+                .dynastie_settings
+                .as_ref()
+                .expect("This member should never be optional in dynastie type pool.")
+                .tradable_picks;
+
             loop {
                 let players_drafted = pool_context.players_name_drafted.len();
 
@@ -346,7 +358,7 @@ pub async fn select_player(
                     - (players_drafted % pool.number_poolers as usize);
                 let next_drafter = &final_rank[index];
 
-                if players_drafted < (pool.tradable_picks * pool.number_poolers) as usize {
+                if players_drafted < (nb_tradable_picks * pool.number_poolers) as usize {
                     // use the tradable_picks to see who will draft next.
 
                     let real_next_drafter = &tradable_picks
@@ -404,19 +416,19 @@ pub async fn select_player(
 
         match _player.position {
             Position::F => {
-                if (pooler_roster.chosen_forwards.len() as u8) < pool.number_forwards {
+                if (pooler_roster.chosen_forwards.len() as u8) < pool.settings.number_forwards {
                     pooler_roster.chosen_forwards.push(_player.id);
                     is_added = true;
                 }
             }
             Position::D => {
-                if (pooler_roster.chosen_defenders.len() as u8) < pool.number_defenders {
+                if (pooler_roster.chosen_defenders.len() as u8) < pool.settings.number_defenders {
                     pooler_roster.chosen_defenders.push(_player.id);
                     is_added = true;
                 }
             }
             Position::G => {
-                if (pooler_roster.chosen_goalies.len() as u8) < pool.number_goalies {
+                if (pooler_roster.chosen_goalies.len() as u8) < pool.settings.number_goalies {
                     pooler_roster.chosen_goalies.push(_player.id);
                     is_added = true;
                 }
@@ -424,7 +436,7 @@ pub async fn select_player(
         }
 
         if !is_added {
-            if (pooler_roster.chosen_reservists.len() as u8) < pool.number_reservists {
+            if (pooler_roster.chosen_reservists.len() as u8) < pool.settings.number_reservists {
                 pooler_roster.chosen_reservists.push(_player.id);
             } else {
                 return Err(AppError::CustomError {
@@ -464,14 +476,16 @@ pub async fn select_player(
 
         let mut vect = vec![];
 
-        for _pick_round in 0..pool.tradable_picks {
-            let mut round = HashMap::new();
+        if let Some(dynastie_settings) = pool.settings.dynastie_settings {
+            for _pick_round in 0..dynastie_settings.tradable_picks {
+                let mut round = HashMap::new();
 
-            for participant in participants.iter() {
-                round.insert(participant.clone(), participant.clone());
+                for participant in participants.iter() {
+                    round.insert(participant.clone(), participant.clone());
+                }
+
+                vect.push(round);
             }
-
-            vect.push(round);
         }
 
         pool_context.tradable_picks = Some(vect);
@@ -567,7 +581,7 @@ pub async fn remove_player(
         });
     }
 
-    remove_player_from_roster(&mut pool_context, _player_id, _removed_to_user_id);
+    remove_player_from_roster(&mut pool_context, _player_id, _removed_to_user_id)?;
 
     // updated fields.
 
@@ -855,7 +869,7 @@ pub async fn fill_spot(
             if (pool_context.pooler_roster[_user_modified_id]
                 .chosen_forwards
                 .len() as u8)
-                < pool.number_forwards
+                < pool.settings.number_forwards
             {
                 if let Some(x) = pool_context.pooler_roster.get_mut(_user_modified_id) {
                     x.chosen_forwards.push(player.id);
@@ -867,7 +881,7 @@ pub async fn fill_spot(
             if (pool_context.pooler_roster[_user_modified_id]
                 .chosen_defenders
                 .len() as u8)
-                < pool.number_defenders
+                < pool.settings.number_defenders
             {
                 if let Some(x) = pool_context.pooler_roster.get_mut(_user_modified_id) {
                     x.chosen_defenders.push(player.id);
@@ -879,7 +893,7 @@ pub async fn fill_spot(
             if (pool_context.pooler_roster[_user_modified_id]
                 .chosen_goalies
                 .len() as u8)
-                < pool.number_goalies
+                < pool.settings.number_goalies
             {
                 if let Some(x) = pool_context.pooler_roster.get_mut(_user_modified_id) {
                     x.chosen_goalies.push(player.id);
@@ -967,12 +981,18 @@ pub async fn undo_select_player(
                 .as_ref()
                 .expect("This member should never be optional in dynastie type pool.");
 
+            let nb_tradable_picks = pool
+                .settings
+                .dynastie_settings
+                .expect("This member should never be optional in dynastie type pool.")
+                .tradable_picks;
+
             let index =
                 pool.number_poolers as usize - 1 - (pick_number % pool.number_poolers as usize);
 
             let next_drafter = &final_rank[index];
 
-            if pick_number < (pool.tradable_picks * pool.number_poolers) as usize {
+            if pick_number < (nb_tradable_picks * pool.number_poolers) as usize {
                 // use the tradable_picks to see who will draft next.
 
                 latest_drafter = tradable_picks[pick_number / pool.number_poolers as usize]
@@ -1045,7 +1065,7 @@ pub async fn modify_roster(
     if today >= start_season_date && today <= end_season_date {
         let mut bAllowed = false;
 
-        for DATE in &pool.roster_modification_date {
+        for DATE in &pool.settings.roster_modification_date {
             let sathurday = Local.from_utc_date(&NaiveDate::parse_from_str(DATE, "%Y-%m-%d")?);
 
             if sathurday == today {
@@ -1071,7 +1091,7 @@ pub async fn modify_roster(
 
     // Validate the total amount of forwards selected
 
-    if _forw_selected.len() != pool.number_forwards as usize {
+    if _forw_selected.len() != pool.settings.number_forwards as usize {
         return Err(AppError::CustomError {
             msg: "The amount of forwards selected is not valid".to_string(),
         });
@@ -1079,7 +1099,7 @@ pub async fn modify_roster(
 
     // Validate the total amount of defenders selected
 
-    if _def_selected.len() != pool.number_defenders as usize {
+    if _def_selected.len() != pool.settings.number_defenders as usize {
         return Err(AppError::CustomError {
             msg: "The amount of defenders selected is not valid".to_string(),
         });
@@ -1087,7 +1107,7 @@ pub async fn modify_roster(
 
     // Validate the total amount of goalies selected
 
-    if _goal_selected.len() != pool.number_goalies as usize {
+    if _goal_selected.len() != pool.settings.number_goalies as usize {
         return Err(AppError::CustomError {
             msg: "The amount of goalies selected is not valid".to_string(),
         });
@@ -1188,27 +1208,39 @@ pub async fn protect_players(
         });
     }
 
+    if pool.settings.dynastie_settings.is_none() {
+        return Err(AppError::CustomError {
+            msg: "This actions require a dynastie type pool.".to_string(),
+        });
+    }
+
+    let next_season_number_players_protected = pool
+        .settings
+        .dynastie_settings
+        .expect("")
+        .next_season_number_players_protected;
+
     // validate that the numbers of players protected is ok.
 
-    if (_forw_protected.len() as u8) > pool.number_forwards {
+    if (_forw_protected.len() as u8) > pool.settings.number_forwards {
         return Err(AppError::CustomError {
             msg: "To much forwards protected".to_string(),
         });
     }
 
-    if (_def_protected.len() as u8) > pool.number_defenders {
+    if (_def_protected.len() as u8) > pool.settings.number_defenders {
         return Err(AppError::CustomError {
             msg: "To much defenders protected".to_string(),
         });
     }
 
-    if (_goal_protected.len() as u8) > pool.number_goalies {
+    if (_goal_protected.len() as u8) > pool.settings.number_goalies {
         return Err(AppError::CustomError {
             msg: "To much goalies protected".to_string(),
         });
     }
 
-    if (_reserv_protected.len() as u8) > pool.number_reservists {
+    if (_reserv_protected.len() as u8) > pool.settings.number_reservists {
         return Err(AppError::CustomError {
             msg: "To much reservists protected".to_string(),
         });
@@ -1219,7 +1251,7 @@ pub async fn protect_players(
         + _goal_protected.len()
         + _reserv_protected.len();
 
-    if tot_player_protected as u8 != pool.next_season_number_players_protected {
+    if tot_player_protected as u8 != next_season_number_players_protected {
         return Err(AppError::CustomError {
             msg: "The number of selected players is not valid".to_string(),
         });
@@ -1274,7 +1306,7 @@ pub async fn protect_players(
         get_users_players_count(&pool_context.pooler_roster, &participants).await;
 
     for participant in participants.iter() {
-        if users_players_count[participant] != pool.next_season_number_players_protected {
+        if users_players_count[participant] != next_season_number_players_protected {
             is_done = false; // not all participants are ready
             break;
         }
@@ -1304,15 +1336,11 @@ pub async fn update_pool_settings(
     has_privileges(_user_id, &pool)?;
 
     // Update the fields in the mongoDB pool document.
-    if (_update.pool_settings.number_forwards.is_some()
-        || _update.pool_settings.number_defenders.is_some()
-        || _update.pool_settings.number_goalies.is_some()
-        || _update.pool_settings.number_reservists.is_some()
-        || _update
-            .pool_settings
-            .next_season_number_players_protected
-            .is_some()
-        || _update.pool_settings.tradable_picks.is_some())
+    if (_update.pool_settings.number_forwards != pool.settings.number_forwards
+        || _update.pool_settings.number_defenders != pool.settings.number_defenders
+        || _update.pool_settings.number_goalies != pool.settings.number_goalies
+        || _update.pool_settings.number_reservists != pool.settings.number_reservists
+        || _update.pool_settings.dynastie_settings != pool.settings.dynastie_settings)
         && matches!(pool.status, PoolState::InProgress)
     {
         return Err(AppError::CustomError {
@@ -1322,28 +1350,7 @@ pub async fn update_pool_settings(
 
     let updated_fields = doc! {
         "$set": doc!{
-            "number_forwards": to_bson(&_update.pool_settings.number_forwards.unwrap_or(pool.number_forwards))?,
-            "number_defenders": to_bson(&_update.pool_settings.number_defenders.unwrap_or(pool.number_defenders))?,
-            "number_goalies": to_bson(&_update.pool_settings.number_goalies.unwrap_or(pool.number_goalies))?,
-            "number_reservists": to_bson(&_update.pool_settings.number_reservists.unwrap_or(pool.number_reservists))?,
-            "next_season_number_players_protected": to_bson(&_update.pool_settings.next_season_number_players_protected.unwrap_or(pool.next_season_number_players_protected))?,
-            "tradable_picks": to_bson(&_update.pool_settings.tradable_picks.unwrap_or(pool.tradable_picks))?,
-            //Points per forwards
-            "forward_pts_goals": to_bson(&_update.pool_settings.forward_pts_goals.unwrap_or(pool.forward_pts_goals))?,
-            "forward_pts_assists": to_bson(&_update.pool_settings.forward_pts_assists.unwrap_or(pool.forward_pts_assists))?,
-            "forward_pts_hattricks": to_bson(&_update.pool_settings.forward_pts_hattricks.unwrap_or(pool.forward_pts_hattricks))?,
-            "forward_pts_shootout_goals": to_bson(&_update.pool_settings.forward_pts_shootout_goals.unwrap_or(pool.forward_pts_shootout_goals))?,
-            //Points per Defenders
-            "defender_pts_goals": to_bson(&_update.pool_settings.defender_pts_goals.unwrap_or(pool.defender_pts_goals))?,
-            "defender_pts_assists": to_bson(&_update.pool_settings.defender_pts_assists.unwrap_or(pool.defender_pts_assists))?,
-            "defender_pts_hattricks": to_bson(&_update.pool_settings.defender_pts_hattricks.unwrap_or(pool.defender_pts_hattricks))?,
-            "defender_pts_shootout_goals": to_bson(&_update.pool_settings.defender_pts_shootout_goals.unwrap_or(pool.defender_pts_shootout_goals))?,
-            //Points per Goalies
-            "goalies_pts_wins": to_bson(&_update.pool_settings.goalies_pts_wins.unwrap_or(pool.goalies_pts_wins))?,
-            "goalies_pts_shutouts": to_bson(&_update.pool_settings.goalies_pts_shutouts.unwrap_or(pool.goalies_pts_shutouts))?,
-            "goalies_pts_overtimes": to_bson(&_update.pool_settings.goalies_pts_overtimes.unwrap_or(pool.goalies_pts_overtimes))?,
-            "goalies_pts_goals": to_bson(&_update.pool_settings.goalies_pts_goals.unwrap_or(pool.goalies_pts_goals))?,
-            "goalies_pts_assists": to_bson(&_update.pool_settings.goalies_pts_assists.unwrap_or(pool.goalies_pts_assists))?,
+            "settings": to_bson(&_update.pool_settings)?,
 
         }
     };
