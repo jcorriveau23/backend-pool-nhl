@@ -69,23 +69,11 @@ pub async fn find_pool_by_name_with_range(db: &Database, _name: &str, _from: &st
         Utc,
     );
 
-    let end_date =
-        Date::<Utc>::from_utc(NaiveDate::parse_from_str(END_SEASON_DATE, "%Y-%m-%d")?, Utc);
-
     if from_date < start_date {
         return Err(AppError::CustomError {
             msg: format!(
                 "from date: {} cannot be before start date: {}",
                 from_date, start_date
-            ),
-        });
-    }
-
-    if from_date > end_date {
-        return Err(AppError::CustomError {
-            msg: format!(
-                "from date: {} cannot be after end date: {}",
-                from_date, end_date
             ),
         });
     }
