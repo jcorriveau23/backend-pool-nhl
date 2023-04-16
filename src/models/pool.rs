@@ -25,6 +25,7 @@ impl PartialEq<DynastieSettings> for DynastieSettings {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
 pub struct PoolSettings {
+    pub assistants: Vec<String>, // Participants that are allowed to make some pool modifications.
     // Roster configuration.
     pub number_forwards: u8,
     pub number_defenders: u8,
@@ -60,7 +61,6 @@ pub struct PoolSettings {
 pub struct Pool {
     pub name: String, // the name of the pool.
     pub owner: String,
-    pub assistants: Vec<String>,
     pub number_poolers: u8, // the number of participants in the pool.
 
     pub participants: Option<Vec<String>>, // The mongoDB ID of each participants.

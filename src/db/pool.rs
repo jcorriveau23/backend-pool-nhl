@@ -1,6 +1,5 @@
 use crate::errors::response::AppError;
 use crate::errors::response::Result;
-use crate::models::pool::DynastieSettings;
 use chrono::{Date, Duration, Local, NaiveDate, TimeZone, Timelike, Utc};
 use futures::stream::TryStreamExt;
 use mongodb::bson::Document;
@@ -143,10 +142,10 @@ pub async fn create_pool(
     let pool = Pool {
         name: _pool_info.name,
         owner: _owner,
-        assistants: Vec::new(),
         number_poolers: _pool_info.number_pooler,
         participants: None,
         settings: PoolSettings {
+            assistants: Vec::new(),
             number_forwards: 9,
             number_defenders: 4,
             number_goalies: 2,
@@ -703,7 +702,7 @@ pub async fn cancel_trade(
     // validate only the owner can cancel a trade
 
     if !has_owner_rights(_user_id, &pool.owner)
-        && !has_assistants_rights(_user_id, &pool.assistants)
+        && !has_assistants_rights(_user_id, &pool.settings.assistants)
     {
         // validate that only the one that was ask for the trade or the owner can accept it.
 
@@ -755,7 +754,7 @@ pub async fn respond_trade(
     }
 
     if !has_owner_rights(_user_id, &pool.owner)
-        && !has_assistants_rights(_user_id, &pool.assistants)
+        && !has_assistants_rights(_user_id, &pool.settings.assistants)
     {
         // validate that only the one that was ask for the trade or the owner can accept it.
 
@@ -939,7 +938,7 @@ pub async fn undo_select_player(
         });
     }
 
-    let mut latest_pick;
+    let latest_pick;
 
     loop {
         match pool_context.players_name_drafted.pop() {
@@ -1526,7 +1525,7 @@ fn has_owner_rights(_user_id: &str, _owner: &str) -> bool {
 }
 
 fn has_privileges(_user_id: &str, _pool: &Pool) -> Result<()> {
-    if !has_assistants_rights(_user_id, &_pool.assistants)
+    if !has_assistants_rights(_user_id, &_pool.settings.assistants)
         && !has_owner_rights(_user_id, &_pool.owner)
     {
         return Err(AppError::CustomError {
