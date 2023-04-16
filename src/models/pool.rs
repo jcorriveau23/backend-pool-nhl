@@ -10,19 +10,28 @@ pub struct ProjectedPoolShort {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
-pub struct Pool {
-    pub name: String, // the name of the pool.
-    pub owner: String,
-    pub assistants: Vec<String>,
-    pub number_poolers: u8, // the number of participants in the pool.
+pub struct DynastieSettings {
+    // Other pool configuration
+    pub next_season_number_players_protected: u8,
+    pub tradable_picks: u8, // numbers of the next season picks participants are able to trade with each other.
+}
 
-    pub participants: Option<Vec<String>>, // The mongoDB ID of each participants.
+impl PartialEq<DynastieSettings> for DynastieSettings {
+    fn eq(&self, other: &DynastieSettings) -> bool {
+        self.next_season_number_players_protected == other.next_season_number_players_protected
+            && self.tradable_picks == other.tradable_picks
+    }
+}
 
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+pub struct PoolSettings {
+    pub assistants: Vec<String>, // Participants that are allowed to make some pool modifications.
     // Roster configuration.
     pub number_forwards: u8,
     pub number_defenders: u8,
     pub number_goalies: u8,
     pub number_reservists: u8,
+    pub roster_modification_date: Vec<String>, // Date where reservist can be traded.
 
     // Forwards points configuration.
     pub forward_pts_goals: u8,
@@ -43,9 +52,20 @@ pub struct Pool {
     pub goalies_pts_goals: u8,
     pub goalies_pts_assists: u8,
 
-    // Other pool configuration
-    pub next_season_number_players_protected: u8,
-    pub tradable_picks: u8, // numbers of the next season picks participants are able to trade with each other.
+    pub can_trade: bool, // Tell if trades are activated.
+
+    pub dynastie_settings: Option<DynastieSettings>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+pub struct Pool {
+    pub name: String, // the name of the pool.
+    pub owner: String,
+    pub number_poolers: u8, // the number of participants in the pool.
+
+    pub participants: Option<Vec<String>>, // The mongoDB ID of each participants.
+
+    pub settings: PoolSettings,
 
     pub status: PoolState, // State of the pool.
     pub final_rank: Option<Vec<String>>,
@@ -61,7 +81,6 @@ pub struct Pool {
     pub date_updated: i64,
     pub season_start: String,
     pub season_end: String,
-    pub roster_modification_date: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
@@ -322,39 +341,6 @@ pub struct ProtectPlayersRequest {
 #[derive(Debug, Deserialize, JsonSchema, Clone)]
 pub struct PoolUndoSelectionRequest {
     pub name: String,
-}
-
-// TODO: since these are the same settings as his the pool,
-// this should be used in the Pool object instead. This will required a big data base and front-end refactor but would be lot cleaner.
-#[derive(Debug, Deserialize, JsonSchema, Clone)]
-pub struct PoolSettings {
-    pub number_forwards: Option<u8>,
-    pub number_defenders: Option<u8>,
-    pub number_goalies: Option<u8>,
-    pub number_reservists: Option<u8>,
-
-    // Forwards points configuration.
-    pub forward_pts_goals: Option<u8>,
-    pub forward_pts_assists: Option<u8>,
-    pub forward_pts_hattricks: Option<u8>,
-    pub forward_pts_shootout_goals: Option<u8>,
-
-    // Defenders points configuration.
-    pub defender_pts_goals: Option<u8>,
-    pub defender_pts_assists: Option<u8>,
-    pub defender_pts_hattricks: Option<u8>,
-    pub defender_pts_shootout_goals: Option<u8>,
-
-    // Goalies points configuration.
-    pub goalies_pts_wins: Option<u8>,
-    pub goalies_pts_shutouts: Option<u8>,
-    pub goalies_pts_overtimes: Option<u8>,
-    pub goalies_pts_goals: Option<u8>,
-    pub goalies_pts_assists: Option<u8>,
-
-    // Other pool configuration
-    pub next_season_number_players_protected: Option<u8>,
-    pub tradable_picks: Option<u8>, // numbers of the next season picks participants are able to trade with each other.
 }
 
 // payload to sent when undoing a selection in a pool by the owner.
