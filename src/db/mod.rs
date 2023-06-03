@@ -1,4 +1,5 @@
 use crate::errors::response::Result;
+use mongodb::bson::doc;
 use mongodb::options::ClientOptions;
 use mongodb::{Client, Database};
 use rocket::fairing::AdHoc;
@@ -20,13 +21,21 @@ pub fn init() -> AdHoc {
 }
 
 async fn connect() -> Result<Database> {
-    let client_options = ClientOptions::parse("mongodb://localhost:27017").await?;
+    let client_options = ClientOptions::parse(
+        "mongodb+srv://<user>:<psw>@cluster0.fxxbzrj.mongodb.net/?retryWrites=true&w=majority",
+    )
+    .await?;
 
     // mongoDB client
     let client = Client::with_options(client_options)?;
 
     // mongoDB database
     let db = client.database("hockeypool");
+
+    client
+        .database("hockeypool")
+        .run_command(doc! {"ping": 1}, None)
+        .await?;
 
     println!("MongoDB Connected!");
 
