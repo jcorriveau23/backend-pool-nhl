@@ -1,21 +1,18 @@
 [package]
 name = "server"
 version = "0.0.0"
-edition = "2021"
+edition = "2023"
 publish = false
 
 [dependencies] 
 rocket = { version = "0.5.0-rc.1", default-features = false, features = ["json"] }
-mongodb = "2.2.2"
-serde = "1.0.139"
-serde_json = "1.0.82"
-futures = "0.3.21"
-okapi = { version = "0.6.0-alpha-1" }
-rocket_okapi = { version = "0.8.0-rc.1", features = ["swagger", "secrets"] }
-schemars = "0.8.10"
-jsonwebtoken = "8.1.1"
-chrono = "0.4.19"
-bcrypt = "0.13.0"
+mongodb = "2.5.0"
+serde = "1.0.164"
+serde_json = "1.0.97"
+futures = "0.3.28"
+jsonwebtoken = "8.3.0"
+chrono = "0.4.26"
+bcrypt = "0.14.0"
 web3 = "0.18.0"
 rand = "0.8.5"
 hex = "0.4.3"

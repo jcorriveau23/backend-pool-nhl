@@ -1,6 +1,6 @@
 use crate::errors::response::AppError;
 use crate::errors::response::Result;
-use chrono::{Date, Duration, Local, NaiveDate, TimeZone, Timelike, Utc};
+use chrono::{Duration, Local, NaiveDate, Timelike, Utc};
 use futures::stream::TryStreamExt;
 use mongodb::bson::Document;
 use mongodb::bson::{doc, to_bson};
@@ -62,12 +62,9 @@ pub async fn find_short_pool_by_name(collection: &Collection<Pool>, _name: &str)
 
 // Return the pool information with a requested range of day for the score_by_day member
 pub async fn find_pool_by_name_with_range(db: &Database, _name: &str, _from: &str) -> Result<Pool> {
-    let from_date = Date::<Utc>::from_utc(NaiveDate::parse_from_str(_from, "%Y-%m-%d")?, Utc);
+    let from_date = NaiveDate::parse_from_str(_from, "%Y-%m-%d")?;
 
-    let mut start_date = Date::<Utc>::from_utc(
-        NaiveDate::parse_from_str(START_SEASON_DATE, "%Y-%m-%d")?,
-        Utc,
-    );
+    let mut start_date = NaiveDate::parse_from_str(START_SEASON_DATE, "%Y-%m-%d")?;
 
     if from_date < start_date {
         return Err(AppError::CustomError {
@@ -81,11 +78,7 @@ pub async fn find_pool_by_name_with_range(db: &Database, _name: &str, _from: &st
     let mut projection = doc! {};
 
     loop {
-        let str_date = start_date
-            .to_string()
-            .strip_suffix("UTC")
-            .expect("A Date<Utc> should always be stripable with UTC.")
-            .to_string();
+        let str_date = start_date.to_string();
 
         if str_date == *_from {
             break;
@@ -589,10 +582,9 @@ pub async fn create_trade(
     _pool_name: &str,
     _trade: &mut Trade,
 ) -> Result<PoolMessageResponse> {
-    let trade_deadline_date =
-        Local.from_utc_date(&NaiveDate::parse_from_str(TRADE_DEADLINE_DATE, "%Y-%m-%d")?);
+    let trade_deadline_date = NaiveDate::parse_from_str(TRADE_DEADLINE_DATE, "%Y-%m-%d")?;
 
-    let today = Local::today();
+    let today = Local::now().date_naive();
 
     if today > trade_deadline_date {
         return Err(AppError::CustomError {
@@ -1034,14 +1026,12 @@ pub async fn modify_roster(
         has_privileges(_user_id, &pool)?;
     }
 
-    let start_season_date =
-        Local.from_utc_date(&NaiveDate::parse_from_str(START_SEASON_DATE, "%Y-%m-%d")?);
-    let end_season_date =
-        Local.from_utc_date(&NaiveDate::parse_from_str(END_SEASON_DATE, "%Y-%m-%d")?);
+    let start_season_date = NaiveDate::parse_from_str(START_SEASON_DATE, "%Y-%m-%d")?;
+    let end_season_date = NaiveDate::parse_from_str(END_SEASON_DATE, "%Y-%m-%d")?;
 
-    let mut today = Local::today();
+    let mut today = Local::now().date_naive();
 
-    let time = Local::now();
+    let time = Local::now().time();
 
     // At 12PM we start to count the action for the next day.
 
@@ -1053,7 +1043,7 @@ pub async fn modify_roster(
         let mut bAllowed = false;
 
         for DATE in &pool.settings.roster_modification_date {
-            let sathurday = Local.from_utc_date(&NaiveDate::parse_from_str(DATE, "%Y-%m-%d")?);
+            let sathurday = NaiveDate::parse_from_str(DATE, "%Y-%m-%d")?;
 
             if sathurday == today {
                 bAllowed = true;

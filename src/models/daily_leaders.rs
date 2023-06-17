@@ -1,7 +1,6 @@
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DailyLeaders {
     pub date: String,
     pub goalies: Vec<DailyGoaly>,
@@ -9,7 +8,7 @@ pub struct DailyLeaders {
     pub played: Vec<u32>,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DailyGoaly {
     pub name: String,
     pub id: u32,
@@ -17,7 +16,7 @@ pub struct DailyGoaly {
     pub stats: GoalyStats,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DailySkater {
     pub name: String,
     pub id: u32,
@@ -28,7 +27,7 @@ pub struct DailySkater {
 // To reduce only the unused members have been commented out to reduce data usage.
 
 #[allow(non_snake_case)]
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GoalyStats {
     // pub timeOnIce: String,
     pub assists: u8,
@@ -52,7 +51,7 @@ pub struct GoalyStats {
 // To reduce only the unused members have been commented out to reduce data usage.
 
 #[allow(non_snake_case)]
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SkaterStats {
     // pub timeOnIce: String,
     pub assists: u8,

@@ -1,15 +1,14 @@
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ProjectedPoolShort {
     pub name: String, // the name of the pool.
     pub owner: String,
     pub status: PoolState, // State of the pool.
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DynastieSettings {
     // Other pool configuration
     pub next_season_number_players_protected: u8,
@@ -23,7 +22,7 @@ impl PartialEq<DynastieSettings> for DynastieSettings {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PoolSettings {
     pub assistants: Vec<String>, // Participants that are allowed to make some pool modifications.
     // Roster configuration.
@@ -57,7 +56,7 @@ pub struct PoolSettings {
     pub dynastie_settings: Option<DynastieSettings>,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Pool {
     pub name: String, // the name of the pool.
     pub owner: String,
@@ -83,21 +82,21 @@ pub struct Pool {
     pub season_end: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum PoolState {
     InProgress,
     Dynastie,
     Draft,
     Created,
 }
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ProjectedPoolContext {
     pub pooler_roster: HashMap<String, PoolerRoster>,
     pub players_name_drafted: Vec<u32>,
     pub tradable_picks: Option<Vec<HashMap<String, String>>>,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)] // Copy
+#[derive(Debug, Deserialize, Serialize, Clone)] // Copy
 pub struct PoolContext {
     pub pooler_roster: HashMap<String, PoolerRoster>,
     pub players_name_drafted: Vec<u32>,
@@ -107,7 +106,7 @@ pub struct PoolContext {
     pub players: HashMap<String, Player>,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)] // Copy
+#[derive(Debug, Deserialize, Serialize, Clone)] // Copy
 pub struct PoolerRoster {
     pub chosen_forwards: Vec<u32>,
     pub chosen_defenders: Vec<u32>,
@@ -115,7 +114,7 @@ pub struct PoolerRoster {
     pub chosen_reservists: Vec<u32>,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DailyRosterPoints {
     pub roster: Roster,
     pub F_tot: Option<SkaterPoolPoints>,
@@ -124,21 +123,21 @@ pub struct DailyRosterPoints {
     pub cumulate: Option<DailyCumulate>,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Roster {
     pub F: HashMap<String, Option<SkaterPoints>>,
     pub D: HashMap<String, Option<SkaterPoints>>,
     pub G: HashMap<String, Option<GoalyPoints>>,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SkaterPoints {
     pub G: u8,
     pub A: u8,
     pub SOG: Option<u8>,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct GoalyPoints {
     pub G: u8,
     pub A: u8,
@@ -147,7 +146,7 @@ pub struct GoalyPoints {
     pub OT: bool,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SkaterPoolPoints {
     pub G: u8,
     pub A: u8,
@@ -155,7 +154,7 @@ pub struct SkaterPoolPoints {
     pub SOG: u8,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct GoalyPoolPoints {
     pub G: u8,
     pub A: u8,
@@ -164,7 +163,7 @@ pub struct GoalyPoolPoints {
     pub OT: u8,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DailyCumulate {
     // Forwards
     pub G_F: u16,
@@ -190,7 +189,7 @@ impl PartialEq<Player> for Player {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Player {
     pub id: u32, // ID from the NHL API.
     pub name: String,
@@ -199,7 +198,7 @@ pub struct Player {
     pub caps: Option<Vec<u32>>,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub enum Position {
     F,
     D,
@@ -212,13 +211,13 @@ impl PartialEq<Pick> for Pick {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Pick {
     pub round: u8,
     pub from: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Trade {
     pub proposed_by: String,
     pub ask_to: String,
@@ -230,13 +229,13 @@ pub struct Trade {
     pub date_accepted: i64,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TradeItems {
     pub players: Vec<u32>, // Id of the player
     pub picks: Vec<Pick>,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub enum TradeStatus {
     NEW,       // trade created by a requester (not yet ACCEPTED/CANCELLED/REFUSED)
     ACCEPTED,  // trade accepted items were officially traded
@@ -245,33 +244,33 @@ pub enum TradeStatus {
 }
 
 // payload to sent when creating a new pool.
-#[derive(Debug, Deserialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct PoolCreationRequest {
     pub name: String,
     pub number_pooler: u8,
 }
 
 // payload to sent when deleting a pool.
-#[derive(Debug, Deserialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct PoolDeletionRequest {
     pub name: String,
 }
 
 // payload to sent when deleting a pool.
-#[derive(Debug, Deserialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct StartDraftRequest {
     pub poolInfo: Pool,
 }
 
 // payload to sent when selecting a player.
-#[derive(Debug, Deserialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct SelectPlayerRequest {
     pub name: String,
     pub player: Player,
 }
 
 // payload to sent when adding player by the owner of the pool.
-#[derive(Debug, Deserialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct AddPlayerRequest {
     pub name: String,
     pub user_id: String,
@@ -279,7 +278,7 @@ pub struct AddPlayerRequest {
 }
 
 // payload to sent when removing player by the owner of the pool.
-#[derive(Debug, Deserialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RemovePlayerRequest {
     pub name: String,
     pub user_id: String,
@@ -287,21 +286,21 @@ pub struct RemovePlayerRequest {
 }
 
 // payload to sent when creating a trade.
-#[derive(Debug, Deserialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct CreateTradeRequest {
     pub name: String,
     pub trade: Trade,
 }
 
 // payload to sent when cancelling a trade.
-#[derive(Debug, Deserialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct CancelTradeRequest {
     pub name: String,
     pub trade_id: u32,
 }
 
 // payload to sent when responding to a trade.
-#[derive(Debug, Deserialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RespondTradeRequest {
     pub name: String,
     pub is_accepted: bool,
@@ -309,7 +308,7 @@ pub struct RespondTradeRequest {
 }
 
 // payload to sent when filling a spot with a reservist.
-#[derive(Debug, Deserialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct FillSpotRequest {
     pub name: String,
     pub user_id: String,
@@ -317,7 +316,7 @@ pub struct FillSpotRequest {
 }
 
 // payload to sent when modifying roster of a pooler
-#[derive(Debug, Deserialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ModifyRosterRequest {
     pub name: String,
     pub user_id: String,
@@ -328,7 +327,7 @@ pub struct ModifyRosterRequest {
 }
 
 // payload to sent when protecting the list of players for dynastie draft.
-#[derive(Debug, Deserialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ProtectPlayersRequest {
     pub name: String,
     pub forw_protected: Vec<u32>,
@@ -338,13 +337,13 @@ pub struct ProtectPlayersRequest {
 }
 
 // payload to sent when undoing a selection in a pool by the owner.
-#[derive(Debug, Deserialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct PoolUndoSelectionRequest {
     pub name: String,
 }
 
 // payload to sent when undoing a selection in a pool by the owner.
-#[derive(Debug, Deserialize, JsonSchema, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct UpdatePoolSettingsRequest {
     pub name: String,
     // Roster configuration.
