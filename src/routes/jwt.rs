@@ -1,94 +1,90 @@
-use chrono::Utc;
-
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation};
 use mongodb::bson::oid::ObjectId;
-use rocket::http::Status;
-use rocket::outcome::Outcome;
-use rocket::request::{self, FromRequest, Request};
-use rocket::serde::json::{json, Value};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
-use crate::errors::response::{AppError, Result};
+use crate::errors::response::AppError;
+use crate::settings::SETTINGS;
 
 use crate::models::user::User;
+use axum::{
+    async_trait,
+    extract::{FromRequestParts, TypedHeader},
+    headers::{authorization::Bearer, Authorization},
+    http::request::Parts,
+    RequestPartsExt,
+};
 
-static ONE_WEEK: i64 = 60 * 60 * 24 * 7; // in seconds
+static VALIDATION: Lazy<Validation> = Lazy::new(Validation::default);
+static HEADER: Lazy<Header> = Lazy::new(Header::default);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UserToken {
-    // issued at
-    pub iat: i64,
-    // expiration
-    pub exp: i64,
     // data
     pub _id: ObjectId,
+    pub name: String,
 }
 
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for UserToken {
-    type Error = AppError;
-    async fn from_request(req: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
-        if let Some(authen_header) = req.headers().get_one("Authorization") {
-            let authen_str = authen_header.to_string();
-            if authen_str.starts_with("Bearer") {
-                let token = authen_str[6..authen_str.len()].trim();
-                if let Ok(token_data) = jsonwebtoken::decode::<UserToken>(
-                    &token,
-                    &DecodingKey::from_secret(include_bytes!("secret.key")),
-                    &Validation::default(),
-                ) {
-                    return verify_token(token_data.claims);
-                } else {
-                    return Outcome::Failure((
-                        Status::BadRequest,
-                        AppError::AuthError {
-                            msg: "The token is invalid.".to_string(),
-                        },
-                    ));
-                }
-            }
+#[async_trait]
+impl<S> FromRequestParts<S> for UserToken
+where
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let TypedHeader(Authorization(bearer)) = parts
+            .extract::<TypedHeader<Authorization<Bearer>>>()
+            .await
+            .map_err(|_| AppError::AuthError {
+                msg: "Invalid token".to_string(),
+            })?;
+
+        let token_data = decode(bearer.token())?;
+
+        Ok(token_data.claims.user)
+    }
+}
+
+impl From<User> for UserToken {
+    fn from(user: User) -> Self {
+        Self {
+            _id: user._id,
+            name: user.name,
         }
-
-        Outcome::Failure((
-            Status::BadRequest,
-            AppError::AuthError {
-                msg: "The token is missing.".to_string(),
-            },
-        ))
     }
 }
 
-pub fn generate_token(_user: &User) -> Result<String> {
-    let now = Utc::now().timestamp_nanos() / 1_000_000_000; // nanosecond -> second
-    let payload = UserToken {
-        iat: now,
-        exp: now + ONE_WEEK,
-        _id: _user._id,
-    };
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Claims {
+    pub exp: usize, // Expiration time (as UTC timestamp). validate_exp defaults to true in validation
+    pub iat: usize, // Issued at (as UTC timestamp)
+    pub user: UserToken,
+}
 
-    Ok(jsonwebtoken::encode(
-        &Header::default(),
-        &payload,
-        &EncodingKey::from_secret(include_bytes!("secret.key")),
+impl Claims {
+    pub fn new(user: User) -> Self {
+        Self {
+            exp: (chrono::Local::now() + chrono::Duration::days(7)).timestamp() as usize,
+            iat: chrono::Local::now().timestamp() as usize,
+            user: UserToken::from(user),
+        }
+    }
+}
+
+pub fn create(user: User) -> Result<String, AppError> {
+    let encoding_key = EncodingKey::from_secret(SETTINGS.auth.secret.as_ref());
+    let claims = Claims::new(user);
+
+    Ok(jsonwebtoken::encode(&HEADER, &claims, &encoding_key)?)
+}
+
+pub fn decode(token: &str) -> Result<TokenData<Claims>, AppError> {
+    let decoding_key = DecodingKey::from_secret(SETTINGS.auth.secret.as_ref());
+
+    Ok(jsonwebtoken::decode::<Claims>(
+        token,
+        &decoding_key,
+        &VALIDATION,
     )?)
-}
-
-pub fn generate_user_token(_user: &User) -> Result<Value> {
-    let token = generate_token(_user)?;
-    Ok(json! ({"user": _user, "token": token}))
-}
-
-fn verify_token(token: UserToken) -> request::Outcome<UserToken, AppError> {
-    if token.exp < (Utc::now().timestamp_nanos() / 1_000_000_000) {
-        // the token is expired, the user will need to re-generate a jwt token
-
-        return Outcome::Failure((
-            Status::BadRequest,
-            AppError::AuthError {
-                msg: "The token is expired!".to_string(),
-            },
-        ));
-    }
-
-    Outcome::Success(token)
 }

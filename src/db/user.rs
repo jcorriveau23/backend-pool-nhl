@@ -20,7 +20,7 @@ pub async fn find_user_with_name(db: &Database, _name: &str) -> Result<User> {
     let user = find_optional_user_with_name(db, _name).await?;
 
     user.ok_or_else(move || AppError::CustomError {
-        msg: format!("no user found with name {}", _name),
+        msg: format!("no user found with name '{}'", _name),
     })
 }
 
@@ -32,14 +32,6 @@ pub async fn find_optional_user_with_address(db: &Database, _addr: &str) -> Resu
     Ok(user)
 }
 
-pub async fn find_user_with_address(db: &Database, _addr: &str) -> Result<User> {
-    let user = find_optional_user_with_address(db, _addr).await?;
-
-    user.ok_or_else(move || AppError::CustomError {
-        msg: format!("no user found with address {}", _addr),
-    })
-}
-
 pub async fn find_users(db: &Database, _names: &Option<Vec<String>>) -> Result<Vec<User>> {
     let collection = db.collection::<User>("users");
 
@@ -48,16 +40,15 @@ pub async fn find_users(db: &Database, _names: &Option<Vec<String>>) -> Result<V
     // if no list of users is passed, send all users.
 
     let filter = if let Some(names) = _names {
-        let participants_objectId: Vec<ObjectId> = names
+        let participants_object_id: Vec<ObjectId> = names
             .iter()
             .map(|id| {
                 ObjectId::from_str(id).expect("The user id list should all be valid at that point.")
             })
             .collect();
 
-        Some(doc! {"_id": {"$in": participants_objectId}}) // Only the users from the list provided will be retrieved.
+        Some(doc! {"_id": {"$in": participants_object_id}}) // Only the users from the list provided will be retrieved.
     } else {
-        println!("Nothing as been passed");
         None // No filter so all users will be retrieved.
     };
 
@@ -75,14 +66,14 @@ pub async fn add_pool_to_users(
 ) -> Result<()> {
     // Add the new pool to the list of pool in each users.
 
-    let participants_objectId: Vec<ObjectId> = _user_ids
+    let participants_object_id: Vec<ObjectId> = _user_ids
         .iter()
         .map(|id| {
             ObjectId::from_str(id).expect("The user id list should all be valid at that point.")
         })
         .collect();
 
-    let query = doc! {"_id": {"$in": participants_objectId}};
+    let query = doc! {"_id": {"$in": participants_object_id}};
 
     let update = doc! {"$push": {"pool_list": _pool_name}}; // Add the name of the pool
 
@@ -140,7 +131,7 @@ pub async fn create_user_from_register(
 }
 
 pub async fn login(db: &Database, login_req: &LoginRequest) -> Result<User> {
-    println!("Login from {}", login_req.name);
+    println!("Login from '{}'", login_req.name);
 
     let user = find_user_with_name(db, &login_req.name).await?;
 
@@ -230,7 +221,7 @@ pub async fn update_user_name(db: &Database, _user_id: &str, _new_name: &str) ->
         .await?;
 
     user.ok_or_else(move || AppError::CustomError {
-        msg: format!("no user found with id {}", _user_id),
+        msg: format!("no user found with id '{}'", _user_id),
     })
 }
 
@@ -256,7 +247,7 @@ pub async fn update_password(db: &Database, _user_id: &str, _new_password: &str)
         .await?;
 
     user.ok_or(AppError::CustomError {
-        msg: format!("no user found with id {}", _user_id),
+        msg: format!("no user found with id '{}'", _user_id),
     })
 }
 

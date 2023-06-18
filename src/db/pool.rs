@@ -32,7 +32,7 @@ pub async fn find_pool_by_name(db: &Database, _name: &str) -> Result<Pool> {
     let pool = collection.find_one(doc! {"name": _name}, None).await?;
 
     pool.ok_or(AppError::CustomError {
-        msg: format!("no pool found with name {}", _name),
+        msg: format!("no pool found with name '{}'", _name),
     })
 }
 
@@ -56,7 +56,7 @@ pub async fn find_short_pool_by_name(collection: &Collection<Pool>, _name: &str)
     let short_pool = find_optional_short_pool_by_name(collection, _name).await?;
 
     short_pool.ok_or(AppError::CustomError {
-        msg: format!("no pool found with name {}", _name),
+        msg: format!("no pool found with name '{}'", _name),
     })
 }
 
@@ -69,7 +69,7 @@ pub async fn find_pool_by_name_with_range(db: &Database, _name: &str, _from: &st
     if from_date < start_date {
         return Err(AppError::CustomError {
             msg: format!(
-                "from date: {} cannot be before start date: {}",
+                "from date: '{}' cannot be before start date: '{}'",
                 from_date, start_date
             ),
         });
@@ -95,7 +95,7 @@ pub async fn find_pool_by_name_with_range(db: &Database, _name: &str, _from: &st
         .await?;
 
     pool.ok_or(AppError::CustomError {
-        msg: format!("no pool found with name {}", _name),
+        msg: format!("no pool found with name '{}'", _name),
     })
 }
 
@@ -430,8 +430,8 @@ pub async fn select_player(
             .insert(_player.id.to_string(), _player.clone());
         pool_context.players_name_drafted.push(_player.id);
 
-        if let Some(nCount) = users_players_count.get_mut(_user_id) {
-            *nCount += 1;
+        if let Some(count) = users_players_count.get_mut(_user_id) {
+            *count += 1;
         }
     }
 
@@ -1040,18 +1040,18 @@ pub async fn modify_roster(
     }
 
     if today >= start_season_date && today <= end_season_date {
-        let mut bAllowed = false;
+        let mut is_allowed = false;
 
-        for DATE in &pool.settings.roster_modification_date {
-            let sathurday = NaiveDate::parse_from_str(DATE, "%Y-%m-%d")?;
+        for date in &pool.settings.roster_modification_date {
+            let sathurday = NaiveDate::parse_from_str(date, "%Y-%m-%d")?;
 
             if sathurday == today {
-                bAllowed = true;
+                is_allowed = true;
                 break;
             }
         }
 
-        if !bAllowed {
+        if !is_allowed {
             return Err(AppError::CustomError {
                 msg: "You are not allowed to modify your roster today.".to_string(),
             });
@@ -1133,7 +1133,7 @@ pub async fn modify_roster(
 
         if selected_player_map.contains_key(&player.id) {
             return Err(AppError::CustomError {
-                msg: format!("The player {} was dupplicated", player.name),
+                msg: format!("The player '{}' was dupplicated", player.name),
             });
         }
         selected_player_map.insert(player.id, true);
@@ -1141,7 +1141,7 @@ pub async fn modify_roster(
             .await
         {
             return Err(AppError::CustomError {
-                msg: format!("You do not possess {}.", player.name),
+                msg: format!("You do not possess '{}'.", player.name),
             });
         }
     }
@@ -1254,13 +1254,13 @@ pub async fn protect_players(
 
         if selected_player_map.contains_key(&player.id) {
             return Err(AppError::CustomError {
-                msg: format!("The player {} was dupplicated", player.name),
+                msg: format!("The player '{}' was dupplicated", player.name),
             });
         }
         selected_player_map.insert(player.id, true);
         if !validate_player_possession(player.id, &pool_context.pooler_roster[_user_id]).await {
             return Err(AppError::CustomError {
-                msg: format!("You do not possess {}.", player.name),
+                msg: format!("You do not possess '{}'.", player.name),
             });
         }
     }
@@ -1366,7 +1366,6 @@ async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> 
         if let Some(tradable_picks) = &mut _pool_context.tradable_picks {
             if let Some(owner) = tradable_picks[pick.round as usize].get_mut(&pick.from) {
                 *owner = _trade.ask_to.clone();
-                println!("From: {}", _trade.ask_to);
             }
         }
     }
@@ -1376,7 +1375,6 @@ async fn trade_roster_items(_pool_context: &mut PoolContext, _trade: &Trade) -> 
         if let Some(tradable_picks) = &mut _pool_context.tradable_picks {
             if let Some(owner) = tradable_picks[pick.round as usize].get_mut(&pick.from) {
                 *owner = _trade.proposed_by.clone();
-                println!("To: {}", _trade.proposed_by)
             }
         }
     }
@@ -1477,7 +1475,7 @@ async fn get_users_players_count(
     _pooler_roster: &HashMap<String, PoolerRoster>,
     _participants: &Vec<String>,
 ) -> HashMap<String, u8> {
-    let mut hashCount = HashMap::new();
+    let mut hash_count = HashMap::new();
 
     for participant in _participants {
         let nb_players = (_pooler_roster[participant].chosen_forwards.len()
@@ -1485,10 +1483,10 @@ async fn get_users_players_count(
             + _pooler_roster[participant].chosen_goalies.len()
             + _pooler_roster[participant].chosen_reservists.len()) as u8;
 
-        hashCount.insert(participant.clone(), nb_players);
+        hash_count.insert(participant.clone(), nb_players);
     }
 
-    hashCount
+    hash_count
 }
 
 async fn validate_player_possession(_player_id: u32, _pooler_roster: &PoolerRoster) -> bool {

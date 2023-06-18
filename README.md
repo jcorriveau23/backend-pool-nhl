@@ -1,5 +1,6 @@
 # backend-pool-nhl
-Free NHL hockey pool build using the nhl api. build in rust with rocket and mongo db.
+
+Free NHL hockey pool build using the nhl api using react, axum and mongo db.
 
 https://hockeypool.live
 

@@ -1,19 +1,18 @@
-use mongodb::bson::doc;
-use mongodb::Database;
-
-use rocket::serde::json::Json;
-use rocket::State;
-
 use crate::db::daily_leaders;
 use crate::errors::response::Result;
 use crate::models::daily_leaders::DailyLeaders;
 
+use crate::database::CONNECTION;
+
+use axum::{extract::Path, routing::get, Json, Router};
+
+pub fn create_route() -> Router {
+    Router::new().route("/daily_leaser/:date", get(get_daily_leaders_by_date))
+}
+
 /// get dailyLeaders document by _date
-//  http://127.0.0.1:8000/daily_leaders/2022-04-29
-#[get("/daily_leaders/<_date>")]
-pub async fn get_daily_leaders_by_date(
-    db: &State<Database>,
-    _date: String,
-) -> Result<Json<DailyLeaders>> {
-    daily_leaders::find_daily_leaders(db, _date).await.map(Json)
+async fn get_daily_leaders_by_date(Path(_date): Path<String>) -> Result<Json<DailyLeaders>> {
+    daily_leaders::find_daily_leaders(CONNECTION.get().await, _date)
+        .await
+        .map(Json)
 }

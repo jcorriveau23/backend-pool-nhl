@@ -1,3 +1,5 @@
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use hex::FromHexError;
 use jsonwebtoken;
 use mongodb;
@@ -23,16 +25,16 @@ impl std::error::Error for AppError {}
 impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            AppError::CustomError { msg } => write!(f, "Custom Error: {}", msg),
-            AppError::AuthError { msg } => write!(f, "Authentification Error: {}", msg),
-            AppError::MongoError { e } => write!(f, "Mongo Error: {}", e),
-            AppError::ParseError { e } => write!(f, "Parse Error: {}", e),
-            AppError::BcryptError { e } => write!(f, "Bcrypt Error: {}", e),
-            AppError::HexError { e } => write!(f, "Hex Error: {}", e),
-            AppError::RecoveryError { e } => write!(f, "Recovery Error: {}", e),
-            AppError::BsonError { e } => write!(f, "Bson Serialization Error: {}", e),
-            AppError::JwtError { e } => write!(f, "Jwt Decoding Error: {}", e),
-            AppError::ObjectIdError { e } => write!(f, "string to object ID Error: {}", e),
+            AppError::CustomError { msg } => write!(f, "Custom Error: '{}'", msg),
+            AppError::AuthError { msg } => write!(f, "Authentification Error: '{}'", msg),
+            AppError::MongoError { e } => write!(f, "Mongo Error: '{}'", e),
+            AppError::ParseError { e } => write!(f, "Parse Error: '{}'", e),
+            AppError::BcryptError { e } => write!(f, "Bcrypt Error: '{}'", e),
+            AppError::HexError { e } => write!(f, "Hex Error: '{}'", e),
+            AppError::RecoveryError { e } => write!(f, "Recovery Error: '{}'", e),
+            AppError::BsonError { e } => write!(f, "Bson Serialization Error: '{}'", e),
+            AppError::JwtError { e } => write!(f, "Jwt Decoding Error: '{}'", e),
+            AppError::ObjectIdError { e } => write!(f, "string to object ID Error: '{}'", e),
         }
     }
 }
@@ -87,32 +89,10 @@ impl From<mongodb::bson::oid::Error> for AppError {
 
 pub type Result<T> = std::result::Result<T, AppError>;
 
-impl AppError {
-    pub fn code(&self) -> u16 {
-        match &self {
-            Self::CustomError { .. } => 500,
-            Self::AuthError { .. } => 401, // Unauthorized
-            Self::MongoError { .. } => 501,
-            Self::ParseError { .. } => 502,
-            Self::BcryptError { .. } => 504,
-            Self::HexError { .. } => 505,
-            Self::RecoveryError { .. } => 506,
-            Self::BsonError { .. } => 507,
-            Self::JwtError { .. } => 508,
-            Self::ObjectIdError { .. } => 509,
-        }
-    }
-}
-
-impl<'r> rocket::response::Responder<'r, 'static> for AppError {
-    fn respond_to(self, _: &'r rocket::Request<'_>) -> rocket::response::Result<'static> {
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
         // Convert object to json
         let body = self.to_string();
-
-        rocket::Response::build()
-            .sized_body(body.len(), std::io::Cursor::new(body))
-            .header(rocket::http::ContentType::JSON)
-            .status(rocket::http::Status::new(self.code()))
-            .ok()
+        (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
     }
 }

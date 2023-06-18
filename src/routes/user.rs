@@ -1,34 +1,34 @@
-use mongodb::Database;
-
-use rocket::State;
-
 use crate::db::user;
 use crate::errors::response::Result;
-use rocket::serde::json::{json, Value};
+use crate::models::user::User;
+
+use crate::database::CONNECTION;
+use axum::{extract::Path, routing::get, Json, Router};
+
+pub fn create_route() -> Router {
+    Router::new()
+        .route("/user/:name", get(get_user_by_name))
+        .route("/users", get(get_users))
+        .route("/users/:names", get(get_users_with_id))
+}
 
 /// Get user by _name
-//  http://127.0.0.1:8000/api-rust/user/_name
-#[get("/user/<_name>")]
-pub async fn get_user_by_name(db: &State<Database>, _name: String) -> Result<Value> {
-    user::find_user_with_name(db, &_name)
+async fn get_user_by_name(Path(_name): Path<String>) -> Result<Json<User>> {
+    user::find_user_with_name(CONNECTION.get().await, &_name)
         .await
-        .map(move |user| json!(&user))
+        .map(Json)
 }
 
 /// Get all users
-//  http://127.0.0.1:8000/users
-#[get("/users")]
-pub async fn get_users(db: &State<Database>) -> Result<Value> {
-    user::find_users(db, &None)
+async fn get_users() -> Result<Json<Vec<User>>> {
+    user::find_users(CONNECTION.get().await, &None)
         .await
-        .map(move |users| json!(&users))
+        .map(Json)
 }
 
 /// Get a specific list of users
-//  http://127.0.0.1:8000/users/
-#[get("/users?<names>")]
-pub async fn get_users_with_id(db: &State<Database>, names: Vec<String>) -> Result<Value> {
-    user::find_users(db, &Some(names))
+async fn get_users_with_id(Path(names): Path<Vec<String>>) -> Result<Json<Vec<User>>> {
+    user::find_users(CONNECTION.get().await, &Some(names))
         .await
-        .map(move |users| json!(&users))
+        .map(Json)
 }
