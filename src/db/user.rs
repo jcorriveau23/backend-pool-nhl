@@ -62,7 +62,7 @@ pub async fn find_users(db: &Database, _names: &Option<Vec<String>>) -> Result<V
 pub async fn add_pool_to_users(
     _collection: &Collection<User>,
     _pool_name: &str,
-    _user_ids: &Vec<String>,
+    _user_ids: &[String],
 ) -> Result<()> {
     // Add the new pool to the list of pool in each users.
 
@@ -93,7 +93,7 @@ pub async fn create_user_from_register(
 
     // the username provided is already registered.
 
-    if let Some(_) = user {
+    if user.is_some() {
         return Err(AppError::CustomError {
             msg: "this username is not available.".to_string(),
         });

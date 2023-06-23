@@ -84,7 +84,7 @@ pub async fn find_pool_by_name_with_range(db: &Database, _name: &str, _from: &st
             break;
         }
         projection.insert(format!("context.score_by_day.{}", str_date), 0);
-        start_date = start_date + Duration::days(1);
+        start_date += Duration::days(1);
     }
 
     let find_option = FindOneOptions::builder().projection(projection).build();
@@ -218,7 +218,7 @@ pub async fn start_draft(
             });
         }
 
-        has_owner_privileges(_user_id, &_pool_info)?;
+        has_owner_privileges(_user_id, _pool_info)?;
 
         // TODO: Validate that the list of users provided all exist.
 
@@ -269,9 +269,9 @@ pub async fn start_draft(
 
         update_pool(updated_fields, &collection, &_pool_info.name).await
     } else {
-        return Err(AppError::CustomError {
+        Err(AppError::CustomError {
             msg: "There is no participants added in the pool.".to_string(),
-        });
+        })
     }
 }
 
@@ -482,7 +482,7 @@ pub async fn select_player(
 
     // Update the fields in the mongoDB pool document.
 
-    update_pool(updated_fields, &collection, &_pool_name).await
+    update_pool(updated_fields, &collection, _pool_name).await
 }
 
 pub async fn add_player(
@@ -530,7 +530,7 @@ pub async fn add_player(
 
     // Update the fields in the mongoDB pool document.
 
-    update_pool(updated_fields, &collection, &_pool_name).await
+    update_pool(updated_fields, &collection, _pool_name).await
 }
 
 pub async fn remove_player(
@@ -573,7 +573,7 @@ pub async fn remove_player(
 
     // Update the fields in the mongoDB pool document.
 
-    update_pool(updated_fields, &collection, &_pool_name).await
+    update_pool(updated_fields, &collection, _pool_name).await
 }
 
 pub async fn create_trade(
@@ -595,7 +595,7 @@ pub async fn create_trade(
     let collection = db.collection::<Pool>("pools");
     let pool = find_short_pool_by_name(&collection, _pool_name).await?;
 
-    if _user_id != &_trade.proposed_by {
+    if _user_id != _trade.proposed_by {
         has_privileges(_user_id, &pool)?;
     }
 
@@ -662,7 +662,7 @@ pub async fn create_trade(
         }
     };
 
-    update_pool(updated_fields, &collection, &_pool_name).await
+    update_pool(updated_fields, &collection, _pool_name).await
 }
 
 pub async fn cancel_trade(
@@ -714,7 +714,7 @@ pub async fn cancel_trade(
         }
     };
 
-    update_pool(updated_fields, &collection, &_pool_name).await
+    update_pool(updated_fields, &collection, _pool_name).await
 }
 
 pub async fn respond_trade(
@@ -790,7 +790,7 @@ pub async fn respond_trade(
         }
     };
 
-    update_pool(updated_fields, &collection, &_pool_name).await
+    update_pool(updated_fields, &collection, _pool_name).await
 }
 
 pub async fn fill_spot(
@@ -890,7 +890,7 @@ pub async fn fill_spot(
 
     if let Some(x) = pool_context.pooler_roster.get_mut(_user_modified_id) {
         x.chosen_reservists
-            .retain(|playerId| playerId != &player.id);
+            .retain(|player_id| player_id != &player.id);
     }
     // Update fields with the filled spot
 
@@ -900,7 +900,7 @@ pub async fn fill_spot(
         }
     };
 
-    update_pool(updated_fields, &collection, &_pool_name).await
+    update_pool(updated_fields, &collection, _pool_name).await
 }
 
 pub async fn undo_select_player(
@@ -1036,7 +1036,7 @@ pub async fn modify_roster(
     // At 12PM we start to count the action for the next day.
 
     if time.hour() >= 12 {
-        today = today + Duration::days(1);
+        today += Duration::days(1);
     }
 
     if today >= start_season_date && today <= end_season_date {
@@ -1504,7 +1504,7 @@ async fn create_success_pool_response(_pool: Pool) -> PoolMessageResponse {
     }
 }
 
-fn has_assistants_rights(_user_id: &str, _assistants: &Vec<String>) -> bool {
+fn has_assistants_rights(_user_id: &str, _assistants: &[String]) -> bool {
     _assistants.contains(&_user_id.to_string())
 }
 

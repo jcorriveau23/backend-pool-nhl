@@ -1,4 +1,3 @@
-use crate::database::CONNECTION;
 use crate::db::user;
 use crate::errors::response::Result;
 use crate::models::user::{
@@ -9,9 +8,10 @@ use crate::routes::jwt;
 use crate::routes::jwt::UserToken;
 use serde::Serialize;
 
-use axum::{routing::post, Json, Router};
+use crate::AppState;
+use axum::{extract::State, routing::post, Json, Router};
 
-pub fn create_route() -> Router {
+pub fn create_route() -> Router<AppState> {
     Router::new()
         .route("/register", post(register_user))
         .route("/login", post(login_user))
@@ -27,8 +27,11 @@ struct LoginResponse {
 }
 
 /// Register
-async fn register_user(Json(body): Json<RegisterRequest>) -> Result<Json<LoginResponse>> {
-    let user = user::create_user_from_register(CONNECTION.get().await, &body).await?;
+async fn register_user(
+    state: State<AppState>,
+    Json(body): Json<RegisterRequest>,
+) -> Result<Json<LoginResponse>> {
+    let user = user::create_user_from_register(&state.db, &body).await?;
 
     Ok(Json(LoginResponse {
         user: user.clone(),
@@ -37,8 +40,11 @@ async fn register_user(Json(body): Json<RegisterRequest>) -> Result<Json<LoginRe
 }
 
 /// Login
-async fn login_user(Json(body): Json<LoginRequest>) -> Result<Json<LoginResponse>> {
-    let user = user::login(CONNECTION.get().await, &body).await?;
+async fn login_user(
+    state: State<AppState>,
+    Json(body): Json<LoginRequest>,
+) -> Result<Json<LoginResponse>> {
+    let user = user::login(&state.db, &body).await?;
 
     Ok(Json(LoginResponse {
         user: user.clone(),
@@ -48,9 +54,10 @@ async fn login_user(Json(body): Json<LoginRequest>) -> Result<Json<LoginResponse
 
 /// Login
 async fn wallet_login_user(
+    state: State<AppState>,
     Json(body): Json<WalletLoginRegisterRequest>,
 ) -> Result<Json<LoginResponse>> {
-    let user = user::wallet_login(CONNECTION.get().await, &body).await?;
+    let user = user::wallet_login(&state.db, &body).await?;
 
     Ok(Json(LoginResponse {
         user: user.clone(),
@@ -60,25 +67,22 @@ async fn wallet_login_user(
 
 /// Set Username
 async fn set_username(
+    state: State<AppState>,
     token: UserToken,
     Json(body): Json<SetUsernameRequest>,
 ) -> Result<Json<User>> {
-    user::update_user_name(
-        CONNECTION.get().await,
-        &token._id.to_string(),
-        &body.new_username,
-    )
-    .await
-    .map(Json)
+    user::update_user_name(&state.db, &token._id.to_string(), &body.new_username)
+        .await
+        .map(Json)
 }
 
 /// Set Username
-async fn set_password(token: UserToken, body: Json<SetPasswordRequest>) -> Result<Json<User>> {
-    user::update_password(
-        CONNECTION.get().await,
-        &token._id.to_string(),
-        &body.password,
-    )
-    .await
-    .map(Json)
+async fn set_password(
+    state: State<AppState>,
+    token: UserToken,
+    body: Json<SetPasswordRequest>,
+) -> Result<Json<User>> {
+    user::update_password(&state.db, &token._id.to_string(), &body.password)
+        .await
+        .map(Json)
 }

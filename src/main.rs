@@ -7,14 +7,19 @@ mod routes;
 mod settings;
 use std::net::SocketAddr;
 use tower_http::trace;
-use tracing;
 
 use axum::Router;
 use settings::SETTINGS;
 
+#[derive(Clone)]
+pub struct AppState {
+    db: mongodb::Database,
+}
+
 #[tokio::main]
 async fn main() {
     logger::setup();
+
     let router = Router::new().merge(routes::user::create_route()).merge(
         Router::new()
             .nest(
@@ -32,8 +37,12 @@ async fn main() {
             ),
     );
 
-    let port = SETTINGS.server.port;
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    // Setting up the router with the databse as state to be shared accross all requests.
+    let router = router.with_state(AppState {
+        db: database::new().await,
+    });
+
+    let address = SocketAddr::from(([127, 0, 0, 1], SETTINGS.server.port));
 
     println!("Server listening on {}", &address);
     axum::Server::bind(&address)
