@@ -38,9 +38,12 @@ async fn main() {
     );
 
     // Setting up the router with the databse as state to be shared accross all requests.
-    let router = router.with_state(AppState {
-        db: database::new().await,
-    });
+
+    let db = database::new()
+        .await
+        .expect("Failed to initialize MongoDB connection");
+
+    let router = router.with_state(AppState { db });
 
     let address = SocketAddr::from(([127, 0, 0, 1], SETTINGS.server.port));
 
