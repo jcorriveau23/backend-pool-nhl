@@ -11,7 +11,7 @@
   },
 
   "auth": {
-    "secret": "secret"
+    "secret": "<secret>"
   },
 
   "logger": {

@@ -1,0 +1,20 @@
+{
+  "environment": "production",
+
+  "server": {
+    "port": 8000
+  },
+
+  "database": {
+    "uri": "mongodb+srv://<username>:<password>@cluster0.fxxbzrj.mongodb.net/?retryWrites=true&w=majority",
+    "name": "hockeypool"
+  },
+
+  "auth": {
+    "secret": "<secret>"
+  },
+
+  "logger": {
+    "level": "debug"
+  }
+}
