@@ -1,45 +1,52 @@
-#![allow(nonstandard_style)]
-
-#[macro_use]
-extern crate rocket;
-
+mod database;
 mod db;
 mod errors;
+mod logger;
 mod models;
 mod routes;
+mod settings;
+use std::net::SocketAddr;
+use tower_http::trace;
 
-#[launch]
-async fn rocket() -> _ {
-    rocket::build().attach(db::init()).mount(
-        "/api-rust",
-        routes![
-            routes::daily_leaders::get_daily_leaders_by_date,
-            routes::user::get_user_by_name,
-            routes::user::get_users,
-            routes::user::get_users_with_id,
-            routes::auth::register_user,
-            routes::auth::login_user,
-            routes::auth::wallet_login_user,
-            routes::auth::set_username,
-            routes::auth::set_password,
-            routes::auth::validate_token,
-            routes::pool::get_pool_by_name,
-            routes::pool::get_pool_by_name_with_range,
-            routes::pool::get_pools,
-            routes::pool::create_pool,
-            routes::pool::delete_pool,
-            routes::pool::start_draft,
-            routes::pool::select_player,
-            routes::pool::add_player,
-            routes::pool::remove_player,
-            routes::pool::undo_select_player,
-            routes::pool::create_trade,
-            routes::pool::cancel_trade,
-            routes::pool::respond_trade,
-            routes::pool::fill_spot,
-            routes::pool::protect_players,
-            routes::pool::modify_roster,
-            routes::pool::update_pool_settings,
-        ],
-    )
+use axum::Router;
+use settings::SETTINGS;
+
+#[derive(Clone)]
+pub struct AppState {
+    db: mongodb::Database,
+}
+
+#[tokio::main]
+async fn main() {
+    logger::setup();
+
+    let router = Router::new().merge(routes::user::create_route()).merge(
+        Router::new()
+            .nest(
+                "/api-rust",
+                // All public routes are nested here.
+                Router::new()
+                    .merge(routes::user::create_route())
+                    .merge(routes::pool::create_route())
+                    .merge(routes::auth::create_route())
+                    .merge(routes::daily_leaders::create_route()),
+            )
+            .layer(
+                trace::TraceLayer::new_for_http()
+                    .on_response(trace::DefaultOnResponse::new().level(tracing::Level::INFO)),
+            ),
+    );
+
+    // Setting up the router with the databse as state to be shared accross all requests.
+    let router = router.with_state(AppState {
+        db: database::new().await,
+    });
+
+    let address = SocketAddr::from(([127, 0, 0, 1], SETTINGS.server.port));
+
+    println!("Server listening on {}", &address);
+    axum::Server::bind(&address)
+        .serve(router.into_make_service())
+        .await
+        .expect("Failed to start server");
 }

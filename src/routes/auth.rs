@@ -1,71 +1,88 @@
-use mongodb::Database;
-
-use rocket::State;
-
 use crate::db::user;
 use crate::errors::response::Result;
 use crate::models::user::{
-    LoginRequest, RegisterRequest, SetPasswordRequest, SetUsernameRequest,
+    LoginRequest, RegisterRequest, SetPasswordRequest, SetUsernameRequest, User,
     WalletLoginRegisterRequest,
 };
 use crate::routes::jwt;
 use crate::routes::jwt::UserToken;
+use serde::Serialize;
 
-use rocket::serde::json::{json, Json, Value};
+use crate::AppState;
+use axum::{extract::State, routing::post, Json, Router};
+
+pub fn create_route() -> Router<AppState> {
+    Router::new()
+        .route("/register", post(register_user))
+        .route("/login", post(login_user))
+        .route("/wallet-login", post(wallet_login_user))
+        .route("/set-username", post(set_username))
+        .route("/set-password", post(set_password))
+}
+
+#[derive(Debug, Serialize)]
+struct LoginResponse {
+    user: User,
+    token: String,
+}
 
 /// Register
-#[post("/register", format = "json", data = "<body>")]
-pub async fn register_user(db: &State<Database>, body: Json<RegisterRequest>) -> Result<Value> {
-    user::create_user_from_register(db, &body)
-        .await
-        .map(|user| jwt::generate_user_token(&user))?
+async fn register_user(
+    state: State<AppState>,
+    Json(body): Json<RegisterRequest>,
+) -> Result<Json<LoginResponse>> {
+    let user = user::create_user_from_register(&state.db, &body).await?;
+
+    Ok(Json(LoginResponse {
+        user: user.clone(),
+        token: jwt::create(user)?,
+    }))
 }
 
 /// Login
-#[post("/login", format = "json", data = "<body>")]
-pub async fn login_user(db: &State<Database>, body: Json<LoginRequest>) -> Result<Value> {
-    user::login(db, &body)
-        .await
-        .map(|user| jwt::generate_user_token(&user))?
+async fn login_user(
+    state: State<AppState>,
+    Json(body): Json<LoginRequest>,
+) -> Result<Json<LoginResponse>> {
+    let user = user::login(&state.db, &body).await?;
+
+    Ok(Json(LoginResponse {
+        user: user.clone(),
+        token: jwt::create(user)?,
+    }))
 }
 
 /// Login
-#[post("/wallet-login", format = "json", data = "<body>")]
-pub async fn wallet_login_user(
-    db: &State<Database>,
-    body: Json<WalletLoginRegisterRequest>,
-) -> Result<Value> {
-    user::wallet_login(db, &body)
-        .await
-        .map(|user| jwt::generate_user_token(&user))?
+async fn wallet_login_user(
+    state: State<AppState>,
+    Json(body): Json<WalletLoginRegisterRequest>,
+) -> Result<Json<LoginResponse>> {
+    let user = user::wallet_login(&state.db, &body).await?;
+
+    Ok(Json(LoginResponse {
+        user: user.clone(),
+        token: jwt::create(user)?,
+    }))
 }
 
 /// Set Username
-#[post("/set-username", format = "json", data = "<body>")]
-pub async fn set_username(
-    db: &State<Database>,
-    token: Result<UserToken>,
-    body: Json<SetUsernameRequest>,
-) -> Result<Value> {
-    user::update_user_name(db, &token?._id.to_string(), &body.new_username)
+async fn set_username(
+    state: State<AppState>,
+    token: UserToken,
+    Json(body): Json<SetUsernameRequest>,
+) -> Result<Json<User>> {
+    user::update_user_name(&state.db, &token._id.to_string(), &body.new_username)
         .await
-        .map(|user| json!({ "user": user }))
+        .map(Json)
 }
 
 /// Set Username
-#[post("/set-password", format = "json", data = "<body>")]
-pub async fn set_password(
-    db: &State<Database>,
-    token: Result<UserToken>,
+async fn set_password(
+    state: State<AppState>,
+    token: UserToken,
     body: Json<SetPasswordRequest>,
-) -> Result<Value> {
-    user::update_password(db, &token?._id.to_string(), &body.password)
+) -> Result<Json<User>> {
+    user::update_password(&state.db, &token._id.to_string(), &body.password)
         .await
-        .map(|user| json!({ "user": user }))
-}
-
-/// validate the token received in the header.
-#[post("/validate-token")]
-pub async fn validate_token(token: Result<UserToken>) -> Result<Value> {
-    token.map(move |token| json!({ "token": token }))
+        .map(Json)
 }
