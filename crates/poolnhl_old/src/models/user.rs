@@ -1,17 +1,6 @@
 use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct User {
-    pub _id: ObjectId,
-    pub name: String,
-    pub password: Option<String>,
-    pub email: Option<String>,
-    pub phone: Option<String>,
-    pub addr: Option<String>,   // Ethereum public address of user.
-    pub pool_list: Vec<String>, // list of pool name this user participate in.
-}
-
 // payload to register with name and password
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RegisterRequest {

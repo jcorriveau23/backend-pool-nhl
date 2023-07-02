@@ -1,0 +1,11 @@
+[package]
+name = "poolnhl_interface"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+async-trait = "0.1.68"
+axum = "0.6.18"
+serde = { version = "1.0.164", features = ["derive"] }
+
