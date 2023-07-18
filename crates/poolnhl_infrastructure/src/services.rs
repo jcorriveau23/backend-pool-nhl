@@ -19,7 +19,7 @@ pub struct ServiceRegistry {
 
 impl ServiceRegistry {
     pub fn new(db: DatabaseConnection, _settings: &Settings) -> Self {
-        let users_service = Arc::new(MongoUsersService::new(db.clone()));
+        let users_service = Arc::new(MongoUsersService::new(db.clone(), _settings.auth.secret));
 
         Self { users_service }
     }

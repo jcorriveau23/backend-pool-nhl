@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "crates/poolnhl_old",
     "crates/poolnhl_app",
     "crates/poolnhl_interface",
     "crates/poolnhl_infrastructure",
