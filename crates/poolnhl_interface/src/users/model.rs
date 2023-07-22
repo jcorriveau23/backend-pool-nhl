@@ -12,7 +12,7 @@ pub struct UserData {
 }
 
 // payload to register with name and password
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Deserialize)]
 pub struct RegisterRequest {
     pub name: String,
     pub password: String,
@@ -21,27 +21,27 @@ pub struct RegisterRequest {
 }
 
 // payload to register or login with a Ethereum wallet
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Deserialize)]
 pub struct WalletLoginRegisterRequest {
     pub addr: String,
     pub sig: String,
 }
 
 // payload to login with username and password
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     pub name: String,
     pub password: String,
 }
 
 // payload to set a username.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Deserialize)]
 pub struct SetUsernameRequest {
     pub new_username: String,
 }
 
 // payload to set a password.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Deserialize)]
 pub struct SetPasswordRequest {
     pub password: String,
 }
@@ -49,6 +49,6 @@ pub struct SetPasswordRequest {
 // Response provided for login request
 #[derive(Serialize)]
 pub struct LoginResponse {
-    user: UserData,
-    token: String,
+    pub user: UserData,
+    pub token: String,
 }

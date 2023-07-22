@@ -1,18 +1,18 @@
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation};
 use mongodb::bson::oid::ObjectId;
 use once_cell::sync::Lazy;
-use poolnhl_interface::{errors::AppError, users::service::UsersServiceHandle};
+use poolnhl_interface::errors::AppError;
 use serde::{Deserialize, Serialize};
 
 use axum::{
     async_trait,
-    extract::{FromRequestParts, State, TypedHeader},
+    extract::{FromRequestParts, TypedHeader},
     headers::{authorization::Bearer, Authorization},
     http::request::Parts,
     RequestPartsExt,
 };
 
-use crate::services::users_service::User;
+use crate::services::{users_service::User, ServiceRegistry};
 
 static VALIDATION: Lazy<Validation> = Lazy::new(Validation::default);
 static HEADER: Lazy<Header> = Lazy::new(Header::default);
@@ -25,38 +25,34 @@ pub struct UserToken {
 }
 
 #[async_trait]
-impl<S> FromRequestParts<S> for UserToken
+impl FromRequestParts<ServiceRegistry> for UserToken
 where
-    S: Send + Sync,
+    ServiceRegistry: Send + Sync,
 {
     type Rejection = AppError;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &ServiceRegistry,
+    ) -> Result<Self, Self::Rejection> {
         let TypedHeader(Authorization(bearer)) = parts
             .extract::<TypedHeader<Authorization<Bearer>>>()
             .await
-            .map_err(|_| AppError::AuthError {
-                msg: "Invalid token".to_string(),
+            .map_err(|err| AppError::AuthError {
+                msg: err.to_string(),
             })?;
 
-        let State(user_service): State<UsersServiceHandle> =
-            State::from_request_parts(parts, _state)
-                .await
-                .map_err(|_| AppError::AuthError {
-                    msg: "Invalid token".to_string(),
-                })?;
-
-        let token_data = decode(bearer.token(), user_service.users_service.secret)?;
+        let token_data = decode(bearer.token(), &state.secret)?;
 
         Ok(token_data.claims.user)
     }
 }
 
-impl From<User> for UserToken {
-    fn from(user: User) -> Self {
+impl From<&User> for UserToken {
+    fn from(user: &User) -> Self {
         Self {
             _id: user._id,
-            name: user.name,
+            name: user.name.clone(),
         }
     }
 }
@@ -69,7 +65,7 @@ pub struct Claims {
 }
 
 impl Claims {
-    pub fn new(user: User) -> Self {
+    pub fn new(user: &User) -> Self {
         Self {
             exp: (chrono::Local::now() + chrono::Duration::days(7)).timestamp() as usize,
             iat: chrono::Local::now().timestamp() as usize,
@@ -78,7 +74,7 @@ impl Claims {
     }
 }
 
-pub fn create(user: User, secret: &str) -> Result<String, AppError> {
+pub fn create(user: &User, secret: &str) -> Result<String, AppError> {
     let encoding_key = EncodingKey::from_secret(secret.as_bytes());
     let claims = Claims::new(user);
 

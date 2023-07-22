@@ -15,8 +15,8 @@ pub trait UsersService {
     async fn login(&self, body: LoginRequest) -> Result<LoginResponse>;
     async fn register(&self, body: RegisterRequest) -> Result<LoginResponse>;
     async fn wallet_login(&self, body: WalletLoginRegisterRequest) -> Result<LoginResponse>;
-    async fn set_username(&self, body: SetUsernameRequest) -> Result<UserData>;
-    async fn set_password(&self, body: SetPasswordRequest) -> Result<UserData>;
+    async fn set_username(&self, user_id: &str, body: SetUsernameRequest) -> Result<UserData>;
+    async fn set_password(&self, user_id: &str, body: SetPasswordRequest) -> Result<UserData>;
 }
 
 pub type UsersServiceHandle = Arc<dyn UsersService + Send + Sync>;

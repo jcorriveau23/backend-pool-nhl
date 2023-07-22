@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use futures::stream::TryStreamExt;
 use mongodb::bson::Document;
 use mongodb::bson::{doc, oid::ObjectId};
+use mongodb::options::{FindOneAndUpdateOptions, ReturnDocument};
 use poolnhl_interface::errors::AppError;
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +19,7 @@ use poolnhl_interface::users::{
 
 use crate::{database_connection::DatabaseConnection, jwt};
 
+#[derive(Clone)]
 pub struct MongoUsersService {
     db: DatabaseConnection,
     secret: String,
@@ -29,6 +31,7 @@ impl MongoUsersService {
     }
 
     async fn get_optional_raw_user_by_name(&self, name: &str) -> Result<Option<User>> {
+        // Get the raw User data. This includes the password. It should never be return to the clients.
         let collection = self.db.collection::<User>("users");
 
         collection
@@ -38,6 +41,7 @@ impl MongoUsersService {
     }
 
     async fn get_optional_raw_user_by_address(&self, name: &str) -> Result<Option<User>> {
+        // Get the raw User data. This includes the password. It should never be return to the clients.
         let collection = self.db.collection::<User>("users");
 
         collection
@@ -46,10 +50,8 @@ impl MongoUsersService {
             .map_err(|e| AppError::MongoError { msg: e.to_string() })
     }
 
-    // Get the raw User data. This includes the password. It should never be return to the clients.
     async fn get_raw_user_by_name(&self, name: &str) -> Result<User> {
-        let collection = self.db.collection::<User>("users");
-
+        // Get the raw User data. This includes the password. It should never be return to the clients.
         let user = self.get_optional_raw_user_by_name(name).await?;
 
         user.ok_or_else(|| AppError::CustomError {
@@ -58,6 +60,7 @@ impl MongoUsersService {
     }
 
     async fn verify_message(&self, addr: &str, sig: &str) -> Result<bool> {
+        // Verify that the signature provided on the message was really made by the user.
         let message = "Unlock wallet to access nhl-pool-ethereum.";
 
         match sig.strip_prefix("0x") {
@@ -124,7 +127,7 @@ impl UsersService for MongoUsersService {
     }
 
     async fn get_users_by_ids(&self, ids: &Vec<String>) -> Result<Vec<UserData>> {
-        // Get the users informations of the list provided in the parameters.
+        // Get the users informations of the list provided.
 
         if ids.is_empty() {
             return Err(AppError::CustomError {
@@ -161,6 +164,7 @@ impl UsersService for MongoUsersService {
     }
 
     async fn login(&self, body: LoginRequest) -> Result<LoginResponse> {
+        // login a user with a username and password.
         let user = self.get_raw_user_by_name(&body.name).await?;
 
         match &user.password {
@@ -180,14 +184,16 @@ impl UsersService for MongoUsersService {
                 })
             }
         }
-
+        // Create the jwt token.
+        let token = jwt::create(&user, &self.secret)?;
         Ok(LoginResponse {
             user: UserData::from(user),
-            token: jwt::create(user, &self.secret)?,
+            token,
         })
     }
 
     async fn register(&self, body: RegisterRequest) -> Result<LoginResponse> {
+        // Register a user with a username and password.
         let user = self.get_optional_raw_user_by_name(&body.name).await?;
         // the username provided is already registered.
 
@@ -228,9 +234,11 @@ impl UsersService for MongoUsersService {
                     addr: None,
                     pool_list: Vec::new(),
                 };
+                // Create the jwt token.
+                let token = jwt::create(&user, &self.secret)?;
                 Ok(LoginResponse {
                     user: UserData::from(user),
-                    token: jwt::create(user, &self.secret)?,
+                    token,
                 })
             }
             None => Err(AppError::CustomError {
@@ -240,9 +248,11 @@ impl UsersService for MongoUsersService {
     }
 
     async fn wallet_login(&self, body: WalletLoginRegisterRequest) -> Result<LoginResponse> {
+        // Login or register the user with an ethereum wallet.
         let user = self.get_optional_raw_user_by_address(&body.addr).await?;
         let collection = self.db.collection::<Document>("users");
 
+        // Verify the signature is equal
         if !self.verify_message(&body.addr, &body.sig).await? {
             return Err(AppError::CustomError {
                 msg: "The signature provided is not valid.".to_string(),
@@ -250,12 +260,17 @@ impl UsersService for MongoUsersService {
         }
 
         match user {
-            Some(user) => Ok(LoginResponse {
-                user: UserData::from(user),
-                token: jwt::create(user, &self.secret)?,
-            }),
+            Some(user) => {
+                // Create the jwt token.
+                let token = jwt::create(&user, &self.secret)?;
+                Ok(LoginResponse {
+                    user: UserData::from(user),
+                    token,
+                })
+            }
             None => {
                 // create the account if it does not exist
+                // There is no register with wallet connect, the login create the user if it doesn't exist.
                 let d = doc! {
                     "name": body.addr.clone(),
                     "addr": body.addr.clone(),
@@ -279,9 +294,11 @@ impl UsersService for MongoUsersService {
                             addr: Some(body.addr.clone()),
                             pool_list: Vec::new(),
                         };
+                        // Create the jwt token.
+                        let token = jwt::create(&user, &self.secret)?;
                         Ok(LoginResponse {
                             user: UserData::from(user),
-                            token: jwt::create(user, &self.secret)?,
+                            token,
                         })
                     }
                     None => Err(AppError::CustomError {
@@ -291,6 +308,63 @@ impl UsersService for MongoUsersService {
             }
         }
     }
-    // async fn set_username(&self, body: SetUsernameRequest) -> Result<UserData> {}
-    // async fn set_password(&self, body: SetPasswordRequest) -> Result<UserData> {}
+    async fn set_username(&self, user_id: &str, body: SetUsernameRequest) -> Result<UserData> {
+        // Set a new username for the user.
+        let collection = self.db.collection::<User>("users");
+
+        let find_one_and_update_options = FindOneAndUpdateOptions::builder()
+            .return_document(ReturnDocument::After)
+            .build();
+
+        let filter = doc! {"_id": ObjectId::from_str(user_id).map_err(|e| AppError::ObjectIdError { msg: e.to_string() })?};
+
+        let doc = doc! {
+            "$set":  doc!{
+                "name": body.new_username
+            }
+        };
+
+        let user = collection
+            .find_one_and_update(filter, doc, find_one_and_update_options)
+            .await
+            .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
+
+        match user {
+            Some(user) => Ok(UserData::from(user)),
+            None => Err(AppError::CustomError {
+                msg: format!("no user found with id '{}'", user_id),
+            }),
+        }
+    }
+    async fn set_password(&self, user_id: &str, body: SetPasswordRequest) -> Result<UserData> {
+        // Set a new password for the user.
+        let collection = self.db.collection::<User>("users");
+
+        let password_hash = bcrypt::hash(&body.password, 4)
+            .map_err(|e| AppError::BcryptError { msg: e.to_string() })?;
+
+        let find_one_and_update_options = FindOneAndUpdateOptions::builder()
+            .return_document(ReturnDocument::After)
+            .build();
+
+        let filter = doc! {"_id": ObjectId::from_str(user_id).map_err(|e| AppError::ObjectIdError { msg: e.to_string() })?};
+
+        let doc = doc! {
+            "$set":  doc!{
+                "password": password_hash
+            }
+        };
+
+        let user = collection
+            .find_one_and_update(filter, doc, find_one_and_update_options)
+            .await
+            .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
+
+        match user {
+            Some(user) => Ok(UserData::from(user)),
+            None => Err(AppError::CustomError {
+                msg: format!("no user found with id '{}'", user_id),
+            }),
+        }
+    }
 }
