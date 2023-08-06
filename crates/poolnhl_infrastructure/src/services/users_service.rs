@@ -121,12 +121,10 @@ impl UsersService for MongoUsersService {
     async fn get_user_by_name(&self, name: &str) -> Result<UserData> {
         // Get the information of 1 user with its name.
 
-        self.get_raw_user_by_name(name)
-            .await
-            .map(|u| UserData::from(u))
+        self.get_raw_user_by_name(name).await.map(UserData::from)
     }
 
-    async fn get_users_by_ids(&self, ids: &Vec<String>) -> Result<Vec<UserData>> {
+    async fn get_users_by_ids(&self, ids: &Vec<&str>) -> Result<Vec<UserData>> {
         // Get the users informations of the list provided.
 
         if ids.is_empty() {

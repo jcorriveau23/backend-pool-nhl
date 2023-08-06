@@ -78,21 +78,17 @@ pub fn create(user: &User, secret: &str) -> Result<String, AppError> {
     let encoding_key = EncodingKey::from_secret(secret.as_bytes());
     let claims = Claims::new(user);
 
-    Ok(
-        jsonwebtoken::encode(&HEADER, &claims, &encoding_key).map_err(|_| AppError::JwtError {
-            msg: "Could not create the token".to_string(),
-        })?,
-    )
+    jsonwebtoken::encode(&HEADER, &claims, &encoding_key).map_err(|_| AppError::JwtError {
+        msg: "Could not create the token".to_string(),
+    })
 }
 
 pub fn decode(token: &str, secret: &str) -> Result<TokenData<Claims>, AppError> {
     let decoding_key = DecodingKey::from_secret(secret.as_bytes());
 
-    Ok(
-        jsonwebtoken::decode::<Claims>(token, &decoding_key, &VALIDATION).map_err(|_| {
-            AppError::JwtError {
-                msg: "Could not decode the token".to_string(),
-            }
-        })?,
-    )
+    jsonwebtoken::decode::<Claims>(token, &decoding_key, &VALIDATION).map_err(|_| {
+        AppError::JwtError {
+            msg: "Could not decode the token".to_string(),
+        }
+    })
 }

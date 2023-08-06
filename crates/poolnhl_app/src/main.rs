@@ -8,6 +8,7 @@ use poolnhl_routing::router::ApplicationController;
 async fn main() {
     let settings = Settings::new().expect("Could not parse settings");
 
+    // Make the database connection.
     let db = DatabaseManager::new_pool(
         settings.database.uri.as_str(),
         settings.database.name.as_str(),
@@ -15,7 +16,9 @@ async fn main() {
     .await
     .expect("Could not initialize the database");
 
+    // setup the services to be served.
     let services = ServiceRegistry::new(db, &settings);
 
-    ApplicationController::run(settings.server.port, services).await;
+    // Run the application.
+    ApplicationController::run(settings, services).await;
 }

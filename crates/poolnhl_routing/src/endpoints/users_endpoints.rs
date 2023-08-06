@@ -1,6 +1,6 @@
 use axum::extract::{Json, Path, State};
 use axum::routing::{get, post};
-use axum::{debug_handler, Router};
+use axum::Router;
 
 use poolnhl_infrastructure::services::ServiceRegistry;
 use poolnhl_interface::errors::Result;
@@ -30,16 +30,17 @@ impl UsersRouter {
     }
 
     async fn get_user_by_name(
-        Path(name): Path<String>,
         State(users_service): State<UsersServiceHandle>,
+        Path(name): Path<String>,
     ) -> Result<Json<UserData>> {
         users_service.get_user_by_name(&name).await.map(Json)
     }
 
     async fn get_user_by_ids(
-        Path(ids): Path<Vec<String>>,
         State(users_service): State<UsersServiceHandle>,
+        Path(ids): Path<String>,
     ) -> Result<Json<Vec<UserData>>> {
+        let ids: Vec<&str> = ids.split(',').collect();
         users_service.get_users_by_ids(&ids).await.map(Json)
     }
 
