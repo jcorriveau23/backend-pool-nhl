@@ -1,25 +1,34 @@
-use axum::extract::{Json, State};
-use axum::routing::post;
-use axum::Router;
-
+use axum::extract::connect_info::ConnectInfo;
+use axum::extract::ws::{Message, WebSocket};
+use axum::extract::{Json, Path, State, WebSocketUpgrade};
+use axum::response::IntoResponse;
+use axum::routing::{get, post};
+use axum::{headers, Extension, Router, TypedHeader};
+use futures::StreamExt;
 use poolnhl_infrastructure::services::ServiceRegistry;
+use poolnhl_interface::draft;
 use poolnhl_interface::draft::model::{
-    SelectPlayerRequest, StartDraftRequest, UndoSelectionRequest,
+    SelectPlayerRequest, StartDraftRequest, UndoSelectionRequest, UserToken,
 };
 use poolnhl_interface::draft::service::DraftServiceHandle;
 use poolnhl_interface::errors::Result;
-use poolnhl_interface::pool::model::Pool;
+use poolnhl_interface::pool::model::{Player, Pool, PoolSettings};
+use serde::Deserialize;
+use std::net::SocketAddr;
 
-use poolnhl_infrastructure::jwt::UserToken;
+use poolnhl_infrastructure::jwt::decode;
+use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 
 pub struct DraftRouter;
 
 impl DraftRouter {
     pub fn new(service_registry: ServiceRegistry) -> Router {
         Router::new()
-            .route("/start-draft", post(DraftRouter::start_draft))
-            .route("/draft-player", post(DraftRouter::draft_player))
-            .route("/undo-draft-player", post(DraftRouter::undo_draft_player))
+            .route("/start-draft", post(Self::start_draft))
+            .route("/draft-player", post(Self::draft_player))
+            .route("/undo-draft-player", post(Self::undo_draft_player))
+            .route("/ws/:token", get(Self::ws_handler))
+            .route("/rooms", get(Self::get_rooms))
             .with_state(service_registry)
     }
 
@@ -30,7 +39,7 @@ impl DraftRouter {
         Json(mut body): Json<StartDraftRequest>,
     ) -> Result<Json<Pool>> {
         draft_service
-            .start_draft(&token._id.to_string(), &mut body)
+            .start_draft(&token._id, &mut body)
             .await
             .map(Json)
     }
@@ -41,10 +50,7 @@ impl DraftRouter {
         State(draft_service): State<DraftServiceHandle>,
         Json(body): Json<SelectPlayerRequest>,
     ) -> Result<Json<Pool>> {
-        draft_service
-            .draft_player(&token._id.to_string(), body)
-            .await
-            .map(Json)
+        draft_service.draft_player(&token._id, body).await.map(Json)
     }
 
     // Undo the last draft player action.
@@ -54,8 +60,73 @@ impl DraftRouter {
         Json(body): Json<UndoSelectionRequest>,
     ) -> Result<Json<Pool>> {
         draft_service
-            .undo_draft_player(&token._id.to_string(), body)
+            .undo_draft_player(&token._id, body)
             .await
             .map(Json)
     }
+
+    async fn get_rooms(
+        State(draft_service): State<DraftServiceHandle>,
+    ) -> Result<Json<Vec<String>>> {
+        draft_service.list_rooms().await.map(Json)
+    }
+
+    async fn ws_handler(
+        ws: WebSocketUpgrade,
+        ConnectInfo(addr): ConnectInfo<SocketAddr>,
+        State(draft_service): State<DraftServiceHandle>,
+        Path(token): Path<String>,
+    ) -> impl IntoResponse {
+        draft_service.authentificate_web_socket(&token, addr);
+        ws.on_upgrade(move |socket| Self::handle_socket(socket, addr, draft_service))
+    }
+
+    async fn handle_socket(socket: WebSocket, addr: SocketAddr, draft_service: DraftServiceHandle) {
+        // Actual websocket statemachine (one will be spawned per connection)
+        let (mut sender, mut receiver) = socket.split();
+
+        while let Some(Ok(msg)) = receiver.next().await {
+            // Handle the message received.
+            if let Message::Text(command) = msg {
+                println!("{}", command);
+                if let Ok(command) = serde_json::from_str::<Command>(&command) {
+                    println!("type");
+                    match command {
+                        Command::JoinRoom { pool_name } => {
+                            draft_service.join_room(&pool_name, addr)
+                        }
+                        Command::LeaveRoom { pool_name } => {
+                            draft_service.leave_room(&pool_name, addr)
+                        }
+                        _ => todo!("Need to implement the rest of the Socket Commands"),
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+enum Command {
+    JoinRoom {
+        pool_name: String,
+    },
+    LeaveRoom {
+        pool_name: String,
+    },
+
+    OnReady {
+        pool_name: String,
+    },
+    OnPoolSettingChanges {
+        pool_name: String,
+        pool_settings: PoolSettings,
+    },
+    UndoDraftPlayer {
+        pool_name: String,
+    },
+    DraftPlayer {
+        pool_name: String,
+        player: Player,
+    },
 }

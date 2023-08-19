@@ -1,7 +1,7 @@
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation};
-use mongodb::bson::oid::ObjectId;
+
 use once_cell::sync::Lazy;
-use poolnhl_interface::errors::AppError;
+use poolnhl_interface::{draft::model::UserToken, errors::AppError};
 use serde::{Deserialize, Serialize};
 
 use axum::{
@@ -16,13 +16,6 @@ use crate::services::{users_service::User, ServiceRegistry};
 
 static VALIDATION: Lazy<Validation> = Lazy::new(Validation::default);
 static HEADER: Lazy<Header> = Lazy::new(Header::default);
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UserToken {
-    // data
-    pub _id: ObjectId,
-    pub name: String,
-}
 
 #[async_trait]
 impl FromRequestParts<ServiceRegistry> for UserToken
@@ -51,7 +44,7 @@ where
 impl From<&User> for UserToken {
     fn from(user: &User) -> Self {
         Self {
-            _id: user._id,
+            _id: user._id.to_string(),
             name: user.name.clone(),
         }
     }

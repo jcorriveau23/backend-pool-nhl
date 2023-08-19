@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use crate::logger;
 use axum::Router;
 
@@ -35,7 +37,7 @@ impl ApplicationController {
                 .parse()
                 .unwrap(),
         )
-        .serve(router.into_make_service())
+        .serve(router.into_make_service_with_connect_info::<SocketAddr>())
         .await
         .expect("Failed to start the server");
     }

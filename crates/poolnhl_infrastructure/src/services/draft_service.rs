@@ -5,24 +5,33 @@ use mongodb::bson::{to_bson, Document};
 use mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, ReturnDocument};
 use mongodb::Collection;
 use poolnhl_interface::errors::AppError;
+use std::net::SocketAddr;
+use std::sync::Mutex;
 
 use poolnhl_interface::draft::{
-    model::{SelectPlayerRequest, StartDraftRequest, UndoSelectionRequest},
+    model::{DraftServerInfo, SelectPlayerRequest, StartDraftRequest, UndoSelectionRequest},
     service::DraftService,
 };
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::pool::model::Pool;
 
 use crate::database_connection::DatabaseConnection;
+use crate::jwt::decode;
 
-#[derive(Clone)]
 pub struct MongoDraftService {
     db: DatabaseConnection,
+    secret: String,
+
+    draft_server_info: Mutex<DraftServerInfo>,
 }
 
 impl MongoDraftService {
-    pub fn new(db: DatabaseConnection) -> Self {
-        Self { db }
+    pub fn new(db: DatabaseConnection, secret: String) -> Self {
+        Self {
+            db,
+            secret,
+            draft_server_info: Mutex::new(DraftServerInfo::new()),
+        }
     }
 
     async fn get_optional_short_pool_by_name(
@@ -109,7 +118,6 @@ impl DraftService for MongoDraftService {
         // Add the new pool to the list of pool in each users.
         // add_pool_to_users(&collection_users, &_pool_info.name, participants).await?;
     }
-
     async fn draft_player(&self, user_id: &str, req: SelectPlayerRequest) -> Result<Pool> {
         let collection = self.db.collection::<Pool>("pools");
 
@@ -167,5 +175,27 @@ impl DraftService for MongoDraftService {
                     .await
             }
         }
+    }
+
+    async fn list_rooms(&self) -> Result<Vec<String>> {
+        let draft_server_info = self.draft_server_info.lock().unwrap();
+        Ok(draft_server_info.list_rooms())
+    }
+
+    fn authentificate_web_socket(&self, token: &str, socket_addr: SocketAddr) {
+        if let Ok(user) = decode(token, &self.secret) {
+            let mut draft_server_info = self.draft_server_info.lock().unwrap();
+            draft_server_info.add_socket(&socket_addr.to_string(), user.claims.user)
+        }
+    }
+
+    fn join_room(&self, pool_name: &str, socket_addr: SocketAddr) {
+        let mut draft_server_info = self.draft_server_info.lock().unwrap();
+        draft_server_info.join_room(pool_name, &socket_addr.to_string())
+    }
+
+    fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr) {
+        let mut draft_server_info = self.draft_server_info.lock().unwrap();
+        draft_server_info.leave_room(pool_name, &socket_addr.to_string())
     }
 }
