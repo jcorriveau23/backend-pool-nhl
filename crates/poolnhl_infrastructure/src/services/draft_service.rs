@@ -178,24 +178,36 @@ impl DraftService for MongoDraftService {
     }
 
     async fn list_rooms(&self) -> Result<Vec<String>> {
-        let draft_server_info = self.draft_server_info.lock().unwrap();
+        let draft_server_info = self
+            .draft_server_info
+            .lock()
+            .expect("Could not acquire the mutex");
         Ok(draft_server_info.list_rooms())
     }
 
     fn authentificate_web_socket(&self, token: &str, socket_addr: SocketAddr) {
         if let Ok(user) = decode(token, &self.secret) {
-            let mut draft_server_info = self.draft_server_info.lock().unwrap();
+            let mut draft_server_info = self
+                .draft_server_info
+                .lock()
+                .expect("Could not acquire the mutex");
             draft_server_info.add_socket(&socket_addr.to_string(), user.claims.user)
         }
     }
 
     fn join_room(&self, pool_name: &str, socket_addr: SocketAddr) {
-        let mut draft_server_info = self.draft_server_info.lock().unwrap();
+        let mut draft_server_info = self
+            .draft_server_info
+            .lock()
+            .expect("Could not acquire the mutex");
         draft_server_info.join_room(pool_name, &socket_addr.to_string())
     }
 
     fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr) {
-        let mut draft_server_info = self.draft_server_info.lock().unwrap();
+        let mut draft_server_info = self
+            .draft_server_info
+            .lock()
+            .expect("Could not acquire the mutex");
         draft_server_info.leave_room(pool_name, &socket_addr.to_string())
     }
 }

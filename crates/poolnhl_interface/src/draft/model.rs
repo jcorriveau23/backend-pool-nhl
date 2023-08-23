@@ -88,42 +88,28 @@ impl DraftServerInfo {
         // If the room does not exist create it.
 
         println!("user '{}' joining room '{}'\n", socket_id, pool_name);
-        match self.authentificated_sockets.get(socket_id) {
-            Some(user) => {
-                let room = self
-                    .rooms
-                    .entry(pool_name.to_string())
-                    .or_insert(RoomState::new(pool_name));
 
-                room.users.insert(user.clone());
-            }
-            None => {
-                //User not authentificated do not do anything.
-            }
+        if let Some(user) = self.authentificated_sockets.get(socket_id) {
+            let room = self
+                .rooms
+                .entry(pool_name.to_string())
+                .or_insert(RoomState::new(pool_name));
+
+            room.users.insert(user.clone());
         }
     }
 
     pub fn leave_room(&mut self, pool_name: &str, socket_id: &str) {
         // Leave the room.
 
-        match self.authentificated_sockets.get(socket_id) {
-            Some(user) => {
-                match self.rooms.get_mut(pool_name) {
-                    Some(room) => {
-                        room.users.remove(user);
+        if let Some(user) = self.authentificated_sockets.get(socket_id) {
+            if let Some(room) = self.rooms.get_mut(pool_name) {
+                room.users.remove(user);
 
-                        if self.rooms.len() == 0 {
-                            // There is no more user in the room, we can remove the room.
-                            self.rooms.remove(pool_name);
-                        }
-                    }
-                    None => {
-                        // Cannot leave from an not existing room.
-                    }
+                if self.rooms.len() == 0 {
+                    // There is no more user in the room, we can remove the room.
+                    self.rooms.remove(pool_name);
                 }
-            }
-            None => {
-                //User not authentificated do not do anything.
             }
         }
     }
