@@ -84,6 +84,7 @@ impl DraftRouter {
     async fn handle_socket(socket: WebSocket, addr: SocketAddr, draft_service: DraftServiceHandle) {
         // Actual websocket statemachine (one will be spawned per connection)
         let (mut sender, mut receiver) = socket.split();
+        let mut current_pool_name = None::<String>;
 
         while let Some(Ok(msg)) = receiver.next().await {
             // Handle the message received.
@@ -93,10 +94,21 @@ impl DraftRouter {
                     println!("type");
                     match command {
                         Command::JoinRoom { pool_name } => {
-                            draft_service.join_room(&pool_name, addr)
+                            if let Some(past_pool_name) = current_pool_name {
+                                // Leave the past room before joining the new room.
+                                draft_service.leave_room(&past_pool_name, addr);
+                            }
+
+                            // join the requested room.
+                            draft_service.join_room(&pool_name, addr);
+                            current_pool_name = Some(pool_name);
                         }
-                        Command::LeaveRoom { pool_name } => {
-                            draft_service.leave_room(&pool_name, addr)
+
+                        Command::LeaveRoom => {
+                            if let Some(pool_name) = &current_pool_name {
+                                // Can only leave a room a the user is in a current room.
+                                draft_service.leave_room(pool_name, addr);
+                            }
                         }
                         _ => todo!("Need to implement the rest of the Socket Commands"),
                     }
@@ -108,25 +120,10 @@ impl DraftRouter {
 
 #[derive(Deserialize)]
 enum Command {
-    JoinRoom {
-        pool_name: String,
-    },
-    LeaveRoom {
-        pool_name: String,
-    },
-
-    OnReady {
-        pool_name: String,
-    },
-    OnPoolSettingChanges {
-        pool_name: String,
-        pool_settings: PoolSettings,
-    },
-    UndoDraftPlayer {
-        pool_name: String,
-    },
-    DraftPlayer {
-        pool_name: String,
-        player: Player,
-    },
+    JoinRoom { pool_name: String },
+    LeaveRoom,
+    OnReady,
+    OnPoolSettingChanges { pool_settings: PoolSettings },
+    UndoDraftPlayer,
+    DraftPlayer { player: Player },
 }
