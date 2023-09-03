@@ -386,7 +386,7 @@ impl PoolService for MongoPoolService {
             .get_short_pool_by_name(&collection, &req.pool_name)
             .await?;
 
-        pool.can_update_pool_settings(user_id, &req.pool_settings)?;
+        pool.can_update_in_progress_pool_settings(user_id, &req.pool_settings)?;
 
         let updated_fields = doc! {
             "$set": doc!{

@@ -804,7 +804,7 @@ impl Pool {
         }
     }
 
-    pub fn can_update_pool_settings(
+    pub fn can_update_in_progress_pool_settings(
         self,
         user_id: &str,
         settings: &PoolSettings,
@@ -826,30 +826,35 @@ impl Pool {
         Ok(())
     }
 
-    pub fn start_draft(&mut self, user_id: &str) -> Result<(), AppError> {
+    pub fn can_update_pool_settings(self, user_id: &str) -> Result<(), AppError> {
+        self.has_privileges(user_id)?;
+        self.validate_pool_status(&PoolState::Created)?;
+
+        Ok(())
+    }
+
+    pub fn start_draft(
+        &mut self,
+        user_id: &str,
+        participants: &Vec<String>,
+    ) -> Result<(), AppError> {
         self.validate_pool_status(&PoolState::Created)?;
         self.has_owner_privileges(user_id)?;
 
-        match &self.participants {
-            None => Err(AppError::CustomError {
-                msg: "There is no participants added in the pool.".to_string(),
-            }),
-            Some(participants) => {
-                if self.number_poolers as usize != participants.len() {
-                    return Err(AppError::CustomError {
-                        msg: "The number of participants is not good.".to_string(),
-                    });
-                }
-                let pool_context = PoolContext::new(&participants);
-
-                // TODO: randomize the list of participants so the draft order is random
-                //thread_rng().shuffle(&mut _participants);
-
-                self.status = PoolState::Draft;
-                self.context = Some(pool_context);
-                Ok(())
-            }
+        if self.number_poolers as usize != participants.len() {
+            return Err(AppError::CustomError {
+                msg: "The number of participants is not good.".to_string(),
+            });
         }
+        self.participants = Some(participants.clone());
+        let pool_context = PoolContext::new(&participants);
+
+        // TODO: randomize the list of participants so the draft order is random
+        //thread_rng().shuffle(&mut _participants);
+
+        self.status = PoolState::Draft;
+        self.context = Some(pool_context);
+        Ok(())
     }
 
     pub fn draft_player(&mut self, user_id: &str, player: &Player) -> Result<(), AppError> {
@@ -926,7 +931,7 @@ impl Pool {
         // ignore the unused_variables warning since the warning is false positive and is
         // caused by the compiler not recognizing the matches! patterns.
         #[allow(unused_variables)]
-        if matches!(&self.status, expected_status) {
+        if !matches!(&self.status, expected_status) {
             return Err(AppError::CustomError {
                 msg: format!(
                     "The expected pool status '{}', current pool status '{}'.",
