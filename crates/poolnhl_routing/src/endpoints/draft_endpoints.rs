@@ -9,7 +9,7 @@ use poolnhl_infrastructure::services::ServiceRegistry;
 use poolnhl_interface::draft::model::{Command, UserToken};
 use poolnhl_interface::draft::service::DraftServiceHandle;
 use poolnhl_interface::errors::{AppError, Result};
-use poolnhl_interface::pool::model::{Player, Pool};
+
 use std::net::SocketAddr;
 use tokio::sync::{broadcast, mpsc};
 
@@ -78,7 +78,7 @@ impl DraftRouter {
         // before leaving the initial socket state.
 
         match DraftRouter::waiting_join_room_command(&mut socket, &addr, &draft_service).await {
-            Err(_) => return, // An error occured during the initial waiting to join room function. Close the socket connection.
+            Err(_) => (), // An error occured during the initial waiting to join room function. Close the socket connection.
             Ok((mut rx, current_pool_name)) => {
                 // Actual websocket statemachine (one will be spawned per connection)
                 let (mut sender, mut receiver) = socket.split();
@@ -171,9 +171,7 @@ impl DraftRouter {
                                                 }
                                             }
                                         }
-                                        _ => todo!(
-                                            "Need to implement the rest of the Socket Commands"
-                                        ),
+                                        Command::JoinRoom { pool_name: _ } => {}
                                     }
                                 } else {
                                     let _ = send_task_sender

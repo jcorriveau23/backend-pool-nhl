@@ -40,7 +40,7 @@ impl ServiceRegistry {
             db.clone(),
             settings.auth.secret.clone(),
         ));
-        let daily_leaders_service = Arc::new(MongoDailyLeadersService::new(db.clone()));
+        let daily_leaders_service = Arc::new(MongoDailyLeadersService::new(db));
 
         Self {
             users_service,

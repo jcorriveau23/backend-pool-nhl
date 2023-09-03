@@ -1,5 +1,5 @@
-use axum::extract::ws::{Message, WebSocket};
-use std::collections::{HashMap, HashSet};
+
+use std::collections::{HashMap};
 use tokio::sync::broadcast;
 
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,7 @@ impl RoomState {
 
     // Send the pool updated informations to the room.
     pub fn send_pool_info(&self, pool: Pool) -> Result<(), AppError> {
-        if let Ok(pool_string) = serde_json::to_string(&CommandResponse::Pool { pool: pool }) {
+        if let Ok(pool_string) = serde_json::to_string(&CommandResponse::Pool { pool }) {
             let _ = self.tx.send(pool_string);
             return Ok(());
         }
@@ -81,7 +81,6 @@ impl DraftServerInfo {
 
         self.rooms
             .keys()
-            .into_iter()
             .map(|s| s.to_string())
             .collect::<Vec<String>>()
     }
@@ -135,7 +134,7 @@ impl DraftServerInfo {
         .unwrap();
         let _ = room.tx.send(users.clone());
 
-        return (room.tx.subscribe(), users);
+        (room.tx.subscribe(), users)
     }
 
     // Socket command: Leave the socket room. (1 room per pool)
@@ -153,7 +152,7 @@ impl DraftServerInfo {
                     .unwrap(),
                 );
 
-                if room.users.len() == 0 {
+                if room.users.is_empty() {
                     // There is no more user listening to the room, we can remove the room.
                     self.rooms.remove(pool_name);
                 }

@@ -126,7 +126,6 @@ impl DraftService for MongoDraftService {
                 let participants = room
                     .users
                     .keys()
-                    .into_iter()
                     .map(|s| s.to_string())
                     .collect::<Vec<String>>();
 
