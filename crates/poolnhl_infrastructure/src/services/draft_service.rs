@@ -20,7 +20,7 @@ pub struct MongoDraftService {
     db: DatabaseConnection,
     secret: String,
 
-    draft_server_info: Mutex<DraftServerInfo>,
+    draft_server_info: DraftServerInfo,
 }
 
 impl MongoDraftService {
@@ -28,7 +28,7 @@ impl MongoDraftService {
         Self {
             db,
             secret,
-            draft_server_info: Mutex::new(DraftServerInfo::new()),
+            draft_server_info: DraftServerInfo::new(),
         }
     }
 
@@ -86,12 +86,8 @@ impl MongoDraftService {
             .map_err(|e| AppError::MongoError { msg: e.to_string() })?
         {
             Some(updated_pool) => {
-                let draft_server_info = self
-                    .draft_server_info
-                    .lock()
-                    .expect("Could not acquire the mutex");
-
-                if let Some(room) = draft_server_info.rooms.get(pool_name) {
+                if let Some(room) = self.draft_server_info.rooms.get(pool_name) {
+                    let room = room.lock().expect("Could not acquire the mutex");
                     return room.send_pool_info(updated_pool);
                 }
                 Err(AppError::CustomError {
@@ -115,14 +111,11 @@ impl DraftService for MongoDraftService {
 
         // Create a context so the mutex is getting released
         {
-            let draft_server_info = self
-                .draft_server_info
-                .lock()
-                .expect("Could not acquire the mutex");
-
             // List all users that participate in the pool.
             // These will be added as official pool participants.
-            if let Some(room) = draft_server_info.rooms.get(pool_name) {
+            if let Some(room) = self.draft_server_info.rooms.get(pool_name) {
+                let room = room.lock().expect("Could not acquire the mutex");
+
                 let participants = room
                     .users
                     .keys()
@@ -235,22 +228,19 @@ impl DraftService for MongoDraftService {
 
     // List the active room.
     async fn list_rooms(&self) -> Result<Vec<String>> {
-        let draft_server_info = self
-            .draft_server_info
-            .lock()
-            .expect("Could not acquire the mutex");
-        Ok(draft_server_info.list_rooms())
+        Ok(self.draft_server_info.list_rooms())
     }
 
     // Authentificate the token received as inputs.
     // This commands is only being made during the socket initial negociation.
-    fn authentificate_web_socket(&self, token: &str, socket_addr: SocketAddr) -> Option<UserToken> {
+    fn authentificate_web_socket(
+        &mut self,
+        token: &str,
+        socket_addr: SocketAddr,
+    ) -> Option<UserToken> {
         if let Ok(user) = decode(token, &self.secret) {
-            let mut draft_server_info = self
-                .draft_server_info
-                .lock()
-                .expect("Could not acquire the mutex");
-            draft_server_info.add_socket(&socket_addr.to_string(), user.claims.user.clone());
+            self.draft_server_info
+                .add_socket(&socket_addr.to_string(), user.claims.user.clone());
             return Some(user.claims.user);
         }
 
@@ -259,32 +249,23 @@ impl DraftService for MongoDraftService {
 
     // JoinRoom command.
     fn join_room(
-        &self,
+        &mut self,
         pool_name: &str,
         socket_addr: SocketAddr,
     ) -> (broadcast::Receiver<String>, String) {
-        let mut draft_server_info = self
-            .draft_server_info
-            .lock()
-            .expect("Could not acquire the mutex");
-        draft_server_info.join_room(pool_name, &socket_addr.to_string())
+        self.draft_server_info
+            .join_room(pool_name, &socket_addr.to_string())
     }
 
     // LeaveRoom command.
-    fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr) {
-        let mut draft_server_info = self
-            .draft_server_info
-            .lock()
-            .expect("Could not acquire the mutex");
-        draft_server_info.leave_room(pool_name, &socket_addr.to_string())
+    fn leave_room(&mut self, pool_name: &str, socket_addr: SocketAddr) {
+        self.draft_server_info
+            .leave_room(pool_name, &socket_addr.to_string())
     }
 
     // OnReady command. This command can only be made when the pool is into CREATED status.
-    fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr) {
-        let mut draft_server_info = self
-            .draft_server_info
-            .lock()
-            .expect("Could not acquire the mutex");
-        draft_server_info.on_ready(pool_name, &socket_addr.to_string())
+    fn on_ready(&mut self, pool_name: &str, socket_addr: SocketAddr) {
+        self.draft_server_info
+            .on_ready(pool_name, &socket_addr.to_string())
     }
 }

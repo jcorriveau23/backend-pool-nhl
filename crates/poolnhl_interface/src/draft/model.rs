@@ -1,8 +1,8 @@
-
-use std::collections::{HashMap};
+use std::collections::HashMap;
 use tokio::sync::broadcast;
 
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
 
 use crate::{
     errors::AppError,
@@ -61,9 +61,9 @@ impl RoomState {
 #[derive(Debug)]
 pub struct DraftServerInfo {
     // Mapping of pool names to coresponding room informations.
-    pub rooms: HashMap<String, RoomState>,
+    pub rooms: HashMap<String, Arc<Mutex<RoomState>>>,
     // Map a socket id to the user information, these users are authentificated..
-    pub authentificated_sockets: HashMap<String, UserToken>,
+    pub authentificated_sockets: Mutex<HashMap<String, UserToken>>,
 }
 
 impl DraftServerInfo {
@@ -71,7 +71,7 @@ impl DraftServerInfo {
     pub fn new() -> Self {
         Self {
             rooms: HashMap::new(),
-            authentificated_sockets: HashMap::new(),
+            authentificated_sockets: Mutex::new(HashMap::new()),
         }
     }
 
@@ -87,16 +87,25 @@ impl DraftServerInfo {
 
     // Add the socket id to the list of authentificated sockets.
     pub fn add_socket(&mut self, socket_id: &str, user_token: UserToken) {
-        if !self.authentificated_sockets.contains_key(socket_id) {
-            self.authentificated_sockets
-                .insert(socket_id.to_string(), user_token);
+        let mut authentificated_sockets = self
+            .authentificated_sockets
+            .lock()
+            .expect("Could not aquire the mutex.");
+
+        if !authentificated_sockets.contains_key(socket_id) {
+            authentificated_sockets.insert(socket_id.to_string(), user_token);
         }
     }
 
     // Remove the socket id to the list of authentificated sockets.
     pub fn remove_socket(&mut self, socket_id: &str) {
-        if !self.authentificated_sockets.contains_key(socket_id) {
-            self.authentificated_sockets.remove(socket_id);
+        let mut authentificated_sockets = self
+            .authentificated_sockets
+            .lock()
+            .expect("Could not aquire the mutex.");
+
+        if !authentificated_sockets.contains_key(socket_id) {
+            authentificated_sockets.remove(socket_id);
         }
     }
 
@@ -110,10 +119,17 @@ impl DraftServerInfo {
         let room = self
             .rooms
             .entry(pool_name.to_string())
-            .or_insert(RoomState::new(pool_name));
+            .or_insert(Arc::new(Mutex::new(RoomState::new(pool_name))));
+
+        let mut room = room.lock().expect("Could not acquire the mutex");
+
+        let mut authentificated_sockets = self
+            .authentificated_sockets
+            .lock()
+            .expect("Could not aquire the mutex.");
 
         // If the user is authentificated
-        if let Some(user) = self.authentificated_sockets.get(socket_id) {
+        if let Some(user) = authentificated_sockets.get(socket_id) {
             room.users.insert(
                 user._id.clone(),
                 RoomUser {
@@ -139,8 +155,14 @@ impl DraftServerInfo {
 
     // Socket command: Leave the socket room. (1 room per pool)
     pub fn leave_room(&mut self, pool_name: &str, socket_id: &str) {
-        if let Some(user) = self.authentificated_sockets.get(socket_id) {
+        let mut authentificated_sockets = self
+            .authentificated_sockets
+            .lock()
+            .expect("Could not aquire the mutex.");
+
+        if let Some(user) = authentificated_sockets.get(socket_id) {
             if let Some(room) = self.rooms.get_mut(pool_name) {
+                let mut room = room.lock().expect("Could not acquire the mutex");
                 room.users.remove(&user._id);
 
                 // Send the updated users list to the room.
@@ -154,7 +176,7 @@ impl DraftServerInfo {
 
                 if room.users.is_empty() {
                     // There is no more user listening to the room, we can remove the room.
-                    self.rooms.remove(pool_name);
+                    // self.rooms.remove(pool_name);
                 }
             }
         }
@@ -163,8 +185,14 @@ impl DraftServerInfo {
     // Socket command: Change the is_ready state to true or false.
     // All users in room needs to be ready to start the draft.
     pub fn on_ready(&mut self, pool_name: &str, socket_id: &str) {
-        if let Some(user) = self.authentificated_sockets.get(socket_id) {
+        let mut authentificated_sockets = self
+            .authentificated_sockets
+            .lock()
+            .expect("Could not aquire the mutex.");
+
+        if let Some(user) = authentificated_sockets.get(socket_id) {
             if let Some(room) = self.rooms.get_mut(pool_name) {
+                let mut room = room.lock().expect("Could not acquire the mutex");
                 room.on_ready(user);
             }
         }

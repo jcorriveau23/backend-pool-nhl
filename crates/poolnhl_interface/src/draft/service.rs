@@ -24,15 +24,19 @@ pub trait DraftService {
 
     // Socket Room commands:
     fn join_room(
-        &self,
+        &mut self,
         pool_name: &str,
         socket_addr: SocketAddr,
     ) -> (broadcast::Receiver<String>, String);
-    fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr);
-    fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr);
+    fn leave_room(&mut self, pool_name: &str, socket_addr: SocketAddr);
+    fn on_ready(&mut self, pool_name: &str, socket_addr: SocketAddr);
 
     // Socket jwt token authentifications (called only on socket connection)
-    fn authentificate_web_socket(&self, token: &str, socket_addr: SocketAddr) -> Option<UserToken>;
+    fn authentificate_web_socket(
+        &mut self,
+        token: &str,
+        socket_addr: SocketAddr,
+    ) -> Option<UserToken>;
 
     // end point that list the active rooms.
     async fn list_rooms(&self) -> Result<Vec<String>>;
