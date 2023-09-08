@@ -36,8 +36,11 @@ impl ServiceRegistry {
             settings.auth.secret.clone(),
         ));
         let pool_service = Arc::new(MongoPoolService::new(db.clone()));
-        let draft_service = Arc::new(MongoDraftService::new(db.clone()));
-        let daily_leaders_service = Arc::new(MongoDailyLeadersService::new(db.clone()));
+        let draft_service = Arc::new(MongoDraftService::new(
+            db.clone(),
+            settings.auth.secret.clone(),
+        ));
+        let daily_leaders_service = Arc::new(MongoDailyLeadersService::new(db));
 
         Self {
             users_service,

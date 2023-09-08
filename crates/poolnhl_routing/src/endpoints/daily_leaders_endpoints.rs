@@ -13,10 +13,7 @@ pub struct DailyLeadersRouter;
 impl DailyLeadersRouter {
     pub fn new(service_registry: ServiceRegistry) -> Router {
         Router::new()
-            .route(
-                "/daily_leaser/:date",
-                get(DailyLeadersRouter::get_daily_leaders),
-            )
+            .route("/daily_leaser/:date", get(Self::get_daily_leaders))
             .with_state(service_registry)
     }
 

@@ -228,7 +228,7 @@ impl Pool {
             Some(trades) => {
                 match trades.iter().position(|trade| trade.id == trade_id) {
                     None => {
-                        return Err(AppError::CustomError {
+                        Err(AppError::CustomError {
                             msg: "The trade was not found.".to_string(),
                         })
                     }
@@ -252,7 +252,7 @@ impl Pool {
                         }
 
                         trades.remove(i);
-                        return Ok(());
+                        Ok(())
                     }
                 }
             }
@@ -278,14 +278,14 @@ impl Pool {
 
         match &mut self.trades {
             None => {
-                return Err(AppError::CustomError {
+                Err(AppError::CustomError {
                     msg: "The trade was not found.".to_string(),
                 })
             }
             Some(trades) => {
                 match trades.iter().position(|trade| trade.id == trade_id) {
                     None => {
-                        return Err(AppError::CustomError {
+                        Err(AppError::CustomError {
                             msg: "The trade was not found.".to_string(),
                         })
                     }
@@ -320,7 +320,7 @@ impl Pool {
                         if is_accepted {
                             match &mut self.context {
                                 None => {
-                                    return Err(AppError::CustomError {
+                                    Err(AppError::CustomError {
                                         msg: "The pool has no context yet.".to_string(),
                                     })
                                 }
@@ -355,7 +355,7 @@ impl Pool {
 
         match &mut self.context {
             None => {
-                return Err(AppError::CustomError {
+                Err(AppError::CustomError {
                     msg: "The pool has no context yet.".to_string(),
                 })
             }
@@ -804,7 +804,7 @@ impl Pool {
         }
     }
 
-    pub fn can_update_pool_settings(
+    pub fn can_update_in_progress_pool_settings(
         self,
         user_id: &str,
         settings: &PoolSettings,
@@ -826,30 +826,35 @@ impl Pool {
         Ok(())
     }
 
-    pub fn start_draft(&mut self, user_id: &str) -> Result<(), AppError> {
+    pub fn can_update_pool_settings(self, user_id: &str) -> Result<(), AppError> {
+        self.has_privileges(user_id)?;
+        self.validate_pool_status(&PoolState::Created)?;
+
+        Ok(())
+    }
+
+    pub fn start_draft(
+        &mut self,
+        user_id: &str,
+        participants: &Vec<String>,
+    ) -> Result<(), AppError> {
         self.validate_pool_status(&PoolState::Created)?;
         self.has_owner_privileges(user_id)?;
 
-        match &self.participants {
-            None => Err(AppError::CustomError {
-                msg: "There is no participants added in the pool.".to_string(),
-            }),
-            Some(participants) => {
-                if self.number_poolers as usize != participants.len() {
-                    return Err(AppError::CustomError {
-                        msg: "The number of participants is not good.".to_string(),
-                    });
-                }
-                let pool_context = PoolContext::new(&participants);
-
-                // TODO: randomize the list of participants so the draft order is random
-                //thread_rng().shuffle(&mut _participants);
-
-                self.status = PoolState::Draft;
-                self.context = Some(pool_context);
-                Ok(())
-            }
+        if self.number_poolers as usize != participants.len() {
+            return Err(AppError::CustomError {
+                msg: "The number of participants is not good.".to_string(),
+            });
         }
+        self.participants = Some(participants.clone());
+        let pool_context = PoolContext::new(participants);
+
+        // TODO: randomize the list of participants so the draft order is random
+        //thread_rng().shuffle(&mut _participants);
+
+        self.status = PoolState::Draft;
+        self.context = Some(pool_context);
+        Ok(())
     }
 
     pub fn draft_player(&mut self, user_id: &str, player: &Player) -> Result<(), AppError> {
@@ -906,7 +911,7 @@ impl Pool {
         // Validate that the user is a pool participant.
         match &self.participants {
             None => Err(AppError::CustomError {
-                msg: format!("Pool has no participants yet."),
+                msg: "Pool has no participants yet.".to_string(),
             }),
             Some(participants) => {
                 if !participants.contains(&user_id.to_string()) {
@@ -926,7 +931,7 @@ impl Pool {
         // ignore the unused_variables warning since the warning is false positive and is
         // caused by the compiler not recognizing the matches! patterns.
         #[allow(unused_variables)]
-        if matches!(&self.status, expected_status) {
+        if !matches!(&self.status, expected_status) {
             return Err(AppError::CustomError {
                 msg: format!(
                     "The expected pool status '{}', current pool status '{}'.",
@@ -1013,7 +1018,7 @@ impl PoolContext {
         }
 
         Self {
-            pooler_roster: pooler_roster,
+            pooler_roster,
             score_by_day: Some(HashMap::new()),
             tradable_picks: Some(Vec::new()),
             past_tradable_picks: Some(Vec::new()),
@@ -1172,14 +1177,14 @@ impl PoolContext {
                 // To make sure the program never go into an infinite loop. we use a counter.
                 let mut continue_count = 0;
                 loop {
-                    if nb_players_drafted < (tradable_picks.len() * final_rank.len()) as usize {
+                    if nb_players_drafted < (tradable_picks.len() * final_rank.len()) {
                         // use the tradable_picks to see if the pick got traded so it is to the person owning the pick to draft.
 
                         next_drafter =
                             &tradable_picks[nb_players_drafted / final_rank.len()][next_drafter];
                     }
 
-                    if self.get_roster_count(&next_drafter)? >= max_player_count as usize {
+                    if self.get_roster_count(next_drafter)? >= max_player_count as usize {
                         self.players_name_drafted.push(0); // Id 0 means the players did not draft because his roster is already full
 
                         continue_count += 1;
@@ -1233,7 +1238,7 @@ impl PoolContext {
         }
 
         // Add the drafted player if everything goes right.
-        self.add_drafted_player(player, &next_drafter, settings)?;
+        self.add_drafted_player(player, next_drafter, settings)?;
 
         self.is_draft_done(settings)
     }

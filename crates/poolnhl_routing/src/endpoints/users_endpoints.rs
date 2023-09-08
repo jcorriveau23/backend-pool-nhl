@@ -3,6 +3,7 @@ use axum::routing::{get, post};
 use axum::Router;
 
 use poolnhl_infrastructure::services::ServiceRegistry;
+use poolnhl_interface::draft::model::UserToken;
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::users::{
     model::{
@@ -12,20 +13,18 @@ use poolnhl_interface::users::{
     service::UsersServiceHandle,
 };
 
-use poolnhl_infrastructure::jwt::UserToken;
-
 pub struct UsersRouter;
 
 impl UsersRouter {
     pub fn new(service_registry: ServiceRegistry) -> Router {
         Router::new()
-            .route("/user/:name", get(UsersRouter::get_user_by_name))
-            .route("/users/:ids", get(UsersRouter::get_user_by_ids))
-            .route("/user/login", post(UsersRouter::login))
-            .route("/user/register", post(UsersRouter::register))
-            .route("/user/wallet-login", post(UsersRouter::wallet_login))
-            .route("/user/set-username", post(UsersRouter::set_username))
-            .route("/user/set-password", post(UsersRouter::set_password))
+            .route("/user/:name", get(Self::get_user_by_name))
+            .route("/users/:ids", get(Self::get_user_by_ids))
+            .route("/user/login", post(Self::login))
+            .route("/user/register", post(Self::register))
+            .route("/user/wallet-login", post(Self::wallet_login))
+            .route("/user/set-username", post(Self::set_username))
+            .route("/user/set-password", post(Self::set_password))
             .with_state(service_registry)
     }
 
@@ -71,10 +70,7 @@ impl UsersRouter {
         State(users_service): State<UsersServiceHandle>,
         Json(body): Json<SetUsernameRequest>,
     ) -> Result<Json<UserData>> {
-        users_service
-            .set_username(&token._id.to_string(), body)
-            .await
-            .map(Json)
+        users_service.set_username(&token._id, body).await.map(Json)
     }
 
     /// Set Username
@@ -83,9 +79,6 @@ impl UsersRouter {
         State(users_service): State<UsersServiceHandle>,
         Json(body): Json<SetPasswordRequest>,
     ) -> Result<Json<UserData>> {
-        users_service
-            .set_password(&token._id.to_string(), body)
-            .await
-            .map(Json)
+        users_service.set_password(&token._id, body).await.map(Json)
     }
 }
