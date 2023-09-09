@@ -6,13 +6,14 @@ use mongodb::bson::Document;
 use mongodb::bson::{doc, oid::ObjectId};
 use mongodb::options::{FindOneAndUpdateOptions, ReturnDocument};
 use poolnhl_interface::errors::AppError;
+use reqwest;
 use serde::{Deserialize, Serialize};
 
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::users::{
     model::{
         LoginRequest, LoginResponse, RegisterRequest, SetPasswordRequest, SetUsernameRequest,
-        UserData, WalletLoginRegisterRequest,
+        SocialGraphResponse, SocialLoginRequest, UserData, WalletLoginRegisterRequest,
     },
     service::UsersService,
 };
@@ -48,6 +49,51 @@ impl MongoUsersService {
             .find_one(doc! {"addr": name}, None)
             .await
             .map_err(|e| AppError::MongoError { msg: e.to_string() })
+    }
+
+    async fn get_optional_raw_user_by_social_id(&self, social_id: &str) -> Result<Option<User>> {
+        // Get the raw User data. This includes the password. It should never be return to the clients.
+        let collection = self.db.collection::<User>("users");
+
+        collection
+            .find_one(doc! {"social_id": social_id}, None)
+            .await
+            .map_err(|e| AppError::MongoError { msg: e.to_string() })
+    }
+
+    async fn validate_social_login(
+        &self,
+        body: &SocialLoginRequest,
+    ) -> Result<SocialGraphResponse> {
+        // https://graph.facebook.com/{user_id}?access_token={access_token}
+        // if the response is valid, we can proceed to the login/registration and return the token.
+        let uri = format!(
+            "https://graph.facebook.com/{}?access_token={}",
+            body.userID, body.accessToken
+        );
+        let Ok(response) = reqwest::get(uri).await else {
+            return Err(AppError::CustomError {
+            msg: "We were not able to get a response from the graph facebook api to valide the login."
+                .to_string(),
+        });
+        };
+
+        match response.status() {
+            reqwest::StatusCode::OK => {
+                // println!("{:?}", response.text().await);
+                let Ok(response_data) = response.json::<SocialGraphResponse>().await else {
+                    return Err(AppError::CustomError {
+                        msg: "Could not deserialize the graph login response.".to_string(),
+                    });
+                };
+
+                Ok(response_data)
+            }
+            _ => Err(AppError::CustomError {
+                msg: "The response status for the social login validation is not valid."
+                    .to_string(),
+            }),
+        }
     }
 
     async fn get_raw_user_by_name(&self, name: &str) -> Result<User> {
@@ -99,8 +145,10 @@ pub struct User {
     pub password: Option<String>,
     pub email: Option<String>,
     pub phone: Option<String>,
-    pub addr: Option<String>,   // Ethereum public address of user.
-    pub pool_list: Vec<String>, // list of pool name this user participate in.
+    pub addr: Option<String>,         // Ethereum public address of user.
+    pub social_id: Option<String>,    // Facebook account id.
+    pub profile_pick: Option<String>, // Facebook profile pick url.
+    pub pool_list: Vec<String>,       // list of pool name this user participate in.
 }
 
 impl From<User> for UserData {
@@ -111,6 +159,8 @@ impl From<User> for UserData {
             email: user.email,
             phone: user.phone,
             addr: user.addr,
+            social_id: user.social_id,
+            profile_pick: user.profile_pick,
             pool_list: user.pool_list,
         }
     }
@@ -230,6 +280,8 @@ impl UsersService for MongoUsersService {
                     email: Some(body.email.clone()),
                     phone: Some(body.phone.clone()),
                     addr: None,
+                    social_id: None,
+                    profile_pick: None,
                     pool_list: Vec::new(),
                 };
                 // Create the jwt token.
@@ -290,6 +342,8 @@ impl UsersService for MongoUsersService {
                             email: None,
                             phone: None,
                             addr: Some(body.addr.clone()),
+                            social_id: None,
+                            profile_pick: None,
                             pool_list: Vec::new(),
                         };
                         // Create the jwt token.
@@ -306,6 +360,120 @@ impl UsersService for MongoUsersService {
             }
         }
     }
+
+    async fn social_login(&self, body: SocialLoginRequest) -> Result<LoginResponse> {
+        // Login or register the user with facebook social.
+
+        // Fist need to validate the social account.
+        let response = self.validate_social_login(&body).await?;
+
+        let user = self
+            .get_optional_raw_user_by_social_id(&body.userID)
+            .await?;
+        let collection = self.db.collection::<Document>("users");
+
+        match user {
+            Some(user) => {
+                // Create the jwt token.
+                let token = jwt::create(&user, &self.secret)?;
+                Ok(LoginResponse {
+                    user: UserData::from(user),
+                    token,
+                })
+            }
+            None => {
+                // create the account if it does not exist
+                // There is no register with wallet connect, the login create the user if it doesn't exist.
+                let d = doc! {
+                    "name": body.userID.clone(),  // The name returned from the fb graph
+                    "social_id": body.userID.clone(),
+                    "pool_list": []
+                };
+
+                let insert_one_result = collection
+                    .insert_one(d, None)
+                    .await
+                    .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
+
+                match insert_one_result.inserted_id.as_object_id() {
+                    // creating the data instead of find into the database.
+                    Some(inserted_id) => {
+                        let user = User {
+                            _id: inserted_id,
+                            name: response.name,
+                            password: None,
+                            email: None,
+                            phone: None,
+                            addr: None,
+                            social_id: Some(body.userID.clone()),
+                            profile_pick: None,
+                            pool_list: Vec::new(),
+                        };
+                        // Create the jwt token.
+                        let token = jwt::create(&user, &self.secret)?;
+                        Ok(LoginResponse {
+                            user: UserData::from(user),
+                            token,
+                        })
+                    }
+                    None => Err(AppError::CustomError {
+                        msg: "The user could not be added to the data base.".to_string(),
+                    }),
+                }
+            }
+        }
+    }
+
+    async fn link_social_account(
+        &self,
+        user_id: &str,
+        body: SocialLoginRequest,
+    ) -> Result<UserData> {
+        // Link a social account to an already created account.
+
+        // Fist need to validate the social account.
+        let _ = self.validate_social_login(&body).await?;
+
+        let user = self
+            .get_optional_raw_user_by_social_id(&body.userID)
+            .await?;
+
+        if user.is_some() {
+            // There is already an account link with that facebook account.
+
+            return Err(AppError::AuthError {
+                msg: "There is already an account link with this facebook account.".to_string(),
+            });
+        }
+
+        // Then we can find the user and and update the social id field.
+        let collection = self.db.collection::<User>("users");
+
+        let find_one_and_update_options = FindOneAndUpdateOptions::builder()
+            .return_document(ReturnDocument::After)
+            .build();
+
+        let filter = doc! {"_id": ObjectId::from_str(user_id).map_err(|e| AppError::ObjectIdError { msg: e.to_string() })?};
+
+        let doc = doc! {
+            "$set":  doc!{
+                "social_id": body.userID
+            }
+        };
+
+        let user = collection
+            .find_one_and_update(filter, doc, find_one_and_update_options)
+            .await
+            .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
+
+        match user {
+            Some(user) => Ok(UserData::from(user)),
+            None => Err(AppError::CustomError {
+                msg: format!("no user found with id '{}'", user_id),
+            }),
+        }
+    }
+
     async fn set_username(&self, user_id: &str, body: SetUsernameRequest) -> Result<UserData> {
         // Set a new username for the user.
         let collection = self.db.collection::<User>("users");

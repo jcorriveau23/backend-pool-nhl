@@ -8,7 +8,7 @@ use poolnhl_interface::errors::Result;
 use poolnhl_interface::users::{
     model::{
         LoginRequest, LoginResponse, RegisterRequest, SetPasswordRequest, SetUsernameRequest,
-        UserData, WalletLoginRegisterRequest,
+        SocialLoginRequest, UserData, WalletLoginRegisterRequest,
     },
     service::UsersServiceHandle,
 };
@@ -23,6 +23,8 @@ impl UsersRouter {
             .route("/user/login", post(Self::login))
             .route("/user/register", post(Self::register))
             .route("/user/wallet-login", post(Self::wallet_login))
+            .route("/user/social-login", post(Self::social_login))
+            .route("/user/link-social-account", post(Self::link_social_account))
             .route("/user/set-username", post(Self::set_username))
             .route("/user/set-password", post(Self::set_password))
             .with_state(service_registry)
@@ -62,6 +64,24 @@ impl UsersRouter {
         Json(body): Json<WalletLoginRegisterRequest>,
     ) -> Result<Json<LoginResponse>> {
         users_service.wallet_login(body).await.map(Json)
+    }
+
+    async fn social_login(
+        State(users_service): State<UsersServiceHandle>,
+        Json(body): Json<SocialLoginRequest>,
+    ) -> Result<Json<LoginResponse>> {
+        users_service.social_login(body).await.map(Json)
+    }
+
+    async fn link_social_account(
+        token: UserToken,
+        State(users_service): State<UsersServiceHandle>,
+        Json(body): Json<SocialLoginRequest>,
+    ) -> Result<Json<UserData>> {
+        users_service
+            .link_social_account(&token._id, body)
+            .await
+            .map(Json)
     }
 
     /// Set Username
