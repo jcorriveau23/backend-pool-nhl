@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use chrono::{Duration, NaiveDate};
 use futures::stream::TryStreamExt;
@@ -8,12 +10,13 @@ use mongodb::Collection;
 use poolnhl_interface::errors::AppError;
 
 use poolnhl_interface::errors::Result;
+use poolnhl_interface::pool::model::{PoolContext, PoolState, END_SEASON_DATE};
 use poolnhl_interface::pool::{
     model::{
         AddPlayerRequest, CreateTradeRequest, DeleteTradeRequest, FillSpotRequest,
-        ModifyRosterRequest, Pool, PoolCreationRequest, PoolDeletionRequest, ProjectedPoolShort,
-        ProtectPlayersRequest, RemovePlayerRequest, RespondTradeRequest, UpdatePoolSettingsRequest,
-        START_SEASON_DATE,
+        MarkAsFinalRequest, ModifyRosterRequest, Pool, PoolCreationRequest, PoolDeletionRequest,
+        ProjectedPoolShort, ProtectPlayersRequest, RemovePlayerRequest, RespondTradeRequest,
+        UpdatePoolSettingsRequest, START_SEASON_DATE,
     },
     service::PoolService,
 };
@@ -455,7 +458,7 @@ impl PoolService for MongoPoolService {
             Some(context) => {
                 let updated_fields = doc! {
                     "$set": doc!{
-                        "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() }).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                        "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
                         "status":  to_bson(&pool.status).map_err(|e| AppError::MongoError { msg: e.to_string() })?
                     }
                 };
@@ -466,5 +469,59 @@ impl PoolService for MongoPoolService {
                     .await
             }
         }
+    }
+
+    async fn mark_as_final(&self, user_id: &str, req: MarkAsFinalRequest) -> Result<Pool> {
+        let collection = self.db.collection::<Pool>("pools");
+        let mut pool = self.get_pool_by_name(&req.pool_name).await?;
+
+        pool.mark_as_final(user_id)?;
+
+        // If the pool is dynastie type, we need to create a new pool in dynastie status.
+        // With almost everying thing from the last pool save into it.
+        if pool.settings.dynastie_settings.is_some() {
+            let mut pool_context = None;
+            if let Some(context) = pool.context {
+                pool_context = Some(PoolContext {
+                    pooler_roster: context.pooler_roster,
+                    players_name_drafted: Vec::new(),
+                    score_by_day: Some(HashMap::new()),
+                    tradable_picks: Some(Vec::new()),
+                    past_tradable_picks: context.tradable_picks,
+                    players: context.players,
+                });
+            }
+            let dynastie_pool = Pool {
+                name: pool.name + "(2)",
+                owner: pool.owner,
+                number_poolers: pool.number_poolers,
+                participants: pool.participants,
+                settings: pool.settings,
+                status: PoolState::Dynastie,
+                final_rank: pool.final_rank.clone(),
+                nb_player_drafted: 0,
+                nb_trade: 0,
+                trades: None,
+                context: pool_context,
+                date_updated: 0,
+                season_start: START_SEASON_DATE.to_string(),
+                season_end: END_SEASON_DATE.to_string(),
+            };
+
+            collection
+                .insert_one(&dynastie_pool, None)
+                .await
+                .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
+        }
+
+        let updated_fields = doc! {
+            "$set": doc!{
+                "final_rank": to_bson(&pool.final_rank).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "status":  to_bson(&pool.status).map_err(|e| AppError::MongoError { msg: e.to_string() })?
+            }
+        };
+
+        self.update_pool(updated_fields, &collection, &req.pool_name)
+            .await
     }
 }

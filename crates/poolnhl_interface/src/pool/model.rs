@@ -227,11 +227,9 @@ impl Pool {
             }),
             Some(trades) => {
                 match trades.iter().position(|trade| trade.id == trade_id) {
-                    None => {
-                        Err(AppError::CustomError {
-                            msg: "The trade was not found.".to_string(),
-                        })
-                    }
+                    None => Err(AppError::CustomError {
+                        msg: "The trade was not found.".to_string(),
+                    }),
                     Some(i) => {
                         // validate that the status of the trade is NEW
 
@@ -277,18 +275,14 @@ impl Pool {
             self.has_owner_rights(user_id) || self.has_assistants_rights(user_id);
 
         match &mut self.trades {
-            None => {
-                Err(AppError::CustomError {
-                    msg: "The trade was not found.".to_string(),
-                })
-            }
+            None => Err(AppError::CustomError {
+                msg: "The trade was not found.".to_string(),
+            }),
             Some(trades) => {
                 match trades.iter().position(|trade| trade.id == trade_id) {
-                    None => {
-                        Err(AppError::CustomError {
-                            msg: "The trade was not found.".to_string(),
-                        })
-                    }
+                    None => Err(AppError::CustomError {
+                        msg: "The trade was not found.".to_string(),
+                    }),
                     Some(i) => {
                         // validate that the status of the trade is NEW
 
@@ -319,11 +313,9 @@ impl Pool {
                         }
                         if is_accepted {
                             match &mut self.context {
-                                None => {
-                                    Err(AppError::CustomError {
-                                        msg: "The pool has no context yet.".to_string(),
-                                    })
-                                }
+                                None => Err(AppError::CustomError {
+                                    msg: "The pool has no context yet.".to_string(),
+                                }),
                                 Some(pool_context) => {
                                     pool_context.trade_roster_items(&trades[i])?;
                                     trades[i].status = TradeStatus::ACCEPTED;
@@ -354,11 +346,9 @@ impl Pool {
         }
 
         match &mut self.context {
-            None => {
-                Err(AppError::CustomError {
-                    msg: "The pool has no context yet.".to_string(),
-                })
-            }
+            None => Err(AppError::CustomError {
+                msg: "The pool has no context yet.".to_string(),
+            }),
             Some(context) => {
                 // Is the player in the pool?
                 let player =
@@ -804,6 +794,23 @@ impl Pool {
         }
     }
 
+    pub fn mark_as_final(&mut self, user_id: &str) -> Result<(), AppError> {
+        self.has_privileges(user_id)?;
+        self.validate_pool_status(&PoolState::InProgress)?;
+
+        let Some(context) = &self.context else {
+            return Err(AppError::CustomError {
+                msg: "The pool has no context yet.".to_string(),
+            });
+        };
+
+        // Get the final ranking of the pool. For dynastie pool, this will be use as draft order for the next season.
+        self.final_rank = Some(context.get_final_rank(&self.season_end, &self.settings)?);
+        self.status = PoolState::Final;
+
+        Ok(())
+    }
+
     pub fn can_update_in_progress_pool_settings(
         self,
         user_id: &str,
@@ -973,6 +980,7 @@ impl Pool {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum PoolState {
+    Final,
     InProgress,
     Dynastie,
     Draft,
@@ -983,19 +991,13 @@ impl fmt::Display for PoolState {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // To be able to print out the PoolState enum.
         match self {
+            PoolState::Final => write!(f, "Final"),
             PoolState::InProgress => write!(f, "In progress"),
             PoolState::Dynastie => write!(f, "Dynastie"),
             PoolState::Draft => write!(f, "Draft"),
             PoolState::Created => write!(f, "Created"),
         }
     }
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct ProjectedPoolContext {
-    pub pooler_roster: HashMap<String, PoolerRoster>,
-    pub players_name_drafted: Vec<u32>,
-    pub tradable_picks: Option<Vec<HashMap<String, String>>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)] // Copy
@@ -1025,6 +1027,52 @@ impl PoolContext {
             players_name_drafted: Vec::new(),
             players: HashMap::new(),
         }
+    }
+
+    pub fn get_final_rank(
+        &self,
+        season_end: &str,
+        pool_settings: &PoolSettings,
+    ) -> Result<Vec<String>, AppError> {
+        let Some(score_by_day) = &self.score_by_day else {
+            return Err(AppError::CustomError {
+                msg: "No score is being recorded in this pool yet.".to_string(),
+            });
+        };
+
+        let Some(date_data) = score_by_day.get(season_end) else {
+            return Err(AppError::CustomError {
+                msg: "There are no cumulative data the date the season ended".to_string(),
+            });
+        };
+
+        let mut total_points_to_user: HashMap<u16, String> = HashMap::new();
+        let mut total_points = Vec::new();
+
+        for (user, daily_points) in date_data {
+            let Some(cumulate) = &daily_points.cumulate else {
+                return Err(AppError::CustomError {
+                    msg: "There were no cumulate on the date the season ended.".to_string(),
+                });
+            };
+
+            let user_total_points = cumulate.get_total_points(pool_settings);
+
+            total_points.push(user_total_points);
+            total_points_to_user.insert(user_total_points, user.clone());
+        }
+
+        let mut final_rank = Vec::new();
+
+        // Sort the total points vector. And fill the final_rank list with it.
+        total_points.sort();
+        total_points.reverse();
+
+        for points in &total_points {
+            final_rank.push(total_points_to_user[points].clone())
+        }
+
+        Ok(final_rank)
     }
 
     pub fn add_drafted_player(
@@ -1098,7 +1146,7 @@ impl PoolContext {
         // generate the list of tradable_picks for the next season
 
         if is_done {
-            // If done, reset the tradable picks.
+            // If done, clone the tradable picks, into the past_tradable_picks and reset the tradable picks.
             let mut new_tradable_picks = vec![];
 
             if let Some(dynastie_settings) = &settings.dynastie_settings {
@@ -1163,11 +1211,11 @@ impl PoolContext {
             + settings.number_goalies
             + settings.number_reservists;
 
-        match &self.tradable_picks {
+        match &self.past_tradable_picks {
             None => Err(AppError::CustomError {
                 msg: "There should be tradable_picks in dynastie type pool.".to_string(),
             }),
-            Some(tradable_picks) => {
+            Some(past_tradable_picks) => {
                 let nb_players_drafted = self.players_name_drafted.len();
 
                 let index_draft = final_rank.len() - 1 - (nb_players_drafted % final_rank.len());
@@ -1177,11 +1225,11 @@ impl PoolContext {
                 // To make sure the program never go into an infinite loop. we use a counter.
                 let mut continue_count = 0;
                 loop {
-                    if nb_players_drafted < (tradable_picks.len() * final_rank.len()) {
+                    if nb_players_drafted < (past_tradable_picks.len() * final_rank.len()) {
                         // use the tradable_picks to see if the pick got traded so it is to the person owning the pick to draft.
 
-                        next_drafter =
-                            &tradable_picks[nb_players_drafted / final_rank.len()][next_drafter];
+                        next_drafter = &past_tradable_picks[nb_players_drafted / final_rank.len()]
+                            [next_drafter];
                     }
 
                     if self.get_roster_count(next_drafter)? >= max_player_count as usize {
@@ -1271,8 +1319,8 @@ impl PoolContext {
         let pick_number = self.players_name_drafted.len();
         let latest_drafter;
 
-        match (&settings.dynastie_settings, &self.tradable_picks) {
-            (Some(dynastie_settings), Some(tradable_picks)) => {
+        match (&settings.dynastie_settings, &self.past_tradable_picks) {
+            (Some(dynastie_settings), Some(past_tradable_picks)) => {
                 // This comes from a Dynastie draft.
 
                 let nb_tradable_picks = dynastie_settings.tradable_picks;
@@ -1285,7 +1333,7 @@ impl PoolContext {
                     // use the tradable_picks to see who will draft next.
 
                     latest_drafter =
-                        tradable_picks[pick_number / participants.len()][next_drafter].clone();
+                        past_tradable_picks[pick_number / participants.len()][next_drafter].clone();
                 } else {
                     // Use the final_rank to see who draft next.
                     latest_drafter = next_drafter.clone();
@@ -1632,6 +1680,24 @@ pub struct DailyCumulate {
     pub OT_G: u8,
 }
 
+impl DailyCumulate {
+    pub fn get_total_points(&self, pool_settings: &PoolSettings) -> u16 {
+        self.G_F * pool_settings.forward_pts_goals as u16
+            + self.A_F * pool_settings.forward_pts_assists as u16
+            + self.HT_F as u16 * pool_settings.forward_pts_hattricks as u16
+            + self.SOG_F * pool_settings.forward_pts_shootout_goals as u16
+            + self.G_D * pool_settings.defender_pts_goals as u16
+            + self.A_D * pool_settings.defender_pts_assists as u16
+            + self.HT_D as u16 * pool_settings.defender_pts_hattricks as u16
+            + self.SOG_D * pool_settings.defender_pts_shootout_goals as u16
+            + self.G_G as u16 * pool_settings.goalies_pts_goals as u16
+            + self.A_G as u16 * pool_settings.goalies_pts_assists as u16
+            + self.W_G * pool_settings.goalies_pts_wins as u16
+            + self.SO_G as u16 * pool_settings.goalies_pts_shutouts as u16
+            + self.OT_G as u16 * pool_settings.goalies_pts_overtimes as u16
+    }
+}
+
 impl PartialEq<Player> for Player {
     fn eq(&self, other: &Player) -> bool {
         self.id == other.id
@@ -1778,4 +1844,10 @@ pub struct UpdatePoolSettingsRequest {
     pub pool_name: String,
     // Roster configuration.
     pub pool_settings: PoolSettings,
+}
+
+// payload to sent when marking a pool as final
+#[derive(Debug, Deserialize, Clone)]
+pub struct MarkAsFinalRequest {
+    pub pool_name: String,
 }
