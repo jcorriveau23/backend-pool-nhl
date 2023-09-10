@@ -1,3 +1,6 @@
+use std::time::{self, SystemTime};
+
+use chrono::Utc;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation};
 
 use once_cell::sync::Lazy;
@@ -36,6 +39,13 @@ where
             })?;
 
         let token_data = decode(bearer.token(), &state.secret)?;
+
+        // Validate if the token is expired.
+        if token_data.claims.exp < Utc::now().timestamp() as usize {
+            return Err(AppError::AuthError {
+                msg: "The token is expired, please reconnect.".to_string(),
+            });
+        }
 
         Ok(token_data.claims.user)
     }

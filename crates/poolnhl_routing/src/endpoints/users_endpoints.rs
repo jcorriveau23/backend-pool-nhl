@@ -4,7 +4,7 @@ use axum::Router;
 
 use poolnhl_infrastructure::services::ServiceRegistry;
 use poolnhl_interface::draft::model::UserToken;
-use poolnhl_interface::errors::Result;
+use poolnhl_interface::errors::{AppError, Result};
 use poolnhl_interface::users::{
     model::{
         LoginRequest, LoginResponse, RegisterRequest, SetPasswordRequest, SetUsernameRequest,
@@ -27,6 +27,7 @@ impl UsersRouter {
             .route("/user/link-social-account", post(Self::link_social_account))
             .route("/user/set-username", post(Self::set_username))
             .route("/user/set-password", post(Self::set_password))
+            .route("/token", post(Self::validate_token))
             .with_state(service_registry)
     }
 
@@ -100,5 +101,10 @@ impl UsersRouter {
         Json(body): Json<SetPasswordRequest>,
     ) -> Result<Json<UserData>> {
         users_service.set_password(&token._id, body).await.map(Json)
+    }
+
+    /// Validate the token, the validation is being done in the from_request_parts() implementation for UserToken.
+    async fn validate_token(token: UserToken) -> Result<()> {
+        Ok(())
     }
 }
