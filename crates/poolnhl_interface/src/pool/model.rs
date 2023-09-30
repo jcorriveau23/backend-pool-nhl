@@ -9,10 +9,10 @@ use std::{
 };
 // Date for season
 
-pub const START_SEASON_DATE: &str = "2022-10-07";
-pub const END_SEASON_DATE: &str = "2023-04-13";
+pub const START_SEASON_DATE: &str = "2023-10-10";
+pub const END_SEASON_DATE: &str = "2024-04-18";
 
-pub const TRADE_DEADLINE_DATE: &str = "2023-03-03";
+pub const TRADE_DEADLINE_DATE: &str = "2024-03-08";
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ProjectedPoolShort {
