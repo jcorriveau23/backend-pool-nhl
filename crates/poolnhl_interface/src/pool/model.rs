@@ -867,11 +867,19 @@ impl Pool {
 
     pub fn draft_player(&mut self, user_id: &str, player: &Player) -> Result<(), AppError> {
         // Match against
+
+        let has_privileges = self.has_owner_rights(user_id);
         match (&mut self.context, &self.participants, &self.final_rank) {
             (Some(context), _, Some(final_rank)) => {
                 // This is a dynastie draft context.
                 // The final rank is being used as draft order.
-                if context.draft_player_dynastie(user_id, player, final_rank, &self.settings)? {
+                if context.draft_player_dynastie(
+                    user_id,
+                    player,
+                    final_rank,
+                    &self.settings,
+                    has_privileges,
+                )? {
                     // The draft is done.
                     self.status = PoolState::InProgress;
                 }
@@ -880,7 +888,13 @@ impl Pool {
             (Some(context), Some(participants), None) => {
                 // This is a dynastie draft context.
                 // The participant order is being used as draft order.
-                if context.draft_player(user_id, player, participants, &self.settings)? {
+                if context.draft_player(
+                    user_id,
+                    player,
+                    participants,
+                    &self.settings,
+                    has_privileges,
+                )? {
                     // The draft is done.
                     self.status = PoolState::InProgress;
                 }
@@ -1173,6 +1187,7 @@ impl PoolContext {
         player: &Player,
         final_rank: &Vec<String>, // being used as draft order.
         settings: &PoolSettings,
+        has_privileges: bool,
     ) -> Result<bool, AppError> {
         // First, validate that the player selected is not already picked by any of the other poolers.
 
@@ -1186,7 +1201,7 @@ impl PoolContext {
         // Find the next draft id for dynastie type pool.
         let next_drafter = self.find_dynastie_next_drafter(final_rank, settings)?;
 
-        if next_drafter != user_id {
+        if !has_privileges && next_drafter != user_id {
             return Err(AppError::CustomError {
                 msg: format!("It is {}'s turn.", next_drafter),
             });
@@ -1261,6 +1276,7 @@ impl PoolContext {
         player: &Player,
         participants: &Vec<String>, // being used as draft order.
         settings: &PoolSettings,
+        has_privileges: bool,
     ) -> Result<bool, AppError> {
         // Draft the right player in normal mode.
         // Taking only into account the draft order
@@ -1280,7 +1296,7 @@ impl PoolContext {
         let index = players_drafted % participants.len();
         let next_drafter = &participants[index];
 
-        if next_drafter != user_id {
+        if !has_privileges && next_drafter != user_id {
             return Err(AppError::CustomError {
                 msg: format!("It is {}'s turn.", next_drafter),
             });
