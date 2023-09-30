@@ -1,11 +1,12 @@
+use crate::errors::AppError;
+use chrono::{Duration, Local, NaiveDate, Timelike, Utc};
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fmt,
 };
-
-use crate::errors::AppError;
-use chrono::{Duration, Local, NaiveDate, Timelike, Utc};
 // Date for season
 
 pub const START_SEASON_DATE: &str = "2022-10-07";
@@ -853,14 +854,14 @@ impl Pool {
                 msg: "The number of participants is not good.".to_string(),
             });
         }
+        let mut participants = participants.clone();
+        participants.shuffle(&mut thread_rng());
         self.participants = Some(participants.clone());
-        let pool_context = PoolContext::new(participants);
 
         // TODO: randomize the list of participants so the draft order is random
-        //thread_rng().shuffle(&mut _participants);
 
         self.status = PoolState::Draft;
-        self.context = Some(pool_context);
+        self.context = Some(PoolContext::new(&participants));
         Ok(())
     }
 
