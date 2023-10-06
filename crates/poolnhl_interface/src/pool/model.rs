@@ -1293,7 +1293,15 @@ impl PoolContext {
 
         let players_drafted = self.players_name_drafted.len();
 
-        let index = players_drafted % participants.len();
+        // Snake draft, reverse draft order each round.
+        let round = players_drafted / participants.len();
+
+        let index = if round % 2 == 1 {
+            participants.len() - 1 - (players_drafted % participants.len())
+        } else {
+            players_drafted % participants.len()
+        };
+
         let next_drafter = &participants[index];
 
         if !has_privileges && next_drafter != user_id {
@@ -1359,7 +1367,15 @@ impl PoolContext {
             _ => {
                 // this comes from a newly created draft.
 
-                let index = pick_number % participants.len();
+                // Snake draft, reverse draft order each round.
+                let round = pick_number / participants.len();
+
+                let index = if round % 2 == 1 {
+                    participants.len() - 1 - (pick_number % participants.len())
+                } else {
+                    pick_number % participants.len()
+                };
+
                 latest_drafter = participants[index].clone();
             }
         }
