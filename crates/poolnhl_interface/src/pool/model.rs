@@ -1232,15 +1232,16 @@ impl PoolContext {
                 msg: "There should be tradable_picks in dynastie type pool.".to_string(),
             }),
             Some(past_tradable_picks) => {
-                let nb_players_drafted = self.players_name_drafted.len();
-
-                let index_draft = final_rank.len() - 1 - (nb_players_drafted % final_rank.len());
-                // Fetch the next drafter without considering if the trade has been traded yet.
-                let mut next_drafter = &final_rank[index_draft];
-
                 // To make sure the program never go into an infinite loop. we use a counter.
                 let mut continue_count = 0;
                 loop {
+                    let nb_players_drafted = self.players_name_drafted.len();
+
+                    let index_draft =
+                        final_rank.len() - 1 - (nb_players_drafted % final_rank.len());
+                    // Fetch the next drafter without considering if the trade has been traded yet.
+                    let mut next_drafter = &final_rank[index_draft];
+
                     if nb_players_drafted < (past_tradable_picks.len() * final_rank.len()) {
                         // use the tradable_picks to see if the pick got traded so it is to the person owning the pick to draft.
 
