@@ -1151,7 +1151,7 @@ impl PoolContext {
                 < (settings.number_forwards
                     + settings.number_defenders
                     + settings.number_goalies
-                    + settings.number_goalies) as usize
+                    + settings.number_reservists) as usize
             {
                 is_done = false;
                 break; // The Draft phase is not done.
