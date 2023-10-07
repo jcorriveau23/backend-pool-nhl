@@ -109,11 +109,16 @@ impl PoolService for MongoPoolService {
         })
     }
 
-    async fn get_pool_by_name_with_range(&self, name: &str, from_date_str: &str) -> Result<Pool> {
+    async fn get_pool_by_name_with_range(
+        &self,
+        name: &str,
+        start_season_date: &str,
+        from_date_str: &str,
+    ) -> Result<Pool> {
         let from_date = NaiveDate::parse_from_str(from_date_str, "%Y-%m-%d")
             .map_err(|e| AppError::ParseError { msg: e.to_string() })?;
 
-        let mut start_date = NaiveDate::parse_from_str(START_SEASON_DATE, "%Y-%m-%d")
+        let mut start_date = NaiveDate::parse_from_str(start_season_date, "%Y-%m-%d")
             .map_err(|e| AppError::ParseError { msg: e.to_string() })?;
 
         if from_date < start_date {

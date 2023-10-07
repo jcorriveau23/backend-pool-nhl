@@ -18,7 +18,10 @@ impl PoolRouter {
     pub fn new(service_registry: ServiceRegistry) -> Router {
         Router::new()
             .route("/pool/:name", get(Self::get_pool_by_name))
-            .route("/pool/:name/:from", get(Self::get_pool_by_name_with_range))
+            .route(
+                "/pool/:name/:start_date/:from",
+                get(Self::get_pool_by_name_with_range),
+            )
             .route("/pools", get(Self::get_pools))
             .route("/create-pool", post(Self::create_pool))
             .route("/delete-pool", post(Self::delete_pool))
@@ -43,11 +46,11 @@ impl PoolRouter {
     }
 
     async fn get_pool_by_name_with_range(
-        Path((name, from)): Path<(String, String)>,
+        Path((name, start_date, from)): Path<(String, String, String)>,
         State(pool_service): State<PoolServiceHandle>,
     ) -> Result<Json<Pool>> {
         pool_service
-            .get_pool_by_name_with_range(&name, &from)
+            .get_pool_by_name_with_range(&name, &start_date, &from)
             .await
             .map(Json)
     }

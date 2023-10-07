@@ -13,7 +13,12 @@ use crate::pool::model::{
 pub trait PoolService {
     // Get pool info calls
     async fn get_pool_by_name(&self, name: &str) -> Result<Pool>;
-    async fn get_pool_by_name_with_range(&self, name: &str, from_date: &str) -> Result<Pool>;
+    async fn get_pool_by_name_with_range(
+        &self,
+        name: &str,
+        start_season_date: &str,
+        from_date: &str,
+    ) -> Result<Pool>;
     async fn list_pools(&self) -> Result<Vec<ProjectedPoolShort>>;
     // Pool creation/deletion calls
     async fn create_pool(&self, user_id: &str, req: PoolCreationRequest) -> Result<Pool>;
