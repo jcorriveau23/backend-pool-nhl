@@ -121,27 +121,19 @@ impl PoolService for MongoPoolService {
         let mut start_date = NaiveDate::parse_from_str(start_season_date, "%Y-%m-%d")
             .map_err(|e| AppError::ParseError { msg: e.to_string() })?;
 
-        if from_date < start_date {
-            return Err(AppError::CustomError {
-                msg: format!(
-                    "from date: '{}' cannot be before start date: '{}'",
-                    from_date, start_date
-                ),
-            });
-        }
-
         // Projection will allow to filter all the date that the user did not want
         // (All the date before the from date received will be ignore).
         let mut projection = doc! {};
+        if from_date >= start_date {
+            loop {
+                let str_date = start_date.to_string();
 
-        loop {
-            let str_date = start_date.to_string();
-
-            if str_date == *from_date_str {
-                break;
+                if str_date == *from_date_str {
+                    break;
+                }
+                projection.insert(format!("context.score_by_day.{}", str_date), 0);
+                start_date += Duration::days(1);
             }
-            projection.insert(format!("context.score_by_day.{}", str_date), 0);
-            start_date += Duration::days(1);
         }
 
         let find_option = FindOneOptions::builder().projection(projection).build();
