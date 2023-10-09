@@ -556,7 +556,7 @@ impl Pool {
             today += Duration::days(1);
         }
 
-        if today >= start_season_date && today <= end_season_date {
+        if today > start_season_date && today <= end_season_date {
             let mut is_allowed = false;
 
             for date in &self.settings.roster_modification_date {
