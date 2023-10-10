@@ -1,4 +1,4 @@
-use axum::extract::{Json, State};
+use axum::extract::{Json, Path, State};
 use axum::routing::get;
 use axum::Router;
 
@@ -21,7 +21,7 @@ impl DailyLeadersRouter {
     // This allow to display in the web app all the pointers of a specific date.
     async fn get_daily_leaders(
         State(daily_leaders_service): State<DailyLeadersServiceHandle>,
-        date: String,
+        Path(date): Path<String>,
     ) -> Result<Json<DailyLeaders>> {
         daily_leaders_service
             .get_daily_leaders(&date)
