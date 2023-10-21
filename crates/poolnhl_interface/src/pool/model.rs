@@ -806,7 +806,7 @@ impl Pool {
         };
 
         // Get the final ranking of the pool. For dynastie pool, this will be use as draft order for the next season.
-        self.final_rank = Some(context.get_final_rank(&self.season_end, &self.settings)?);
+        self.final_rank = Some(context.get_final_rank(&self.settings)?);
         self.status = PoolState::Final;
 
         Ok(())
@@ -1044,47 +1044,50 @@ impl PoolContext {
         }
     }
 
-    pub fn get_final_rank(
-        &self,
-        season_end: &str,
-        pool_settings: &PoolSettings,
-    ) -> Result<Vec<String>, AppError> {
+    pub fn get_final_rank(&self, pool_settings: &PoolSettings) -> Result<Vec<String>, AppError> {
         let Some(score_by_day) = &self.score_by_day else {
             return Err(AppError::CustomError {
                 msg: "No score is being recorded in this pool yet.".to_string(),
             });
         };
 
-        let Some(date_data) = score_by_day.get(season_end) else {
-            return Err(AppError::CustomError {
-                msg: "There are no cumulative data the date the season ended".to_string(),
-            });
-        };
-
+        let mut user_total_points: HashMap<String, u16> = HashMap::new();
         let mut total_points_to_user: HashMap<u16, String> = HashMap::new();
-        let mut total_points = Vec::new();
 
-        for (user, daily_points) in date_data {
-            let Some(cumulate) = &daily_points.cumulate else {
-                return Err(AppError::CustomError {
-                    msg: "There were no cumulate on the date the season ended.".to_string(),
-                });
-            };
+        for (date, score_by_day) in score_by_day {
+            for (participant, roster_daily_points) in score_by_day {
+                if !user_total_points.contains_key(participant) {
+                    user_total_points.insert(participant.clone(), 0);
+                }
 
-            let user_total_points = cumulate.get_total_points(pool_settings);
+                if !roster_daily_points.is_cumulated {
+                    return Err(AppError::CustomError {
+                        msg: format!(
+                            "There are no cumulative data on the {date} for the user {participant}"
+                        ),
+                    });
+                }
 
-            total_points.push(user_total_points);
-            total_points_to_user.insert(user_total_points, user.clone());
+                if let Some(tot) = user_total_points.get_mut(participant) {
+                    *tot += roster_daily_points.get_total_points(pool_settings);
+                }
+            }
         }
 
+        for (participant, total_points) in &user_total_points {
+            total_points_to_user.insert(*total_points, participant.clone());
+        }
+
+        // With the full season cumulated, we can determine what is the final rank for this pool.
         let mut final_rank = Vec::new();
+        let mut total_points: Vec<u16> = user_total_points.into_values().collect();
 
         // Sort the total points vector. And fill the final_rank list with it.
         total_points.sort();
         total_points.reverse();
 
-        for points in &total_points {
-            final_rank.push(total_points_to_user[points].clone())
+        for points in total_points {
+            final_rank.push(total_points_to_user[&points].clone())
         }
 
         Ok(final_rank)
@@ -1643,12 +1646,70 @@ impl PoolerRoster {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DailyRosterPoints {
     pub roster: Roster,
-    pub F_tot: Option<SkaterPoolPoints>,
-    pub D_tot: Option<SkaterPoolPoints>,
-    pub G_tot: Option<GoalyPoolPoints>,
-    pub cumulate: Option<DailyCumulate>,
+    pub is_cumulated: bool,
 }
 
+impl DailyRosterPoints {
+    pub fn get_total_points(&self, pool_settings: &PoolSettings) -> u16 {
+        let mut total_points = 0;
+
+        // Forwards
+        for (_, skater_points) in &self.roster.F {
+            if let Some(skater_points) = skater_points {
+                total_points += skater_points.G as u16 * pool_settings.forward_pts_goals as u16
+                    + skater_points.A as u16 * pool_settings.forward_pts_assists as u16;
+
+                if let Some(shootout_goal) = skater_points.SOG {
+                    total_points +=
+                        shootout_goal as u16 * pool_settings.forward_pts_shootout_goals as u16;
+                }
+
+                if skater_points.G >= 3 {
+                    total_points += pool_settings.forward_pts_hattricks as u16;
+                }
+            }
+        }
+
+        // Defenders
+        for (_, skater_points) in &self.roster.D {
+            if let Some(skater_points) = skater_points {
+                total_points += skater_points.G as u16 * pool_settings.defender_pts_goals as u16
+                    + skater_points.A as u16 * pool_settings.defender_pts_assists as u16;
+
+                if let Some(shootout_goal) = skater_points.SOG {
+                    total_points +=
+                        shootout_goal as u16 * pool_settings.defender_pts_shootout_goals as u16;
+                }
+
+                if skater_points.G >= 3 {
+                    total_points += pool_settings.defender_pts_hattricks as u16;
+                }
+            }
+        }
+
+        // Goalies
+        for (_, goalie_points) in &self.roster.G {
+            if let Some(goalie_points) = goalie_points {
+                total_points += goalie_points.G as u16 * pool_settings.goalies_pts_goals as u16
+                    + goalie_points.A as u16 * pool_settings.goalies_pts_assists as u16;
+
+                if goalie_points.W {
+                    total_points += pool_settings.goalies_pts_wins as u16;
+                }
+
+                if goalie_points.SO {
+                    total_points += pool_settings.goalies_pts_shutouts as u16;
+                }
+
+                if goalie_points.OT {
+                    total_points += pool_settings.goalies_pts_overtimes as u16;
+                }
+            }
+        }
+
+        return total_points;
+    }
+}
 #[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Roster {
@@ -1692,45 +1753,6 @@ pub struct GoalyPoolPoints {
     pub W: u8,
     pub SO: u8,
     pub OT: u8,
-}
-
-#[allow(non_snake_case)]
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct DailyCumulate {
-    // Forwards
-    pub G_F: u16,
-    pub A_F: u16,
-    pub HT_F: u8,
-    pub SOG_F: u16,
-    // Defenders
-    pub G_D: u16,
-    pub A_D: u16,
-    pub HT_D: u8,
-    pub SOG_D: u16,
-    // Goalies
-    pub G_G: u8,
-    pub A_G: u8,
-    pub W_G: u16,
-    pub SO_G: u8,
-    pub OT_G: u8,
-}
-
-impl DailyCumulate {
-    pub fn get_total_points(&self, pool_settings: &PoolSettings) -> u16 {
-        self.G_F * pool_settings.forward_pts_goals as u16
-            + self.A_F * pool_settings.forward_pts_assists as u16
-            + self.HT_F as u16 * pool_settings.forward_pts_hattricks as u16
-            + self.SOG_F * pool_settings.forward_pts_shootout_goals as u16
-            + self.G_D * pool_settings.defender_pts_goals as u16
-            + self.A_D * pool_settings.defender_pts_assists as u16
-            + self.HT_D as u16 * pool_settings.defender_pts_hattricks as u16
-            + self.SOG_D * pool_settings.defender_pts_shootout_goals as u16
-            + self.G_G as u16 * pool_settings.goalies_pts_goals as u16
-            + self.A_G as u16 * pool_settings.goalies_pts_assists as u16
-            + self.W_G * pool_settings.goalies_pts_wins as u16
-            + self.SO_G as u16 * pool_settings.goalies_pts_shutouts as u16
-            + self.OT_G as u16 * pool_settings.goalies_pts_overtimes as u16
-    }
 }
 
 impl PartialEq<Player> for Player {
