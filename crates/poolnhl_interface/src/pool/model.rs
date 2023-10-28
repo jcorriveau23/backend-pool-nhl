@@ -43,6 +43,9 @@ pub struct PoolSettings {
     pub number_defenders: u8,
     pub number_goalies: u8,
     pub number_reservists: u8,
+    pub number_worst_forwards_to_ignore: u8,
+    pub number_worst_defenders_to_ignore: u8,
+    pub number_worst_goalies_to_ignore: u8,
     pub roster_modification_date: Vec<String>, // Date where reservist can be traded.
 
     // Forwards points configuration.
@@ -77,6 +80,9 @@ impl PoolSettings {
             number_defenders: 4,
             number_goalies: 2,
             number_reservists: 2,
+            number_worst_forwards_to_ignore: 0,
+            number_worst_defenders_to_ignore: 0,
+            number_worst_goalies_to_ignore: 0,
             roster_modification_date: Vec::new(),
             forward_pts_goals: 2,
             forward_pts_assists: 1,
@@ -1081,6 +1087,8 @@ impl PoolContext {
         // With the full season cumulated, we can determine what is the final rank for this pool.
         let mut final_rank = Vec::new();
         let mut total_points: Vec<u16> = user_total_points.into_values().collect();
+
+        // TODO: needs to consider the settings that ignore the X worst players of each position.
 
         // Sort the total points vector. And fill the final_rank list with it.
         total_points.sort();
