@@ -184,34 +184,30 @@ impl Pool {
                         msg: "The users in the trade are not in the pool.".to_string(),
                     });
                 }
-
-                match &mut self.trades {
-                    None => Err(AppError::CustomError {
-                        msg: "There is no trade to the pool yet.".to_string(),
-                    }),
-                    Some(trades) => {
-                        // Make sure that user can only have 1 active trade at a time.
-                        //return an error if already one trade active in this pool. (Active trade = NEW )
-
-                        for trade in trades.iter() {
-                            if (matches!(trade.status, TradeStatus::NEW))
-                                && (trade.proposed_by == trade.proposed_by)
-                            {
-                                return Err(AppError::CustomError {
-                                    msg: "User can only have one active trade at a time."
-                                        .to_string(),
-                                });
-                            }
-                        }
-
-                        trade.date_created = Utc::now().timestamp_millis();
-                        trade.status = TradeStatus::NEW;
-                        trade.id = self.nb_trade;
-                        trades.push(trade.clone());
-
-                        Ok(())
-                    }
+                if self.trades.is_none() {
+                    self.trades = Some(Vec::new());
                 }
+
+                if let Some(trades) = &mut self.trades {
+                    // Make sure that user can only have 1 active trade at a time.
+                    //return an error if already one trade active in this pool. (Active trade = NEW )
+                    for trade in trades.iter() {
+                        if (matches!(trade.status, TradeStatus::NEW))
+                            && (trade.proposed_by == trade.proposed_by)
+                        {
+                            return Err(AppError::CustomError {
+                                msg: "User can only have one active trade at a time.".to_string(),
+                            });
+                        }
+                    }
+
+                    trade.date_created = Utc::now().timestamp_millis();
+                    trade.status = TradeStatus::NEW;
+                    trade.id = self.nb_trade;
+                    trades.push(trade.clone());
+                }
+
+                Ok(())
             }
         }
     }
@@ -312,7 +308,7 @@ impl Pool {
                         // validate that 24h have been passed since the trade was created.
                         let now = Utc::now().timestamp_millis();
 
-                        if trades[i].date_created + 8640000 > now {
+                        if !priviledge_right && trades[i].date_created + 8640000 > now {
                             return Err(AppError::CustomError {
                                 msg: "The trade needs to be active for 24h before being able to accept it."
                                     .to_string(),

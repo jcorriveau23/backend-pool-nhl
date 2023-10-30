@@ -228,7 +228,7 @@ impl PoolService for MongoPoolService {
         // Update the field in the pool
         let updated_fields = doc! {
             "$set": doc!{
-                "trades": to_bson(&req.trade).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "trades": to_bson(&pool.trades).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
                 "nb_trade": pool.nb_trade + 1
             }
         };
