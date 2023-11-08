@@ -105,6 +105,7 @@ impl DraftRouter {
                         while let Some(Ok(msg)) = receiver.next().await {
                             // Handle the message received.
                             if let Message::Text(command) = msg {
+                                println!("{}", command);
                                 if let Ok(command) = serde_json::from_str::<Command>(&command) {
                                     match command {
                                         Command::LeaveRoom => {

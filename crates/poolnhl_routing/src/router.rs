@@ -9,6 +9,7 @@ use tower_http::trace;
 
 use crate::endpoints::daily_leaders_endpoints::DailyLeadersRouter;
 use crate::endpoints::draft_endpoints::DraftRouter;
+use crate::endpoints::nhl_endpoints::NhlRouter;
 use crate::endpoints::pool_endpoints::PoolRouter;
 use crate::endpoints::users_endpoints::UsersRouter;
 
@@ -25,7 +26,8 @@ impl ApplicationController {
                     .merge(UsersRouter::new(service_registry.clone()))
                     .merge(PoolRouter::new(service_registry.clone()))
                     .merge(DraftRouter::new(service_registry.clone()))
-                    .merge(DailyLeadersRouter::new(service_registry.clone())),
+                    .merge(DailyLeadersRouter::new(service_registry.clone()))
+                    .merge(NhlRouter::new(service_registry.clone())),
             )
             .layer(
                 trace::TraceLayer::new_for_http()
