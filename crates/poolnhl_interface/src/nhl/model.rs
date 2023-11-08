@@ -41,10 +41,15 @@ pub struct PeriodScoring {
     pub goals: Vec<Goal>,
 }
 
+#[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ShootoutInfo {
-    pub period: u32,
-    pub goals: Vec<Goal>,
+    pub sequence: u32,
+    pub playerId: u32,
+    pub teamAbbrev: String,
+    pub firstName: String,
+    pub lastName: String,
+    pub result: String,
 }
 
 #[allow(non_snake_case)]
@@ -78,6 +83,7 @@ pub enum GameState {
     OFF,
     LIVE,
     FUT,
+    PPD,
 }
 
 #[allow(non_snake_case)]
@@ -90,6 +96,13 @@ pub struct TimeRemaining {
 
 #[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize)]
+pub struct PeriodDescriptor {
+    pub number: u32,
+    pub periodType: String,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Game {
     pub id: u32,
     pub startTimeUTC: String,
@@ -98,6 +111,7 @@ pub struct Game {
     pub homeTeam: TeamInfo,
 
     pub period: Option<u32>,
+    pub periodDescriptor: Option<PeriodDescriptor>,
     pub clock: Option<TimeRemaining>,
 }
 
