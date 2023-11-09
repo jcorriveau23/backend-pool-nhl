@@ -85,6 +85,8 @@ pub enum GameState {
     FUT,
     PPD,
     PRE,
+    CRIT,
+    FINAL,
 }
 
 #[allow(non_snake_case)]
