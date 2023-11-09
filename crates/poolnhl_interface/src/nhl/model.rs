@@ -84,6 +84,7 @@ pub enum GameState {
     LIVE,
     FUT,
     PPD,
+    PRE,
 }
 
 #[allow(non_snake_case)]
@@ -140,7 +141,7 @@ pub struct SkaterStats {
     pub assists: u32,
     pub points: u32,
     pub plusMinus: i32,
-    pub pim: u32,
+    pub pim: Option<u32>,
     pub hits: u32,
     pub blockedShots: u32,
     pub powerPlayGoals: u32,
@@ -170,7 +171,7 @@ pub struct GoalieStats {
     pub evenStrengthGoalsAgainst: u32,
     pub powerPlayGoalsAgainst: u32,
     pub shorthandedGoalsAgainst: u32,
-    pub pim: u32,
+    pub pim: Option<u32>,
     pub goalsAgainst: u32,
     pub toi: String,
 }
