@@ -1,5 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+
+#[allow(non_snake_case)]
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Name {
+    pub default: String
+}
 // Game Landing information
 
 #[allow(non_snake_case)]
@@ -14,8 +20,8 @@ pub struct TeamInfo {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Assist {
     pub playerId: u32,
-    pub firstName: String,
-    pub lastName: String,
+    pub firstName: Name,
+    pub lastName: Name,
     pub assistsToDate: u32,
 }
 
@@ -24,10 +30,10 @@ pub struct Assist {
 pub struct Goal {
     pub strength: String,
     pub playerId: u32,
-    pub firstName: String,
-    pub lastName: String,
+    pub firstName: Name,
+    pub lastName: Name,
     pub headshot: String,
-    pub teamAbbrev: String,
+    pub teamAbbrev: Name,
     pub goalsToDate: u32,
     pub awayScore: u32,
     pub homeScore: u32,
