@@ -1,10 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-
 #[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Name {
-    pub default: String
+    pub default: String,
 }
 // Game Landing information
 
@@ -41,10 +40,32 @@ pub struct Goal {
     pub assists: Vec<Assist>,
 }
 
+#[allow(non_snake_case)]
+#[derive(Debug, Deserialize, Serialize)]
+pub enum PeriodType {
+    REG,
+    OT,
+    SO,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PeriodDescriptor {
+    pub number: u32,
+    pub periodType: PeriodType,
+}
+
+#[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PeriodScoring {
-    pub period: u32,
+    pub periodDescriptor: PeriodDescriptor,
     pub goals: Vec<Goal>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub enum ShootoutResult {
+    save,
+    goal,
 }
 
 #[allow(non_snake_case)]
@@ -55,12 +76,35 @@ pub struct ShootoutInfo {
     pub teamAbbrev: String,
     pub firstName: String,
     pub lastName: String,
-    pub result: String,
+    pub result: ShootoutResult,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PeriodScore {
+    pub away: u32,
+    pub home: u32,
+    pub periodDescriptor: PeriodDescriptor,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TotalScore {
+    pub away: u32,
+    pub home: u32,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Linescore {
+    pub byPeriod: Vec<PeriodScore>,
+    pub totals: TotalScore,
 }
 
 #[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GameSummary {
+    pub linescore: Linescore,
     pub scoring: Vec<PeriodScoring>,
     pub shootout: Vec<ShootoutInfo>,
     pub teamGameStats: Vec<TeamGameStats>,
@@ -70,8 +114,8 @@ pub struct GameSummary {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TeamGameStats {
     pub category: String,
-    pub awayValue: String,
-    pub homeValue: String,
+    // pub awayValue: StringOrU32,
+    // pub homeValue: StringOrU32,
 }
 
 #[allow(non_snake_case)]
@@ -101,13 +145,6 @@ pub struct TimeRemaining {
     pub timeRemaining: String,
     pub running: bool,
     pub inIntermission: bool,
-}
-
-#[allow(non_snake_case)]
-#[derive(Debug, Deserialize, Serialize)]
-pub struct PeriodDescriptor {
-    pub number: u32,
-    pub periodType: String,
 }
 
 #[allow(non_snake_case)]
@@ -151,17 +188,10 @@ pub struct SkaterStats {
     pub plusMinus: i32,
     pub pim: Option<u32>,
     pub hits: u32,
-    pub blockedShots: u32,
     pub powerPlayGoals: u32,
-    pub powerPlayPoints: u32,
-    pub shorthandedGoals: u32,
-    pub shPoints: u32,
     pub shots: u32,
-    pub faceoffs: String,
     pub faceoffWinningPctg: f32,
     pub toi: String,
-    pub powerPlayToi: String,
-    pub shorthandedToi: String,
 }
 
 #[allow(non_snake_case)]
@@ -201,16 +231,10 @@ pub struct PlayerByGameStats {
 
 #[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize)]
-pub struct BoxScore {
-    pub playerByGameStats: PlayerByGameStats,
-}
-
-#[allow(non_snake_case)]
-#[derive(Debug, Deserialize, Serialize)]
 pub struct GameBoxScore {
     pub id: u32,
     pub awayTeam: TeamInfo,
     pub homeTeam: TeamInfo,
 
-    pub boxscore: BoxScore,
+    pub playerByGameStats: PlayerByGameStats,
 }
