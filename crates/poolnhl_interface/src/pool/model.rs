@@ -36,6 +36,23 @@ impl PartialEq<DynastieSettings> for DynastieSettings {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SkaterSettings {
+    pub points_per_goals: u8,
+    pub points_per_assists: u8,
+    pub points_per_hattricks: u8,
+    pub points_per_shootout_goals: u8,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct GoaliesSettings {
+    pub points_per_wins: u8,
+    pub points_per_shutouts: u8,
+    pub points_per_overtimes: u8,
+    pub points_per_goals: u8,
+    pub points_per_assists: u8,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PoolSettings {
     pub assistants: Vec<String>, // Participants that are allowed to make some pool modifications.
     // Roster configuration.
@@ -48,24 +65,9 @@ pub struct PoolSettings {
     pub number_worst_goalies_to_ignore: u8,
     pub roster_modification_date: Vec<String>, // Date where reservist can be traded.
 
-    // Forwards points configuration.
-    pub forward_pts_goals: u8,
-    pub forward_pts_assists: u8,
-    pub forward_pts_hattricks: u8,
-    pub forward_pts_shootout_goals: u8,
-
-    // Defenders points configuration.
-    pub defender_pts_goals: u8,
-    pub defender_pts_assists: u8,
-    pub defender_pts_hattricks: u8,
-    pub defender_pts_shootout_goals: u8,
-
-    // Goalies points configuration.
-    pub goalies_pts_wins: u8,
-    pub goalies_pts_shutouts: u8,
-    pub goalies_pts_overtimes: u8,
-    pub goalies_pts_goals: u8,
-    pub goalies_pts_assists: u8,
+    pub forwards_settings: SkaterSettings,
+    pub defense_settings: SkaterSettings,
+    pub goalies_settings: GoaliesSettings,
 
     pub can_trade: bool, // Tell if trades are activated.
 
@@ -84,19 +86,25 @@ impl PoolSettings {
             number_worst_defenders_to_ignore: 0,
             number_worst_goalies_to_ignore: 0,
             roster_modification_date: Vec::new(),
-            forward_pts_goals: 2,
-            forward_pts_assists: 1,
-            forward_pts_hattricks: 3,
-            forward_pts_shootout_goals: 1,
-            defender_pts_goals: 3,
-            defender_pts_assists: 2,
-            defender_pts_hattricks: 2,
-            defender_pts_shootout_goals: 1,
-            goalies_pts_wins: 2,
-            goalies_pts_shutouts: 3,
-            goalies_pts_goals: 3,
-            goalies_pts_assists: 2,
-            goalies_pts_overtimes: 1,
+            forwards_settings: SkaterSettings {
+                points_per_goals: 2,
+                points_per_assists: 1,
+                points_per_hattricks: 3,
+                points_per_shootout_goals: 1,
+            },
+            defense_settings: SkaterSettings {
+                points_per_goals: 3,
+                points_per_assists: 2,
+                points_per_hattricks: 2,
+                points_per_shootout_goals: 1,
+            },
+            goalies_settings: GoaliesSettings {
+                points_per_wins: 2,
+                points_per_shutouts: 3,
+                points_per_goals: 3,
+                points_per_assists: 2,
+                points_per_overtimes: 1,
+            },
             can_trade: false,
             dynastie_settings: None,
         }
@@ -1660,54 +1668,21 @@ impl DailyRosterPoints {
         // Forwards
         for (_, skater_points) in &self.roster.F {
             if let Some(skater_points) = skater_points {
-                total_points += skater_points.G as u16 * pool_settings.forward_pts_goals as u16
-                    + skater_points.A as u16 * pool_settings.forward_pts_assists as u16;
-
-                if let Some(shootout_goal) = skater_points.SOG {
-                    total_points +=
-                        shootout_goal as u16 * pool_settings.forward_pts_shootout_goals as u16;
-                }
-
-                if skater_points.G >= 3 {
-                    total_points += pool_settings.forward_pts_hattricks as u16;
-                }
+                total_points += skater_points.get_total_points(&pool_settings.forwards_settings);
             }
         }
 
         // Defenders
         for (_, skater_points) in &self.roster.D {
             if let Some(skater_points) = skater_points {
-                total_points += skater_points.G as u16 * pool_settings.defender_pts_goals as u16
-                    + skater_points.A as u16 * pool_settings.defender_pts_assists as u16;
-
-                if let Some(shootout_goal) = skater_points.SOG {
-                    total_points +=
-                        shootout_goal as u16 * pool_settings.defender_pts_shootout_goals as u16;
-                }
-
-                if skater_points.G >= 3 {
-                    total_points += pool_settings.defender_pts_hattricks as u16;
-                }
+                total_points += skater_points.get_total_points(&pool_settings.defense_settings);
             }
         }
 
         // Goalies
         for (_, goalie_points) in &self.roster.G {
             if let Some(goalie_points) = goalie_points {
-                total_points += goalie_points.G as u16 * pool_settings.goalies_pts_goals as u16
-                    + goalie_points.A as u16 * pool_settings.goalies_pts_assists as u16;
-
-                if goalie_points.W {
-                    total_points += pool_settings.goalies_pts_wins as u16;
-                }
-
-                if goalie_points.SO {
-                    total_points += pool_settings.goalies_pts_shutouts as u16;
-                }
-
-                if goalie_points.OT {
-                    total_points += pool_settings.goalies_pts_overtimes as u16;
-                }
+                total_points += goalie_points.get_total_points(&pool_settings.goalies_settings);
             }
         }
 
@@ -1730,6 +1705,25 @@ pub struct SkaterPoints {
     pub SOG: Option<u8>,
 }
 
+impl SkaterPoints {
+    pub fn get_total_points(&self, skater_settings: &SkaterSettings) -> u16 {
+        let mut total_points = 0;
+
+        total_points += self.G as u16 * skater_settings.points_per_goals as u16
+            + self.A as u16 * skater_settings.points_per_assists as u16;
+
+        if let Some(shootout_goal) = self.SOG {
+            total_points += shootout_goal as u16 * skater_settings.points_per_goals as u16;
+        }
+
+        if self.G >= 3 {
+            total_points += skater_settings.points_per_hattricks as u16;
+        }
+
+        total_points
+    }
+}
+
 #[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct GoalyPoints {
@@ -1738,6 +1732,28 @@ pub struct GoalyPoints {
     pub W: bool,
     pub SO: bool,
     pub OT: bool,
+}
+
+impl GoalyPoints {
+    pub fn get_total_points(&self, goalies_settings: &GoaliesSettings) -> u16 {
+        let mut total_points = 0;
+        total_points += self.G as u16 * goalies_settings.points_per_goals as u16
+            + self.A as u16 * goalies_settings.points_per_assists as u16;
+
+        if self.W {
+            total_points += goalies_settings.points_per_wins as u16;
+        }
+
+        if self.SO {
+            total_points += goalies_settings.points_per_shutouts as u16;
+        }
+
+        if self.OT {
+            total_points += goalies_settings.points_per_overtimes as u16;
+        }
+
+        total_points
+    }
 }
 
 #[allow(non_snake_case)]
