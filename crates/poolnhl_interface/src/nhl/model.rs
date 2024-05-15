@@ -103,11 +103,20 @@ pub struct Linescore {
 
 #[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize)]
+pub struct PeriodShots {
+    pub periodDescriptor: PeriodDescriptor,
+    pub away: u32,
+    pub home: u32,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GameSummary {
     pub linescore: Linescore,
     pub scoring: Vec<PeriodScoring>,
     pub shootout: Vec<ShootoutInfo>,
     pub teamGameStats: Vec<TeamGameStats>,
+    pub shotsByPeriod: Vec<PeriodShots>,
 }
 
 #[allow(non_snake_case)]
