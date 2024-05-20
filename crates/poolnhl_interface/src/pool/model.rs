@@ -22,6 +22,14 @@ pub struct ProjectedPoolShort {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct PlayerTypeSettings {
+    // Other pool configuration
+    pub forwards: u8,
+    pub defense: u8,
+    pub goalies: u8,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DynastieSettings {
     // Other pool configuration
     pub next_season_number_players_protected: u8,
@@ -53,17 +61,26 @@ pub struct GoaliesSettings {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
+pub enum DraftType {
+    Serpentine,
+    Standard,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PoolSettings {
     pub assistants: Vec<String>, // Participants that are allowed to make some pool modifications.
+
+    pub number_poolers: u8,
+    pub draft_type: DraftType,
+
     // Roster configuration.
     pub number_forwards: u8,
     pub number_defenders: u8,
     pub number_goalies: u8,
     pub number_reservists: u8,
-    pub number_worst_forwards_to_ignore: u8,
-    pub number_worst_defenders_to_ignore: u8,
-    pub number_worst_goalies_to_ignore: u8,
-    pub roster_modification_date: Vec<String>, // Date where reservist can be traded.
+
+    // Date where where roster modification are allowed to everyone.
+    pub roster_modification_date: Vec<String>,
 
     pub forwards_settings: SkaterSettings,
     pub defense_settings: SkaterSettings,
@@ -71,20 +88,20 @@ pub struct PoolSettings {
 
     pub can_trade: bool, // Tell if trades are activated.
 
+    pub ignore_x_worst_players: Option<PlayerTypeSettings>,
     pub dynastie_settings: Option<DynastieSettings>,
 }
 
 impl PoolSettings {
     pub fn new() -> Self {
         Self {
+            number_poolers: 6,
+            draft_type: DraftType::Serpentine,
             assistants: Vec::new(),
             number_forwards: 9,
             number_defenders: 4,
             number_goalies: 2,
             number_reservists: 2,
-            number_worst_forwards_to_ignore: 0,
-            number_worst_defenders_to_ignore: 0,
-            number_worst_goalies_to_ignore: 0,
             roster_modification_date: Vec::new(),
             forwards_settings: SkaterSettings {
                 points_per_goals: 2,
@@ -106,6 +123,7 @@ impl PoolSettings {
                 points_per_overtimes: 1,
             },
             can_trade: false,
+            ignore_x_worst_players: None,
             dynastie_settings: None,
         }
     }
@@ -115,7 +133,6 @@ impl PoolSettings {
 pub struct Pool {
     pub name: String, // the name of the pool.
     pub owner: String,
-    pub number_poolers: u8, // the number of participants in the pool.
 
     pub participants: Option<Vec<String>>, // The ID of each participants.
 
@@ -138,13 +155,12 @@ pub struct Pool {
 }
 
 impl Pool {
-    pub fn new(pool_name: &str, owner: &str, nuber_poolers: u8) -> Self {
+    pub fn new(pool_name: &str, owner: &str, pool_settings: &PoolSettings) -> Self {
         Self {
             name: pool_name.to_string(),
             owner: owner.to_string(),
-            number_poolers: nuber_poolers,
             participants: None,
-            settings: PoolSettings::new(),
+            settings: pool_settings.clone(),
             status: PoolState::Created,
             final_rank: None,
             nb_player_drafted: 0,
@@ -859,7 +875,7 @@ impl Pool {
         self.validate_pool_status(&PoolState::Created)?;
         self.has_owner_privileges(user_id)?;
 
-        if self.number_poolers as usize != participants.len() {
+        if self.settings.number_poolers as usize != participants.len() {
             return Err(AppError::CustomError {
                 msg: "The number of participants is not good.".to_string(),
             });
@@ -1839,7 +1855,7 @@ pub enum TradeStatus {
 #[derive(Debug, Deserialize, Clone)]
 pub struct PoolCreationRequest {
     pub pool_name: String,
-    pub number_pooler: u8,
+    pub settings: PoolSettings,
 }
 
 // payload to sent when deleting a pool.
