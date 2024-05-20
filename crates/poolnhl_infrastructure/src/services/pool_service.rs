@@ -183,7 +183,7 @@ impl PoolService for MongoPoolService {
         }
 
         // Create the default Pool class.
-        let pool = Pool::new(&req.pool_name, user_id, req.number_pooler);
+        let pool = Pool::new(&req.pool_name, user_id, &req.settings);
 
         collection
             .insert_one(&pool, None)
@@ -491,7 +491,6 @@ impl PoolService for MongoPoolService {
             let dynastie_pool = Pool {
                 name: pool.name + "(2)",
                 owner: pool.owner,
-                number_poolers: pool.number_poolers,
                 participants: pool.participants,
                 settings: pool.settings,
                 status: PoolState::Dynastie,
