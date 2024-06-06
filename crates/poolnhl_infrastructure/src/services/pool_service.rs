@@ -221,7 +221,6 @@ impl PoolService for MongoPoolService {
         let updated_fields = doc! {
             "$set": doc!{
                 "trades": to_bson(&pool.trades).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "nb_trade": pool.nb_trade + 1
             }
         };
 
@@ -507,7 +506,6 @@ impl PoolService for MongoPoolService {
             status: PoolState::Dynastie,
             final_rank: pool.final_rank.clone(),
             nb_player_drafted: 0,
-            nb_trade: 0,
             trades: None,
             context: Some(PoolContext {
                 pooler_roster: pool_context.pooler_roster.clone(),
