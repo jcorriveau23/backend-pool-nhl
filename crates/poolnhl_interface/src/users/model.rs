@@ -29,7 +29,7 @@ pub struct WalletLoginRegisterRequest {
     pub addr: String,
     pub sig: String,
 }
-
+#[allow(non_snake_case)]
 // payload to register or login with a facebook account.
 #[derive(Deserialize)]
 pub struct SocialLoginRequest {

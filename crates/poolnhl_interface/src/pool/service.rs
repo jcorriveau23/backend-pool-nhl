@@ -4,9 +4,10 @@ use async_trait::async_trait;
 
 use crate::errors::Result;
 use crate::pool::model::{
-    AddPlayerRequest, CreateTradeRequest, DeleteTradeRequest, FillSpotRequest, MarkAsFinalRequest,
-    ModifyRosterRequest, Pool, PoolCreationRequest, PoolDeletionRequest, ProjectedPoolShort,
-    ProtectPlayersRequest, RemovePlayerRequest, RespondTradeRequest, UpdatePoolSettingsRequest,
+    AddPlayerRequest, CreateTradeRequest, DeleteTradeRequest, FillSpotRequest,
+    GenerateDynastieRequest, MarkAsFinalRequest, ModifyRosterRequest, Pool, PoolCreationRequest,
+    PoolDeletionRequest, ProjectedPoolShort, ProtectPlayersRequest, RemovePlayerRequest,
+    RespondTradeRequest, UpdatePoolSettingsRequest,
 };
 
 #[async_trait]
@@ -39,6 +40,7 @@ pub trait PoolService {
     // Dynastie call
     async fn protect_players(&self, user_id: &str, req: ProtectPlayersRequest) -> Result<Pool>;
     async fn mark_as_final(&self, user_id: &str, req: MarkAsFinalRequest) -> Result<Pool>;
+    async fn generate_dynasty(&self, user_id: &str, req: GenerateDynastieRequest) -> Result<Pool>;
 }
 
 pub type PoolServiceHandle = Arc<dyn PoolService + Send + Sync>;

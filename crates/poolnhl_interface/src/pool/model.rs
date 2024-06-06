@@ -8,9 +8,11 @@ use std::{
     fmt,
 };
 // Date for season
+//
 
-pub const START_SEASON_DATE: &str = "2023-10-10";
+pub const START_SEASON_DATE: &str = "2024-10-4";
 pub const END_SEASON_DATE: &str = "2024-04-18";
+pub const POOL_CREATION_SEASON: u32 = 20242025;
 
 pub const TRADE_DEADLINE_DATE: &str = "2024-03-08";
 
@@ -34,6 +36,8 @@ pub struct DynastieSettings {
     // Other pool configuration
     pub next_season_number_players_protected: u8,
     pub tradable_picks: u8, // numbers of the next season picks participants are able to trade with each other.
+    pub past_season_pool_name: Vec<String>,
+    pub next_season_pool_name: Option<String>,
 }
 
 impl PartialEq<DynastieSettings> for DynastieSettings {
@@ -152,6 +156,7 @@ pub struct Pool {
     pub date_updated: i64,
     pub season_start: String,
     pub season_end: String,
+    pub season: u32, // 20232024
 }
 
 impl Pool {
@@ -170,6 +175,7 @@ impl Pool {
             date_updated: 0,
             season_start: START_SEASON_DATE.to_string(),
             season_end: END_SEASON_DATE.to_string(),
+            season: POOL_CREATION_SEASON,
         }
     }
 
@@ -800,7 +806,7 @@ impl Pool {
 
                         // Look if all participants have protected their players
 
-                        for (_, roster) in &context.pooler_roster {
+                        for roster in context.pooler_roster.values() {
                             if roster.chosen_forwards.len()
                                 + roster.chosen_defenders.len()
                                 + roster.chosen_goalies.len()
@@ -831,11 +837,52 @@ impl Pool {
             });
         };
 
+        // Make sure the current date is after the end of the season.
+        let end_season_date = NaiveDate::parse_from_str(&self.season_end, "%Y-%m-%d")
+            .map_err(|e| AppError::ParseError { msg: e.to_string() })?;
+
+        let today = Local::now().date_naive();
+
+        if today <= end_season_date {
+            return Err(AppError::CustomError {
+                msg: "The pool cannot be marked as final before the end of the season.".to_string(),
+            });
+        }
+
         // Get the final ranking of the pool. For dynastie pool, this will be use as draft order for the next season.
         self.final_rank = Some(context.get_final_rank(&self.settings)?);
         self.status = PoolState::Final;
 
         Ok(())
+    }
+
+    pub fn generate_dynasty(&mut self, user_id: &str, new_pool_name: &str) -> Result<(), AppError> {
+        self.has_privileges(user_id)?;
+        self.validate_pool_status(&PoolState::Final)?;
+
+        // Make sure the current date is after the end of the season.
+        let end_season_date = NaiveDate::parse_from_str(&self.season_end, "%Y-%m-%d")
+            .map_err(|e| AppError::ParseError { msg: e.to_string() })?;
+
+        let today = Local::now().date_naive();
+
+        if today <= end_season_date {
+            return Err(AppError::CustomError {
+                msg: "The pool cannot be marked as final before the end of the season.".to_string(),
+            });
+        }
+
+        match &mut self.settings.dynastie_settings {
+            Some(dynastie_settings) => {
+                dynastie_settings.next_season_pool_name = Some(new_pool_name.to_string());
+                Ok(())
+            }
+            None => Err(AppError::CustomError {
+                msg:
+                    "The pool is not of type dynastie it cannot create a dynastie for next season."
+                        .to_string(),
+            }),
+        }
     }
 
     pub fn can_update_in_progress_pool_settings(
@@ -1052,7 +1099,7 @@ pub struct PoolContext {
 }
 
 impl PoolContext {
-    pub fn new(participants: &Vec<String>) -> Self {
+    pub fn new(participants: &[String]) -> Self {
         let mut pooler_roster = HashMap::new();
 
         // Initialize all participants roster object.
@@ -1077,15 +1124,30 @@ impl PoolContext {
             });
         };
 
-        let mut user_total_points: HashMap<String, u16> = HashMap::new();
-        let mut total_points_to_user: HashMap<u16, String> = HashMap::new();
+        // Map the user to its total points, total number of games
+        // and for each player type, a hashmap of the player id with their corresponding total number of points, total number of games.
+        let mut user_total_points: HashMap<
+            String,
+            (
+                u16,                         // Total points.
+                u16,                         // Total number of games.
+                HashMap<String, (u16, u16)>, // Forwards
+                HashMap<String, (u16, u16)>, // Defense
+                HashMap<String, (u16, u16)>, // Goalies
+            ),
+        > = HashMap::new();
 
-        for (date, score_by_day) in score_by_day {
-            for (participant, roster_daily_points) in score_by_day {
+        for (date, daily_roster_points) in score_by_day {
+            for (participant, roster_daily_points) in daily_roster_points {
+                // Initialize the participant with 0 points and 0 games and no players.
                 if !user_total_points.contains_key(participant) {
-                    user_total_points.insert(participant.clone(), 0);
+                    user_total_points.insert(
+                        participant.clone(),
+                        (0, 0, HashMap::new(), HashMap::new(), HashMap::new()),
+                    );
                 }
 
+                // Return an error if at least one day have not been cumulated yet.
                 if !roster_daily_points.is_cumulated {
                     return Err(AppError::CustomError {
                         msg: format!(
@@ -1094,28 +1156,127 @@ impl PoolContext {
                     });
                 }
 
-                if let Some(tot) = user_total_points.get_mut(participant) {
-                    *tot += roster_daily_points.get_total_points(pool_settings);
+                if let Some((
+                    total_points,
+                    number_of_games,
+                    forwards_points,
+                    defenders_points,
+                    goalies_points,
+                )) = user_total_points.get_mut(participant)
+                {
+                    let (daily_points, daily_games) = roster_daily_points.get_total_points(
+                        pool_settings,
+                        forwards_points,
+                        defenders_points,
+                        goalies_points,
+                    );
+
+                    *total_points += daily_points;
+                    *number_of_games += daily_games;
                 }
             }
         }
 
-        for (participant, total_points) in &user_total_points {
-            total_points_to_user.insert(*total_points, participant.clone());
+        // TODO: needs to consider the settings that ignore the X worst players of each position.
+        // Convert the HashMap into a Vec of tuples
+        if let Some(ignore_x_worst_players) = &pool_settings.ignore_x_worst_players {
+            for (
+                total_points,
+                total_number_of_games,
+                forwards_points,
+                defenders_points,
+                goalies_points,
+            ) in user_total_points.values_mut()
+            {
+                // Find the x worst forwards that points should be ignored.
+                let mut forwards_vec: Vec<(&String, &(u16, u16))> =
+                    forwards_points.iter().collect();
+
+                // Sort the vector by total points in ascending order
+                forwards_vec.sort_by(|a, b| a.1 .0.cmp(&b.1 .0).then_with(|| a.1 .1.cmp(&b.1 .1)));
+
+                // Take the first x elements
+                let least_points_players = forwards_vec
+                    .iter()
+                    .take(ignore_x_worst_players.forwards as usize);
+
+                // Print the players with the least total points
+                for (player_id, (points, number_of_games)) in least_points_players {
+                    println!(
+                        "Forwards {}: Total Points = {}, Total Games = {}",
+                        player_id, points, number_of_games
+                    );
+                    *total_points -= points;
+                    *total_number_of_games -= number_of_games;
+                }
+
+                // Find the x worst defenders that points should be ignored.
+                let mut defenders_vec: Vec<(&String, &(u16, u16))> =
+                    defenders_points.iter().collect();
+
+                // Sort the vector by total points in ascending order
+                defenders_vec.sort_by(|a, b| a.1 .0.cmp(&b.1 .0).then_with(|| a.1 .1.cmp(&b.1 .1)));
+
+                // Take the first x elements
+                let least_points_players = defenders_vec
+                    .iter()
+                    .take(ignore_x_worst_players.defense as usize);
+
+                // Print the players with the least total points
+                for (player_id, (points, number_of_games)) in least_points_players {
+                    println!(
+                        "Defense {}: Total Points = {}, Total Games = {}",
+                        player_id, points, number_of_games
+                    );
+                    *total_points -= points;
+                    *total_number_of_games -= number_of_games;
+                }
+
+                // Find the x worst goalies that points should be ignored.
+                let mut goalies_vec: Vec<(&String, &(u16, u16))> = goalies_points.iter().collect();
+
+                // Sort the vector by total points in ascending order
+                goalies_vec.sort_by(|a, b| a.1 .0.cmp(&b.1 .0).then_with(|| a.1 .1.cmp(&b.1 .1)));
+
+                // Take the first x elements
+                let least_points_players = goalies_vec
+                    .iter()
+                    .take(ignore_x_worst_players.goalies as usize);
+
+                // Print the players with the least total points
+                for (player_id, (points, number_of_games)) in least_points_players {
+                    println!(
+                        "Goalies {}: Total Points = {}, Total Games = {}",
+                        player_id, points, number_of_games
+                    );
+                    *total_points -= points;
+                    *total_number_of_games -= number_of_games;
+                }
+            }
         }
 
-        // With the full season cumulated, we can determine what is the final rank for this pool.
-        let mut final_rank = Vec::new();
-        let mut total_points: Vec<u16> = user_total_points.into_values().collect();
-
-        // TODO: needs to consider the settings that ignore the X worst players of each position.
-
+        let mut user_points_vec: Vec<(
+            &String,
+            &(
+                u16,
+                u16,
+                HashMap<String, (u16, u16)>,
+                HashMap<String, (u16, u16)>,
+                HashMap<String, (u16, u16)>,
+            ),
+        )> = user_total_points.iter().collect();
         // Sort the total points vector. And fill the final_rank list with it.
-        total_points.sort();
-        total_points.reverse();
 
-        for points in total_points {
-            final_rank.push(total_points_to_user[&points].clone())
+        // Sort the vector by total points and then by total games in descending order
+        user_points_vec.sort_by(|a, b| {
+            b.1 .0
+                .cmp(&a.1 .0) // Compare total points
+                .then_with(|| a.1 .1.cmp(&b.1 .1)) // If points are equal, compare total games (The pooler with less games wins)
+        });
+
+        let mut final_rank = Vec::new();
+        for participant in user_points_vec {
+            final_rank.push(participant.0.clone())
         }
 
         Ok(final_rank)
@@ -1177,7 +1338,7 @@ impl PoolContext {
 
         let mut is_done = true;
 
-        for (participant, _) in &self.pooler_roster {
+        for participant in self.pooler_roster.keys() {
             if self.get_roster_count(participant)?
                 < (settings.number_forwards
                     + settings.number_defenders
@@ -1199,7 +1360,7 @@ impl PoolContext {
                 for _pick_round in 0..dynastie_settings.tradable_picks {
                     let mut round = HashMap::new();
 
-                    for (participant, _) in &self.pooler_roster {
+                    for participant in self.pooler_roster.keys() {
                         round.insert(participant.clone(), participant.clone());
                     }
 
@@ -1222,7 +1383,7 @@ impl PoolContext {
     ) -> Result<bool, AppError> {
         // First, validate that the player selected is not already picked by any of the other poolers.
 
-        for (_, roster) in &self.pooler_roster {
+        for roster in self.pooler_roster.values() {
             if roster.validate_player_possession(player.id) {
                 return Err(AppError::CustomError {
                     msg: "This player is already picked.".to_string(),
@@ -1314,7 +1475,7 @@ impl PoolContext {
         // Draft the right player in normal mode.
         // Taking only into account the draft order
 
-        for (_, roster) in &self.pooler_roster {
+        for roster in self.pooler_roster.values() {
             if roster.validate_player_possession(player.id) {
                 return Err(AppError::CustomError {
                     msg: "This player is already picked.".to_string(),
@@ -1678,31 +1839,64 @@ pub struct DailyRosterPoints {
 }
 
 impl DailyRosterPoints {
-    pub fn get_total_points(&self, pool_settings: &PoolSettings) -> u16 {
+    pub fn get_total_points(
+        &self,
+        pool_settings: &PoolSettings,
+        forwards_points: &mut HashMap<String, (u16, u16)>,
+        defenders_points: &mut HashMap<String, (u16, u16)>,
+        goalies_points: &mut HashMap<String, (u16, u16)>,
+    ) -> (u16, u16) {
         let mut total_points = 0;
+        let mut number_of_games = 0;
 
         // Forwards
-        for (_, skater_points) in &self.roster.F {
+        for (player_id, skater_points) in &self.roster.F {
             if let Some(skater_points) = skater_points {
-                total_points += skater_points.get_total_points(&pool_settings.forwards_settings);
+                let daily_points = skater_points.get_total_points(&pool_settings.forwards_settings);
+                total_points += daily_points;
+                number_of_games += 1;
+                if let Some((points, number_of_games)) = forwards_points.get_mut(player_id) {
+                    *points += daily_points;
+                    *number_of_games += 1;
+                } else {
+                    forwards_points.insert(player_id.clone(), (daily_points, 1));
+                }
             }
         }
 
         // Defenders
-        for (_, skater_points) in &self.roster.D {
+        for (player_id, skater_points) in &self.roster.D {
             if let Some(skater_points) = skater_points {
-                total_points += skater_points.get_total_points(&pool_settings.defense_settings);
+                let daily_points = skater_points.get_total_points(&pool_settings.defense_settings);
+                total_points += daily_points;
+                number_of_games += 1;
+
+                if let Some((points, number_of_games)) = defenders_points.get_mut(player_id) {
+                    *points += daily_points;
+                    *number_of_games += 1;
+                } else {
+                    defenders_points.insert(player_id.clone(), (daily_points, 1));
+                }
             }
         }
 
         // Goalies
-        for (_, goalie_points) in &self.roster.G {
+        for (player_id, goalie_points) in &self.roster.G {
             if let Some(goalie_points) = goalie_points {
-                total_points += goalie_points.get_total_points(&pool_settings.goalies_settings);
+                let daily_points = goalie_points.get_total_points(&pool_settings.goalies_settings);
+                total_points += daily_points;
+                number_of_games += 1;
+
+                if let Some((points, number_of_games)) = goalies_points.get_mut(player_id) {
+                    *points += daily_points;
+                    *number_of_games += 1;
+                } else {
+                    goalies_points.insert(player_id.clone(), (daily_points, 1));
+                }
             }
         }
 
-        return total_points;
+        (total_points, number_of_games)
     }
 }
 #[allow(non_snake_case)]
@@ -1729,7 +1923,7 @@ impl SkaterPoints {
             + self.A as u16 * skater_settings.points_per_assists as u16;
 
         if let Some(shootout_goal) = self.SOG {
-            total_points += shootout_goal as u16 * skater_settings.points_per_goals as u16;
+            total_points += shootout_goal as u16 * skater_settings.points_per_shootout_goals as u16;
         }
 
         if self.G >= 3 {
@@ -1943,4 +2137,11 @@ pub struct UpdatePoolSettingsRequest {
 #[derive(Debug, Deserialize, Clone)]
 pub struct MarkAsFinalRequest {
     pub pool_name: String,
+}
+
+// payload to sent when generating a new season for a dynastie type of pool.
+#[derive(Debug, Deserialize, Clone)]
+pub struct GenerateDynastieRequest {
+    pub pool_name: String,
+    pub new_pool_name: String,
 }

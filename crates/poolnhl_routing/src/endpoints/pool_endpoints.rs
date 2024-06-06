@@ -6,9 +6,10 @@ use poolnhl_infrastructure::services::ServiceRegistry;
 use poolnhl_interface::draft::model::UserToken;
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::pool::model::{
-    AddPlayerRequest, CreateTradeRequest, DeleteTradeRequest, FillSpotRequest, MarkAsFinalRequest,
-    ModifyRosterRequest, Pool, PoolCreationRequest, PoolDeletionRequest, ProjectedPoolShort,
-    ProtectPlayersRequest, RemovePlayerRequest, RespondTradeRequest, UpdatePoolSettingsRequest,
+    AddPlayerRequest, CreateTradeRequest, DeleteTradeRequest, FillSpotRequest,
+    GenerateDynastieRequest, MarkAsFinalRequest, ModifyRosterRequest, Pool, PoolCreationRequest,
+    PoolDeletionRequest, ProjectedPoolShort, ProtectPlayersRequest, RemovePlayerRequest,
+    RespondTradeRequest, UpdatePoolSettingsRequest,
 };
 use poolnhl_interface::pool::service::PoolServiceHandle;
 
@@ -35,6 +36,7 @@ impl PoolRouter {
             .route("/modify-roster", post(Self::modify_roster))
             .route("/update-pool-settings", post(Self::update_pool_settings))
             .route("/mark-as-final", post(Self::mark_as_final))
+            .route("/generate-dynasty", post(Self::generate_dynasty))
             .with_state(service_registry)
     }
 
@@ -165,5 +167,15 @@ impl PoolRouter {
         Json(body): Json<MarkAsFinalRequest>,
     ) -> Result<Json<Pool>> {
         pool_service.mark_as_final(&token._id, body).await.map(Json)
+    }
+    async fn generate_dynasty(
+        token: UserToken,
+        State(pool_service): State<PoolServiceHandle>,
+        Json(body): Json<GenerateDynastieRequest>,
+    ) -> Result<Json<Pool>> {
+        pool_service
+            .generate_dynasty(&token._id, body)
+            .await
+            .map(Json)
     }
 }

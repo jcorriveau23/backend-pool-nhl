@@ -174,7 +174,7 @@ impl UsersService for MongoUsersService {
         self.get_raw_user_by_name(name).await.map(UserData::from)
     }
 
-    async fn get_users_by_ids(&self, ids: &Vec<&str>) -> Result<Vec<UserData>> {
+    async fn get_users_by_ids(&self, ids: &'life1 [&str]) -> Result<Vec<UserData>> {
         // Get the users informations of the list provided.
 
         if ids.is_empty() {

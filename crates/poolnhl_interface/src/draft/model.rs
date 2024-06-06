@@ -1,5 +1,4 @@
-
-use std::collections::{HashMap};
+use std::collections::HashMap;
 use tokio::sync::broadcast;
 
 use serde::{Deserialize, Serialize};
@@ -165,20 +164,20 @@ impl DraftServerInfo {
     pub fn on_ready(&mut self, pool_name: &str, socket_id: &str) {
         if let Some(user) = self.authentificated_sockets.get(socket_id) {
             if let Some(room) = self.rooms.get_mut(pool_name) {
-                room.on_ready(user);
+                let _ = room.on_ready(user);
             }
         }
     }
 }
 
 // A room authentificated users, There users can make some socket commands.
-#[derive(Debug, Serialize, Deserialize, Eq, Hash, Clone)]
+#[derive(Debug, Serialize, Deserialize, Eq, Clone)]
 pub struct RoomUser {
     pub _id: String,
     pub name: String,
     pub is_ready: bool,
 }
-#[derive(Debug, Serialize, Deserialize, Eq, Hash, Clone)]
+#[derive(Debug, Serialize, Deserialize, Eq, Clone)]
 pub struct UserToken {
     // The User token information.
     pub _id: String,

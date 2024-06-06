@@ -10,7 +10,9 @@ use mongodb::Collection;
 use poolnhl_interface::errors::AppError;
 
 use poolnhl_interface::errors::Result;
-use poolnhl_interface::pool::model::{PoolContext, PoolState, END_SEASON_DATE};
+use poolnhl_interface::pool::model::{
+    GenerateDynastieRequest, PoolContext, PoolState, END_SEASON_DATE, POOL_CREATION_SEASON,
+};
 use poolnhl_interface::pool::{
     model::{
         AddPlayerRequest, CreateTradeRequest, DeleteTradeRequest, FillSpotRequest,
@@ -171,16 +173,6 @@ impl PoolService for MongoPoolService {
 
     async fn create_pool(&self, user_id: &str, req: PoolCreationRequest) -> Result<Pool> {
         let collection = self.db.collection::<Pool>("pools");
-
-        if self
-            .get_optional_short_pool_by_name(&collection, &req.pool_name)
-            .await?
-            .is_some()
-        {
-            return Err(AppError::CustomError {
-                msg: "pool name already exist.".to_string(),
-            });
-        }
 
         // Create the default Pool class.
         let pool = Pool::new(&req.pool_name, user_id, &req.settings);
@@ -474,42 +466,6 @@ impl PoolService for MongoPoolService {
 
         pool.mark_as_final(user_id)?;
 
-        // If the pool is dynastie type, we need to create a new pool in dynastie status.
-        // With almost everying thing from the last pool save into it.
-        if pool.settings.dynastie_settings.is_some() {
-            let mut pool_context = None;
-            if let Some(context) = pool.context {
-                pool_context = Some(PoolContext {
-                    pooler_roster: context.pooler_roster,
-                    players_name_drafted: Vec::new(),
-                    score_by_day: Some(HashMap::new()),
-                    tradable_picks: Some(Vec::new()),
-                    past_tradable_picks: context.tradable_picks,
-                    players: context.players,
-                });
-            }
-            let dynastie_pool = Pool {
-                name: pool.name + "(2)",
-                owner: pool.owner,
-                participants: pool.participants,
-                settings: pool.settings,
-                status: PoolState::Dynastie,
-                final_rank: pool.final_rank.clone(),
-                nb_player_drafted: 0,
-                nb_trade: 0,
-                trades: None,
-                context: pool_context,
-                date_updated: 0,
-                season_start: START_SEASON_DATE.to_string(),
-                season_end: END_SEASON_DATE.to_string(),
-            };
-
-            collection
-                .insert_one(&dynastie_pool, None)
-                .await
-                .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
-        }
-
         let updated_fields = doc! {
             "$set": doc!{
                 "final_rank": to_bson(&pool.final_rank).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
@@ -519,5 +475,68 @@ impl PoolService for MongoPoolService {
 
         self.update_pool(updated_fields, &collection, &req.pool_name)
             .await
+    }
+
+    async fn generate_dynasty(&self, user_id: &str, req: GenerateDynastieRequest) -> Result<Pool> {
+        let collection = self.db.collection::<Pool>("pools");
+        let mut pool = self.get_pool_by_name(&req.pool_name).await?;
+
+        pool.generate_dynasty(&user_id, &req.new_pool_name)?;
+
+        let mut new_settings = pool.settings.clone();
+        let new_dynasty_settings = new_settings
+            .dynastie_settings
+            .as_mut()
+            .expect("The pool should have dynasty object.");
+
+        // Insert the past pool at the first element of the list.
+        new_dynasty_settings
+            .past_season_pool_name
+            .insert(0, pool.name.clone());
+        new_dynasty_settings.next_season_pool_name = None;
+
+        // If the pool is dynastie type, we need to create a new pool in dynastie status.
+        // With almost everying thing from the last pool save into it.
+
+        let pool_context = &pool.context.expect("The pool should have a pool context.");
+        let new_dynastie_pool = Pool {
+            name: req.new_pool_name,
+            owner: pool.owner,
+            participants: pool.participants,
+            settings: new_settings,
+            status: PoolState::Dynastie,
+            final_rank: pool.final_rank.clone(),
+            nb_player_drafted: 0,
+            nb_trade: 0,
+            trades: None,
+            context: Some(PoolContext {
+                pooler_roster: pool_context.pooler_roster.clone(),
+                players_name_drafted: Vec::new(),
+                score_by_day: Some(HashMap::new()),
+                tradable_picks: Some(Vec::new()),
+                past_tradable_picks: pool_context.tradable_picks.clone(),
+                players: pool_context.players.clone(),
+            }),
+            date_updated: 0,
+            season_start: START_SEASON_DATE.to_string(),
+            season_end: END_SEASON_DATE.to_string(),
+            season: POOL_CREATION_SEASON,
+        };
+
+        collection
+            .insert_one(&new_dynastie_pool, None)
+            .await
+            .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
+
+        let updated_fields = doc! {
+            "$set": doc!{
+                "settings": to_bson(&pool.settings).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+            }
+        };
+        let updated_pool = self
+            .update_pool(updated_fields, &collection, &req.pool_name)
+            .await?;
+
+        return Ok(updated_pool);
     }
 }

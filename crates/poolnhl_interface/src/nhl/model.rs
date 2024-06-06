@@ -1,13 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-#[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Name {
     pub default: String,
 }
 // Game Landing information
 
-#[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TeamInfo {
     pub id: u32,
@@ -40,7 +38,6 @@ pub struct Goal {
     pub assists: Vec<Assist>,
 }
 
-#[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize)]
 pub enum PeriodType {
     REG,
@@ -62,6 +59,7 @@ pub struct PeriodScoring {
     pub goals: Vec<Goal>,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Debug, Deserialize, Serialize)]
 pub enum ShootoutResult {
     save,
@@ -87,7 +85,6 @@ pub struct PeriodScore {
     pub periodDescriptor: PeriodDescriptor,
 }
 
-#[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TotalScore {
     pub away: u32,
@@ -170,7 +167,6 @@ pub struct Game {
     pub clock: Option<TimeRemaining>,
 }
 
-#[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DailyGames {
     pub date: String,
@@ -178,7 +174,6 @@ pub struct DailyGames {
 }
 
 // Box score information
-#[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PlayerName {
     pub default: String,
@@ -223,7 +218,6 @@ pub struct GoalieStats {
     pub toi: String,
 }
 
-#[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TeamBoxScore {
     pub forwards: Vec<SkaterStats>,
