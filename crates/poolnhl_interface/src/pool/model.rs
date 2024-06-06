@@ -21,6 +21,7 @@ pub struct ProjectedPoolShort {
     pub name: String, // the name of the pool.
     pub owner: String,
     pub status: PoolState, // State of the pool.
+    pub season: u32,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -148,7 +149,6 @@ pub struct Pool {
     pub nb_player_drafted: u8,
 
     // Trade information.
-    pub nb_trade: u32,
     pub trades: Option<Vec<Trade>>,
 
     // context of the pool.
@@ -169,7 +169,6 @@ impl Pool {
             status: PoolState::Created,
             final_rank: None,
             nb_player_drafted: 0,
-            nb_trade: 0,
             trades: None,
             context: None,
             date_updated: 0,
@@ -233,7 +232,7 @@ impl Pool {
 
                     trade.date_created = Utc::now().timestamp_millis();
                     trade.status = TradeStatus::NEW;
-                    trade.id = self.nb_trade;
+                    trade.id = trades.len() as u32;
                     trades.push(trade.clone());
                 }
 
@@ -244,11 +243,6 @@ impl Pool {
 
     pub fn delete_trade(&mut self, user_id: &str, trade_id: u32) -> Result<(), AppError> {
         self.validate_pool_status(&PoolState::InProgress)?;
-        if self.nb_trade < trade_id {
-            return Err(AppError::CustomError {
-                msg: "This trade does not exist.".to_string(),
-            });
-        }
 
         // Owner and pool assistant can delete any new trade.
         let priviledge_right =
@@ -298,11 +292,6 @@ impl Pool {
     ) -> Result<(), AppError> {
         self.validate_pool_status(&PoolState::InProgress)?;
 
-        if self.nb_trade < trade_id {
-            return Err(AppError::CustomError {
-                msg: "This trade does not exist.".to_string(),
-            });
-        }
         // Owner and pool assistant can respond any new trade.
         let priviledge_right =
             self.has_owner_rights(user_id) || self.has_assistants_rights(user_id);
