@@ -23,7 +23,7 @@ impl PoolRouter {
                 "/pool/:name/:start_date/:from",
                 get(Self::get_pool_by_name_with_range),
             )
-            .route("/pools", get(Self::get_pools))
+            .route("/pools/:season", get(Self::get_pools))
             .route("/create-pool", post(Self::create_pool))
             .route("/delete-pool", post(Self::delete_pool))
             .route("/add-player", post(Self::add_player))
@@ -59,9 +59,11 @@ impl PoolRouter {
 
     /// get all Pool documents but only part of the information.
     async fn get_pools(
+        Path(season): Path<u32>,
         State(pool_service): State<PoolServiceHandle>,
     ) -> Result<Json<Vec<ProjectedPoolShort>>> {
-        pool_service.list_pools().await.map(Json)
+        print!("{}", season);
+        pool_service.list_pools(season).await.map(Json)
     }
 
     async fn create_pool(

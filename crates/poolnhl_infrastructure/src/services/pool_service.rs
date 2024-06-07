@@ -151,15 +151,17 @@ impl PoolService for MongoPoolService {
         })
     }
 
-    async fn list_pools(&self) -> Result<Vec<ProjectedPoolShort>> {
+    async fn list_pools(&self, season: u32) -> Result<Vec<ProjectedPoolShort>> {
         let collection = self.db.collection::<Pool>("pools");
         let find_option = FindOptions::builder()
-            .projection(doc! {"name": 1, "owner": 1, "status": 1})
+            .projection(doc! {"name": 1, "owner": 1, "status": 1, "season": 1})
             .build();
+
+        let filter = doc! { "season": season };
 
         let cursor = collection
             .clone_with_type::<ProjectedPoolShort>()
-            .find(None, find_option)
+            .find(filter, find_option)
             .await
             .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
 

@@ -20,7 +20,7 @@ pub trait PoolService {
         start_season_date: &str,
         from_date: &str,
     ) -> Result<Pool>;
-    async fn list_pools(&self) -> Result<Vec<ProjectedPoolShort>>;
+    async fn list_pools(&self, season: u32) -> Result<Vec<ProjectedPoolShort>>;
     // Pool creation/deletion calls
     async fn create_pool(&self, user_id: &str, req: PoolCreationRequest) -> Result<Pool>;
     async fn delete_pool(&self, user_id: &str, req: PoolDeletionRequest) -> Result<Pool>;
