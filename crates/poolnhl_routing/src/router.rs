@@ -11,7 +11,6 @@ use crate::endpoints::daily_leaders_endpoints::DailyLeadersRouter;
 use crate::endpoints::draft_endpoints::DraftRouter;
 use crate::endpoints::nhl_endpoints::NhlRouter;
 use crate::endpoints::pool_endpoints::PoolRouter;
-use crate::endpoints::users_endpoints::UsersRouter;
 
 pub struct ApplicationController;
 
@@ -23,7 +22,6 @@ impl ApplicationController {
             .nest(
                 "/api-rust",
                 Router::new()
-                    .merge(UsersRouter::new(service_registry.clone()))
                     .merge(PoolRouter::new(service_registry.clone()))
                     .merge(DraftRouter::new(service_registry.clone()))
                     .merge(DailyLeadersRouter::new(service_registry.clone()))
