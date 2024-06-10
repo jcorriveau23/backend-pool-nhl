@@ -24,10 +24,10 @@ pub struct UserEmailJwtPayload {
     pub email: EmailInfo,
 
     // The timestamp indicating when the JWT will expire.
-    pub exp: String,
+    pub exp: i64,
 
     // The timestamp indicating when the JWT was created.
-    pub iat: String,
+    pub iat: i64,
 
     // The user ID.
     pub sub: String,

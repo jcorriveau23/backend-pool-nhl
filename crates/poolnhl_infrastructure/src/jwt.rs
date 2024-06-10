@@ -63,13 +63,8 @@ where
 
         let token_data = hanko_decode(bearer.token(), &state.jwks_url).await?;
 
-        let exp = token_data
-            .exp
-            .parse::<i64>()
-            .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
-
         // Validate if the token is expired.
-        if exp < Utc::now().timestamp() {
+        if token_data.exp < Utc::now().timestamp() {
             return Err(AppError::AuthError {
                 msg: "The token is expired, please reconnect.".to_string(),
             });
@@ -99,9 +94,6 @@ pub async fn hanko_decode(token: &str, jwks_url: &str) -> Result<UserEmailJwtPay
         .await
         .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
 
-    print!("response Hanko {}", jwks);
-    println!("Token: {}", token);
-    println!("kid: {}", kid);
     let jwk = jwks
         .keys
         .iter()
