@@ -1,3 +1,5 @@
+use std::fmt;
+
 use chrono::Utc;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 
@@ -27,6 +29,18 @@ struct Jwk {
 #[derive(Debug, Deserialize)]
 struct Jwks {
     keys: Vec<Jwk>,
+}
+
+impl fmt::Display for Jwks {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for key in &self.keys {
+            writeln!(f, "kty: {:?}", key.kid)?;
+            writeln!(f, "n: {:?}", key.n)?;
+            writeln!(f, "e: {:?}", key.e)?;
+            writeln!(f, "alg: {:?}", key.alg)?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -81,11 +95,14 @@ pub async fn hanko_decode(token: &str, jwks_url: &str) -> Result<UserEmailJwtPay
         Some(k) => k,
         None => {
             return Err(AppError::JwtError {
-                msg: "Could not recover the k of the header.".to_string(),
+                msg: "Could not recover the kid of the header.".to_string(),
             })
         }
     };
 
+    print!("response Hanko {}", jwks);
+    println!("Token: {}", token);
+    println!("kid: {}", kid);
     let jwk = jwks
         .keys
         .iter()
