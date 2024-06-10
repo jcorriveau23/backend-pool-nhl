@@ -80,15 +80,6 @@ where
 }
 
 pub async fn hanko_decode(token: &str, jwks_url: &str) -> Result<UserEmailJwtPayload, AppError> {
-    let response = reqwest::get(jwks_url.to_string())
-        .await
-        .map_err(|e| AppError::ReqwestError { msg: e.to_string() })?;
-
-    let jwks = response
-        .json::<Jwks>()
-        .await
-        .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
-
     let header = decode_header(token).map_err(|e| AppError::JwtError { msg: e.to_string() })?;
 
     let kid = match header.kid {
@@ -99,6 +90,14 @@ pub async fn hanko_decode(token: &str, jwks_url: &str) -> Result<UserEmailJwtPay
             })
         }
     };
+    let response = reqwest::get(jwks_url.to_string())
+        .await
+        .map_err(|e| AppError::ReqwestError { msg: e.to_string() })?;
+
+    let jwks = response
+        .json::<Jwks>()
+        .await
+        .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
 
     print!("response Hanko {}", jwks);
     println!("Token: {}", token);
