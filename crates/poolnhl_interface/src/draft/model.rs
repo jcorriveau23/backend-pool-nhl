@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     errors::AppError,
     pool::model::{Player, Pool, PoolSettings},
+    users::model::UserEmailJwtPayload,
 };
 
 #[derive(Debug)]
@@ -38,8 +39,8 @@ impl RoomState {
     }
 
     // Change the is_ready state of a user and send they updated users informations to the room.
-    pub fn on_ready(&mut self, user: &UserToken) -> Result<(), AppError> {
-        if let Some(room_user) = self.users.get_mut(&user._id) {
+    pub fn on_ready(&mut self, user: &UserEmailJwtPayload) -> Result<(), AppError> {
+        if let Some(room_user) = self.users.get_mut(&user.sub) {
             room_user.is_ready = !room_user.is_ready;
             if let Ok(pool_string) = serde_json::to_string(&CommandResponse::Users {
                 room_users: self.users.clone(),
@@ -62,7 +63,7 @@ pub struct DraftServerInfo {
     // Mapping of pool names to coresponding room informations.
     pub rooms: HashMap<String, RoomState>,
     // Map a socket id to the user information, these users are authentificated..
-    pub authentificated_sockets: HashMap<String, UserToken>,
+    pub authentificated_sockets: HashMap<String, UserEmailJwtPayload>,
 }
 
 impl DraftServerInfo {
@@ -85,7 +86,7 @@ impl DraftServerInfo {
     }
 
     // Add the socket id to the list of authentificated sockets.
-    pub fn add_socket(&mut self, socket_id: &str, user_token: UserToken) {
+    pub fn add_socket(&mut self, socket_id: &str, user_token: UserEmailJwtPayload) {
         if !self.authentificated_sockets.contains_key(socket_id) {
             self.authentificated_sockets
                 .insert(socket_id.to_string(), user_token);
@@ -114,10 +115,10 @@ impl DraftServerInfo {
         // If the user is authentificated
         if let Some(user) = self.authentificated_sockets.get(socket_id) {
             room.users.insert(
-                user._id.clone(),
+                user.sub.clone(),
                 RoomUser {
-                    _id: user._id.clone(),
-                    name: user.name.clone(),
+                    id: user.sub.clone(),
+                    email: user.email.address.clone(),
                     is_ready: false,
                 },
             );
@@ -140,7 +141,7 @@ impl DraftServerInfo {
     pub fn leave_room(&mut self, pool_name: &str, socket_id: &str) {
         if let Some(user) = self.authentificated_sockets.get(socket_id) {
             if let Some(room) = self.rooms.get_mut(pool_name) {
-                room.users.remove(&user._id);
+                room.users.remove(&user.sub);
 
                 // Send the updated users list to the room.
                 // User in the room, will be able to know that
@@ -173,25 +174,14 @@ impl DraftServerInfo {
 // A room authentificated users, There users can make some socket commands.
 #[derive(Debug, Serialize, Deserialize, Eq, Clone)]
 pub struct RoomUser {
-    pub _id: String,
-    pub name: String,
+    pub id: String,
+    pub email: String,
     pub is_ready: bool,
-}
-#[derive(Debug, Serialize, Deserialize, Eq, Clone)]
-pub struct UserToken {
-    // The User token information.
-    pub _id: String,
-    pub name: String,
-}
-impl PartialEq for UserToken {
-    fn eq(&self, other: &Self) -> bool {
-        self._id == other._id
-    }
 }
 
 impl PartialEq for RoomUser {
     fn eq(&self, other: &Self) -> bool {
-        self._id == other._id
+        self.id == other.id
     }
 }
 

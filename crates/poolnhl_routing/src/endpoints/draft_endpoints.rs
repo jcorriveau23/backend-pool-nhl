@@ -6,9 +6,10 @@ use axum::routing::get;
 use axum::Router;
 use futures::{SinkExt, StreamExt};
 use poolnhl_infrastructure::services::ServiceRegistry;
-use poolnhl_interface::draft::model::{Command, UserToken};
+use poolnhl_interface::draft::model::Command;
 use poolnhl_interface::draft::service::DraftServiceHandle;
 use poolnhl_interface::errors::{AppError, Result};
+use poolnhl_interface::users::model::UserEmailJwtPayload;
 
 use std::net::SocketAddr;
 use tokio::sync::{broadcast, mpsc};
@@ -35,7 +36,7 @@ impl DraftRouter {
         State(draft_service): State<DraftServiceHandle>,
         Path(token): Path<String>,
     ) -> impl IntoResponse {
-        let user = draft_service.authentificate_web_socket(&token, addr);
+        let user = draft_service.authentificate_web_socket(&token, addr).await;
         ws.on_upgrade(move |socket| Self::handle_socket(socket, user, addr, draft_service))
     }
 
@@ -70,7 +71,7 @@ impl DraftRouter {
 
     async fn handle_socket(
         mut socket: WebSocket,
-        user: Option<UserToken>,
+        user: Option<UserEmailJwtPayload>,
         addr: SocketAddr,
         draft_service: DraftServiceHandle,
     ) {
@@ -118,7 +119,7 @@ impl DraftRouter {
                                                 // If the pool settings update was a success.
                                                 if let Err(e) = draft_service
                                                     .update_pool_settings(
-                                                        &user._id,
+                                                        &user.sub,
                                                         &current_pool_name,
                                                         &pool_settings,
                                                     )
@@ -135,7 +136,7 @@ impl DraftRouter {
                                         Command::StartDraft => {
                                             if let Some(user) = &user {
                                                 if let Err(e) = draft_service
-                                                    .start_draft(&current_pool_name, &user._id)
+                                                    .start_draft(&current_pool_name, &user.sub)
                                                     .await
                                                 {
                                                     let _ =
@@ -148,7 +149,7 @@ impl DraftRouter {
                                                 if let Err(e) = draft_service
                                                     .draft_player(
                                                         &current_pool_name,
-                                                        &user._id,
+                                                        &user.sub,
                                                         player,
                                                     )
                                                     .await
@@ -163,7 +164,7 @@ impl DraftRouter {
                                                 if let Err(e) = draft_service
                                                     .undo_draft_player(
                                                         &current_pool_name,
-                                                        &user._id,
+                                                        &user.sub,
                                                     )
                                                     .await
                                                 {

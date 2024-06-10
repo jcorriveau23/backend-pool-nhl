@@ -4,10 +4,9 @@ use async_trait::async_trait;
 
 use crate::errors::Result;
 use crate::pool::model::{Player, PoolSettings};
+use crate::users::model::UserEmailJwtPayload;
 use std::net::SocketAddr;
 use tokio::sync::broadcast;
-
-use super::model::UserToken;
 
 #[async_trait]
 pub trait DraftService {
@@ -32,7 +31,11 @@ pub trait DraftService {
     fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr);
 
     // Socket jwt token authentifications (called only on socket connection)
-    fn authentificate_web_socket(&self, token: &str, socket_addr: SocketAddr) -> Option<UserToken>;
+    async fn authentificate_web_socket(
+        &self,
+        token: &str,
+        socket_addr: SocketAddr,
+    ) -> Option<UserEmailJwtPayload>;
 
     // end point that list the active rooms.
     async fn list_rooms(&self) -> Result<Vec<String>>;

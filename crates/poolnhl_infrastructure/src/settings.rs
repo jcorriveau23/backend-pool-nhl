@@ -20,7 +20,7 @@ pub struct Database {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Auth {
-    pub secret: String,
+    pub jwks_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

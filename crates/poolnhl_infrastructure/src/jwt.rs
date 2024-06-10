@@ -1,11 +1,8 @@
-use std::time::{self, SystemTime};
-
 use chrono::Utc;
-use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation};
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 
-use once_cell::sync::Lazy;
-use poolnhl_interface::{draft::model::UserToken, errors::AppError};
-use serde::{Deserialize, Serialize};
+use poolnhl_interface::{errors::AppError, users::model::UserEmailJwtPayload};
+use serde::Deserialize;
 
 use axum::{
     async_trait,
@@ -15,13 +12,25 @@ use axum::{
     RequestPartsExt,
 };
 
-use crate::services::{users_service::User, ServiceRegistry};
+use crate::services::ServiceRegistry;
 
-static VALIDATION: Lazy<Validation> = Lazy::new(Validation::default);
-static HEADER: Lazy<Header> = Lazy::new(Header::default);
+#[derive(Debug, Deserialize)]
+struct Jwk {
+    kty: String,
+    // use: String,
+    kid: String,
+    n: String,
+    e: String,
+    alg: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Jwks {
+    keys: Vec<Jwk>,
+}
 
 #[async_trait]
-impl FromRequestParts<ServiceRegistry> for UserToken
+impl FromRequestParts<ServiceRegistry> for UserEmailJwtPayload
 where
     ServiceRegistry: Send + Sync,
 {
@@ -38,60 +47,60 @@ where
                 msg: err.to_string(),
             })?;
 
-        let token_data = decode(bearer.token(), &state.secret)?;
+        let token_data = hanko_decode(bearer.token(), &state.jwks_url).await?;
+
+        let exp = token_data
+            .exp
+            .parse::<i64>()
+            .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
 
         // Validate if the token is expired.
-        if token_data.claims.exp < Utc::now().timestamp() as usize {
+        if exp < Utc::now().timestamp() {
             return Err(AppError::AuthError {
                 msg: "The token is expired, please reconnect.".to_string(),
             });
         }
 
-        Ok(token_data.claims.user)
+        Ok(token_data)
     }
 }
 
-impl From<&User> for UserToken {
-    fn from(user: &User) -> Self {
-        Self {
-            _id: user._id.to_string(),
-            name: user.name.clone(),
+pub async fn hanko_decode(token: &str, jwks_url: &str) -> Result<UserEmailJwtPayload, AppError> {
+    let response = reqwest::get(jwks_url.to_string())
+        .await
+        .map_err(|e| AppError::ReqwestError { msg: e.to_string() })?;
+
+    let jwks = response
+        .json::<Jwks>()
+        .await
+        .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
+
+    let header = decode_header(token).map_err(|e| AppError::JwtError { msg: e.to_string() })?;
+
+    let kid = match header.kid {
+        Some(k) => k,
+        None => {
+            return Err(AppError::JwtError {
+                msg: "Could not recover the k of the header.".to_string(),
+            })
         }
-    }
-}
+    };
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Claims {
-    pub exp: usize, // Expiration time (as UTC timestamp). validate_exp defaults to true in validation
-    pub iat: usize, // Issued at (as UTC timestamp)
-    pub user: UserToken,
-}
+    let jwk = jwks
+        .keys
+        .iter()
+        .find(|jwk| jwk.kid == kid)
+        .ok_or_else(|| {
+            jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidToken)
+        })
+        .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
 
-impl Claims {
-    pub fn new(user: &User) -> Self {
-        Self {
-            exp: (chrono::Local::now() + chrono::Duration::days(7)).timestamp() as usize,
-            iat: chrono::Local::now().timestamp() as usize,
-            user: UserToken::from(user),
-        }
-    }
-}
+    let decoding_key = DecodingKey::from_rsa_components(&jwk.n, &jwk.e)
+        .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
+    let validation = Validation::new(Algorithm::RS256);
 
-pub fn create(user: &User, secret: &str) -> Result<String, AppError> {
-    let encoding_key = EncodingKey::from_secret(secret.as_bytes());
-    let claims = Claims::new(user);
+    let token_data = decode::<UserEmailJwtPayload>(token, &decoding_key, &validation)
+        .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
 
-    jsonwebtoken::encode(&HEADER, &claims, &encoding_key).map_err(|_| AppError::JwtError {
-        msg: "Could not create the token".to_string(),
-    })
-}
-
-pub fn decode(token: &str, secret: &str) -> Result<TokenData<Claims>, AppError> {
-    let decoding_key = DecodingKey::from_secret(secret.as_bytes());
-
-    jsonwebtoken::decode::<Claims>(token, &decoding_key, &VALIDATION).map_err(|_| {
-        AppError::JwtError {
-            msg: "Could not decode the token".to_string(),
-        }
-    })
+    Ok(token_data.claims)
 }

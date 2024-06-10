@@ -5,29 +5,30 @@ use mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, ReturnDocument};
 use mongodb::Collection;
 use poolnhl_interface::draft::service::DraftService;
 use poolnhl_interface::errors::AppError;
+use poolnhl_interface::users::model::UserEmailJwtPayload;
 use std::net::SocketAddr;
 use std::sync::Mutex;
 use tokio::sync::broadcast;
 
-use poolnhl_interface::draft::model::{DraftServerInfo, UserToken};
+use poolnhl_interface::draft::model::DraftServerInfo;
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::pool::model::{Player, Pool, PoolSettings};
 
 use crate::database_connection::DatabaseConnection;
-use crate::jwt::decode;
+use crate::jwt::hanko_decode;
 
 pub struct MongoDraftService {
     db: DatabaseConnection,
-    secret: String,
+    jwks_url: String,
 
     draft_server_info: Mutex<DraftServerInfo>,
 }
 
 impl MongoDraftService {
-    pub fn new(db: DatabaseConnection, secret: String) -> Self {
+    pub fn new(db: DatabaseConnection, jwks_url: String) -> Self {
         Self {
             db,
-            secret,
+            jwks_url,
             draft_server_info: Mutex::new(DraftServerInfo::new()),
         }
     }
@@ -244,14 +245,18 @@ impl DraftService for MongoDraftService {
 
     // Authentificate the token received as inputs.
     // This commands is only being made during the socket initial negociation.
-    fn authentificate_web_socket(&self, token: &str, socket_addr: SocketAddr) -> Option<UserToken> {
-        if let Ok(user) = decode(token, &self.secret) {
+    async fn authentificate_web_socket(
+        &self,
+        token: &str,
+        socket_addr: SocketAddr,
+    ) -> Option<UserEmailJwtPayload> {
+        if let Ok(user) = hanko_decode(token, &self.jwks_url).await {
             let mut draft_server_info = self
                 .draft_server_info
                 .lock()
                 .expect("Could not acquire the mutex");
-            draft_server_info.add_socket(&socket_addr.to_string(), user.claims.user.clone());
-            return Some(user.claims.user);
+            draft_server_info.add_socket(&socket_addr.to_string(), user.clone());
+            return Some(user);
         }
 
         None
