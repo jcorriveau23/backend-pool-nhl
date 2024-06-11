@@ -18,7 +18,7 @@ use draft_service::MongoDraftService;
 use nhl_service::MongoNhlService;
 use pool_service::MongoPoolService;
 
-use crate::settings::Settings;
+use crate::settings::{Auth, Settings};
 
 #[derive(FromRef, Clone)]
 pub struct ServiceRegistry {
@@ -27,17 +27,14 @@ pub struct ServiceRegistry {
     pub draft_service: DraftServiceHandle,
     pub daily_leaders_service: DailyLeadersServiceHandle,
 
-    pub jwks_url: String,
+    pub auth: Auth,
 }
 
 impl ServiceRegistry {
     pub fn new(db: DatabaseConnection, settings: &Settings) -> Self {
         let pool_service = Arc::new(MongoPoolService::new(db.clone()));
         let nhl_service = Arc::new(MongoNhlService::new(db.clone()));
-        let draft_service = Arc::new(MongoDraftService::new(
-            db.clone(),
-            settings.auth.jwks_url.clone(),
-        ));
+        let draft_service = Arc::new(MongoDraftService::new(db.clone(), settings.auth.clone()));
         let daily_leaders_service = Arc::new(MongoDailyLeadersService::new(db));
 
         Self {
@@ -45,7 +42,7 @@ impl ServiceRegistry {
             nhl_service,
             draft_service,
             daily_leaders_service,
-            jwks_url: settings.auth.jwks_url.clone(),
+            auth: settings.auth.clone(),
         }
     }
 }

@@ -15,19 +15,20 @@ use poolnhl_interface::pool::model::{Player, Pool, PoolSettings};
 
 use crate::database_connection::DatabaseConnection;
 use crate::jwt::hanko_token_decode;
+use crate::settings::Auth;
 
 pub struct MongoDraftService {
     db: DatabaseConnection,
-    jwks_url: String,
+    auth: Auth,
 
     draft_server_info: Mutex<DraftServerInfo>,
 }
 
 impl MongoDraftService {
-    pub fn new(db: DatabaseConnection, jwks_url: String) -> Self {
+    pub fn new(db: DatabaseConnection, auth: Auth) -> Self {
         Self {
             db,
-            jwks_url,
+            auth,
             draft_server_info: Mutex::new(DraftServerInfo::new()),
         }
     }
@@ -240,7 +241,9 @@ impl DraftService for MongoDraftService {
         token: &str,
         socket_addr: SocketAddr,
     ) -> Option<UserEmailJwtPayload> {
-        if let Ok(user) = hanko_token_decode(token, &self.jwks_url).await {
+        if let Ok(user) =
+            hanko_token_decode(token, &self.auth.jwks_url, &self.auth.token_audience).await
+        {
             let mut draft_server_info = self.draft_server_info.lock().await;
             draft_server_info.add_socket(&socket_addr.to_string(), user.clone());
             return Some(user);

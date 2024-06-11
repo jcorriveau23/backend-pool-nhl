@@ -61,7 +61,12 @@ where
                 msg: err.to_string(),
             })?;
 
-        let token_data = hanko_token_decode(bearer.token(), &state.jwks_url).await?;
+        let token_data = hanko_token_decode(
+            bearer.token(),
+            &state.auth.jwks_url,
+            &state.auth.token_audience,
+        )
+        .await?;
 
         // Validate if the token is expired.
         if token_data.exp < Utc::now().timestamp() {
@@ -77,6 +82,7 @@ where
 pub async fn hanko_token_decode(
     token: &str,
     jwks_url: &str,
+    token_audience: &str,
 ) -> Result<UserEmailJwtPayload, AppError> {
     async fn fetch_new_jwks(jwks_url: &str) -> Result<Jwks, AppError> {
         // Fetch the latest jwks stored into the Hanko server using the endpoints.
@@ -98,11 +104,17 @@ pub async fn hanko_token_decode(
         Ok(new_jwks)
     }
 
-    fn decode_token(jwk: &Jwk, token: &str) -> Result<UserEmailJwtPayload, AppError> {
+    fn decode_token(
+        jwk: &Jwk,
+        token: &str,
+        token_audience: &str,
+    ) -> Result<UserEmailJwtPayload, AppError> {
         // Decode the string token. using the related jwk. A related jwk is then the token 'kid' match the jwk 'kid'.
         let decoding_key = DecodingKey::from_rsa_components(&jwk.n, &jwk.e)
             .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
-        let validation = Validation::new(Algorithm::RS256);
+
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.set_audience(&[token_audience.to_string()]);
 
         let token_data = decode::<UserEmailJwtPayload>(token, &decoding_key, &validation)
             .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
@@ -172,5 +184,5 @@ pub async fn hanko_token_decode(
     };
 
     // Finally decode the token using the found jwk and the token.
-    decode_token(&jwk, token)
+    decode_token(&jwk, token, token_audience)
 }
