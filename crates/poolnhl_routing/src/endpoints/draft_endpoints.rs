@@ -54,7 +54,7 @@ impl DraftRouter {
                     match command {
                         Command::JoinRoom { pool_name } => {
                             // join the requested room.
-                            let (rx, users) = draft_service.join_room(&pool_name, *addr);
+                            let (rx, users) = draft_service.join_room(&pool_name, *addr).await;
                             let _ = socket.send(Message::Text(users)).await;
 
                             return Ok((rx, pool_name));
@@ -131,7 +131,7 @@ impl DraftRouter {
                                             }
                                         }
                                         Command::OnReady => {
-                                            draft_service.on_ready(&current_pool_name, addr)
+                                            draft_service.on_ready(&current_pool_name, addr).await
                                         }
                                         Command::StartDraft => {
                                             if let Some(user) = &user {

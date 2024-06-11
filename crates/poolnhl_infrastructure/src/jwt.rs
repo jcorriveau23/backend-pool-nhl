@@ -1,4 +1,4 @@
-use std::{fmt, sync::Arc};
+use std::fmt;
 
 use chrono::Utc;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
@@ -6,14 +6,12 @@ use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use once_cell::sync::Lazy;
 use poolnhl_interface::{errors::AppError, users::model::UserEmailJwtPayload};
 use serde::Deserialize;
-use tokio::sync::RwLock;
+use tokio::sync::Mutex;
 
-use axum::{
-    async_trait,
-    extract::{FromRequestParts, TypedHeader},
+use axum::{async_trait, extract::FromRequestParts, http::request::Parts, RequestPartsExt};
+use axum_extra::{
     headers::{authorization::Bearer, Authorization},
-    http::request::Parts,
-    RequestPartsExt,
+    TypedHeader,
 };
 
 use crate::services::ServiceRegistry;
@@ -93,7 +91,8 @@ pub async fn hanko_token_decode(
             .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
 
         // The following 2 lines lock the mutex to re-write it. It needs to be fast since the cached jwks is shared across thread.
-        let mut cache_write = JWKS_CACHE.write().await;
+        let mut cache_write = JWKS_CACHE.lock().await;
+
         *cache_write = Some(new_jwks.clone());
 
         Ok(new_jwks)
@@ -126,12 +125,12 @@ pub async fn hanko_token_decode(
 
     // This static variable is shared across all axum threads.
     // It cached the JWKS hosted on the hanko server so we don't have to query it from hanko everytime.
-    static JWKS_CACHE: Lazy<Arc<RwLock<Option<Jwks>>>> = Lazy::new(|| Arc::new(RwLock::new(None)));
+    static JWKS_CACHE: Lazy<Mutex<Option<Jwks>>> = Lazy::new(|| Mutex::new(None));
     let token_kid = find_token_kid(token)?;
 
-    // Try to get the JWKS from cache. The mutex is being locked for the copy of the object.
+    // Try to get the JWKS from cache. The mutex is being locked for the copy of the object only.
     let cached_jwks = {
-        let cache_read = JWKS_CACHE.read().await;
+        let cache_read = JWKS_CACHE.lock().await;
         cache_read.clone()
     };
 

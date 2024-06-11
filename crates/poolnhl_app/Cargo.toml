@@ -5,9 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-axum = "0.6.18"
 poolnhl_infrastructure = { path = "../poolnhl_infrastructure" }
 poolnhl_routing = { path = "../poolnhl_routing" }
-tokio = { version = "1.29.1", features = ["full"] }
-tower-http = "0.4.1"
+tokio = "1.38.0"
 tracing = "0.1.37"

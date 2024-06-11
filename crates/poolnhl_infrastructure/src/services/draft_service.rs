@@ -7,8 +7,7 @@ use poolnhl_interface::draft::service::DraftService;
 use poolnhl_interface::errors::AppError;
 use poolnhl_interface::users::model::UserEmailJwtPayload;
 use std::net::SocketAddr;
-use std::sync::Mutex;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 
 use poolnhl_interface::draft::model::DraftServerInfo;
 use poolnhl_interface::errors::Result;
@@ -87,10 +86,7 @@ impl MongoDraftService {
             .map_err(|e| AppError::MongoError { msg: e.to_string() })?
         {
             Some(updated_pool) => {
-                let draft_server_info = self
-                    .draft_server_info
-                    .lock()
-                    .expect("Could not acquire the mutex");
+                let draft_server_info = self.draft_server_info.lock().await;
 
                 if let Some(room) = draft_server_info.rooms.get(pool_name) {
                     return room.send_pool_info(updated_pool);
@@ -116,10 +112,7 @@ impl DraftService for MongoDraftService {
 
         // Create a context so the mutex is getting released
         {
-            let draft_server_info = self
-                .draft_server_info
-                .lock()
-                .expect("Could not acquire the mutex");
+            let draft_server_info = self.draft_server_info.lock().await;
 
             // List all users that participate in the pool.
             // These will be added as official pool participants.
@@ -236,10 +229,7 @@ impl DraftService for MongoDraftService {
 
     // List the active room.
     async fn list_rooms(&self) -> Result<Vec<String>> {
-        let draft_server_info = self
-            .draft_server_info
-            .lock()
-            .expect("Could not acquire the mutex");
+        let draft_server_info = self.draft_server_info.lock().await;
         Ok(draft_server_info.list_rooms())
     }
 
@@ -251,10 +241,7 @@ impl DraftService for MongoDraftService {
         socket_addr: SocketAddr,
     ) -> Option<UserEmailJwtPayload> {
         if let Ok(user) = hanko_token_decode(token, &self.jwks_url).await {
-            let mut draft_server_info = self
-                .draft_server_info
-                .lock()
-                .expect("Could not acquire the mutex");
+            let mut draft_server_info = self.draft_server_info.lock().await;
             draft_server_info.add_socket(&socket_addr.to_string(), user.clone());
             return Some(user);
         }
@@ -263,33 +250,24 @@ impl DraftService for MongoDraftService {
     }
 
     // JoinRoom command.
-    fn join_room(
+    async fn join_room(
         &self,
         pool_name: &str,
         socket_addr: SocketAddr,
     ) -> (broadcast::Receiver<String>, String) {
-        let mut draft_server_info = self
-            .draft_server_info
-            .lock()
-            .expect("Could not acquire the mutex");
+        let mut draft_server_info = self.draft_server_info.lock().await;
         draft_server_info.join_room(pool_name, &socket_addr.to_string())
     }
 
     // LeaveRoom command.
-    fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr) {
-        let mut draft_server_info = self
-            .draft_server_info
-            .lock()
-            .expect("Could not acquire the mutex");
+    async fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr) {
+        let mut draft_server_info = self.draft_server_info.lock().await;
         draft_server_info.leave_room(pool_name, &socket_addr.to_string())
     }
 
     // OnReady command. This command can only be made when the pool is into CREATED status.
-    fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr) {
-        let mut draft_server_info = self
-            .draft_server_info
-            .lock()
-            .expect("Could not acquire the mutex");
+    async fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr) {
+        let mut draft_server_info = self.draft_server_info.lock().await;
         draft_server_info.on_ready(pool_name, &socket_addr.to_string())
     }
 }

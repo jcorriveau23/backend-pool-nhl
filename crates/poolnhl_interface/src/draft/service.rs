@@ -22,13 +22,13 @@ pub trait DraftService {
     ) -> Result<()>;
 
     // Socket Room commands:
-    fn join_room(
+    async fn join_room(
         &self,
         pool_name: &str,
         socket_addr: SocketAddr,
     ) -> (broadcast::Receiver<String>, String);
-    fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr);
-    fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr);
+    async fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr);
+    async fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr);
 
     // Socket jwt token authentifications (called only on socket connection)
     async fn authentificate_web_socket(
