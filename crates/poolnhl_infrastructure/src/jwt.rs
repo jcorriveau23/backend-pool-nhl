@@ -1,10 +1,12 @@
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use chrono::Utc;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 
+use once_cell::sync::Lazy;
 use poolnhl_interface::{errors::AppError, users::model::UserEmailJwtPayload};
 use serde::Deserialize;
+use tokio::sync::RwLock;
 
 use axum::{
     async_trait,
@@ -16,17 +18,16 @@ use axum::{
 
 use crate::services::ServiceRegistry;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct Jwk {
     kty: String,
-    // use: String,
     kid: String,
     n: String,
     e: String,
     alg: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct Jwks {
     keys: Vec<Jwk>,
 }
@@ -34,7 +35,8 @@ struct Jwks {
 impl fmt::Display for Jwks {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for key in &self.keys {
-            writeln!(f, "kty: {:?}", key.kid)?;
+            writeln!(f, "kty: {:?}", key.kty)?;
+            writeln!(f, "kid: {:?}", key.kid)?;
             writeln!(f, "n: {:?}", key.n)?;
             writeln!(f, "e: {:?}", key.e)?;
             writeln!(f, "alg: {:?}", key.alg)?;
@@ -61,7 +63,7 @@ where
                 msg: err.to_string(),
             })?;
 
-        let token_data = hanko_decode(bearer.token(), &state.jwks_url).await?;
+        let token_data = hanko_token_decode(bearer.token(), &state.jwks_url).await?;
 
         // Validate if the token is expired.
         if token_data.exp < Utc::now().timestamp() {
@@ -74,41 +76,102 @@ where
     }
 }
 
-pub async fn hanko_decode(token: &str, jwks_url: &str) -> Result<UserEmailJwtPayload, AppError> {
-    let header = decode_header(token).map_err(|e| AppError::JwtError { msg: e.to_string() })?;
+pub async fn hanko_token_decode(
+    token: &str,
+    jwks_url: &str,
+) -> Result<UserEmailJwtPayload, AppError> {
+    async fn fetch_new_jwks(jwks_url: &str) -> Result<Jwks, AppError> {
+        // Fetch the latest jwks stored into the Hanko server using the endpoints.
+        // This is called when we discovered the jwks kid does not exist in the cache variable.
+        // The key rotation is not that often so this function should not be called a lot.
+        let response = reqwest::get(jwks_url)
+            .await
+            .map_err(|e| AppError::ReqwestError { msg: e.to_string() })?;
+        let new_jwks = response
+            .json::<Jwks>()
+            .await
+            .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
 
-    let kid = match header.kid {
-        Some(k) => k,
+        // The following 2 lines lock the mutex to re-write it. It needs to be fast since the cached jwks is shared across thread.
+        let mut cache_write = JWKS_CACHE.write().await;
+        *cache_write = Some(new_jwks.clone());
+
+        Ok(new_jwks)
+    }
+
+    fn decode_token(jwk: &Jwk, token: &str) -> Result<UserEmailJwtPayload, AppError> {
+        // Decode the string token. using the related jwk. A related jwk is then the token 'kid' match the jwk 'kid'.
+        let decoding_key = DecodingKey::from_rsa_components(&jwk.n, &jwk.e)
+            .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
+        let validation = Validation::new(Algorithm::RS256);
+
+        let token_data = decode::<UserEmailJwtPayload>(token, &decoding_key, &validation)
+            .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
+
+        Ok(token_data.claims)
+    }
+
+    fn find_token_kid(token: &str) -> Result<String, AppError> {
+        // Find the User token kid value. This kid is compared with the jwks kid to find which key should be used to validate the token.
+        let header = decode_header(token).map_err(|e| AppError::JwtError { msg: e.to_string() })?;
+        match header.kid {
+            Some(kid) => Ok(kid),
+            None => {
+                return Err(AppError::JwtError {
+                    msg: "Could not recover the kid of the header.".to_string(),
+                })
+            }
+        }
+    }
+
+    // This static variable is shared across all axum threads.
+    // It cached the JWKS hosted on the hanko server so we don't have to query it from hanko everytime.
+    static JWKS_CACHE: Lazy<Arc<RwLock<Option<Jwks>>>> = Lazy::new(|| Arc::new(RwLock::new(None)));
+    let token_kid = find_token_kid(token)?;
+
+    // Try to get the JWKS from cache. The mutex is being locked for the copy of the object.
+    let cached_jwks = {
+        let cache_read = JWKS_CACHE.read().await;
+        cache_read.clone()
+    };
+
+    let jwk = match &cached_jwks {
+        Some(cached_jwks) => {
+            let used_jwk = cached_jwks.keys.iter().find(|jwk| jwk.kid == token_kid);
+
+            match used_jwk {
+                Some(jwk) => jwk.clone(),
+                None => {
+                    // This will be trigger when the jwks needs to be updated. The user token present a kid not existing in the list
+                    let new_jwks = fetch_new_jwks(jwks_url).await?;
+
+                    match new_jwks.keys.iter().find(|jwk| jwk.kid == token_kid) {
+                        Some(jwk) => jwk.clone(),
+                        None => {
+                            return Err(AppError::JwtError {
+                                msg: "The kid of the user does not math any of the jwk."
+                                    .to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
         None => {
-            return Err(AppError::JwtError {
-                msg: "Could not recover the kid of the header.".to_string(),
-            })
+            // This will only occured the first time the function is ran. We need to fetch the jwks at least the first time.
+            let new_jwks = fetch_new_jwks(jwks_url).await?;
+
+            match new_jwks.keys.iter().find(|jwk| jwk.kid == token_kid) {
+                Some(jwk) => jwk.clone(),
+                None => {
+                    return Err(AppError::JwtError {
+                        msg: "The kid of the user does not math any of the jwk.".to_string(),
+                    });
+                }
+            }
         }
     };
-    let response = reqwest::get(jwks_url.to_string())
-        .await
-        .map_err(|e| AppError::ReqwestError { msg: e.to_string() })?;
 
-    let jwks = response
-        .json::<Jwks>()
-        .await
-        .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
-
-    let jwk = jwks
-        .keys
-        .iter()
-        .find(|jwk| jwk.kid == kid)
-        .ok_or_else(|| {
-            jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidToken)
-        })
-        .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
-
-    let decoding_key = DecodingKey::from_rsa_components(&jwk.n, &jwk.e)
-        .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
-    let validation = Validation::new(Algorithm::RS256);
-
-    let token_data = decode::<UserEmailJwtPayload>(token, &decoding_key, &validation)
-        .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
-
-    Ok(token_data.claims)
+    // Finally decode the token using the found jwk and the token.
+    decode_token(&jwk, token)
 }

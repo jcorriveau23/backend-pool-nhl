@@ -15,7 +15,7 @@ use poolnhl_interface::errors::Result;
 use poolnhl_interface::pool::model::{Player, Pool, PoolSettings};
 
 use crate::database_connection::DatabaseConnection;
-use crate::jwt::hanko_decode;
+use crate::jwt::hanko_token_decode;
 
 pub struct MongoDraftService {
     db: DatabaseConnection,
@@ -250,7 +250,7 @@ impl DraftService for MongoDraftService {
         token: &str,
         socket_addr: SocketAddr,
     ) -> Option<UserEmailJwtPayload> {
-        if let Ok(user) = hanko_decode(token, &self.jwks_url).await {
+        if let Ok(user) = hanko_token_decode(token, &self.jwks_url).await {
             let mut draft_server_info = self
                 .draft_server_info
                 .lock()
