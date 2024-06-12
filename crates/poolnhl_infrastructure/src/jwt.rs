@@ -3,10 +3,9 @@ use std::fmt;
 use chrono::Utc;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 
-use once_cell::sync::Lazy;
 use poolnhl_interface::{errors::AppError, users::model::UserEmailJwtPayload};
 use serde::Deserialize;
-use tokio::sync::Mutex;
+use std::sync::RwLock;
 
 use axum::{async_trait, extract::FromRequestParts, http::request::Parts, RequestPartsExt};
 use axum_extra::{
@@ -14,7 +13,7 @@ use axum_extra::{
     TypedHeader,
 };
 
-use crate::services::ServiceRegistry;
+use crate::{services::ServiceRegistry, settings::Auth};
 
 #[derive(Debug, Deserialize, Clone)]
 struct Jwk {
@@ -28,6 +27,68 @@ struct Jwk {
 #[derive(Debug, Deserialize, Clone)]
 struct Jwks {
     keys: Vec<Jwk>,
+}
+
+pub struct CachedJwks {
+    jwks: RwLock<Jwks>,
+    pub auth_info: Auth,
+}
+
+async fn fetch_new_jwks(jwks_url: &str) -> Result<Jwks, AppError> {
+    // Fetch the latest jwks stored into the Hanko server using the endpoints.
+    // This is called when we discovered the jwks kid does not exist in the cache variable.
+    // The key rotation is not that often so this function should not be called a lot.
+    let response = reqwest::get(jwks_url)
+        .await
+        .map_err(|e| AppError::ReqwestError { msg: e.to_string() })?;
+
+    let new_jwks = response
+        .json::<Jwks>()
+        .await
+        .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
+
+    Ok(new_jwks)
+}
+
+impl CachedJwks {
+    pub async fn new(auth_info: &Auth) -> Result<Self, AppError> {
+        // On the cached creation first fetch the JSON web key sets.
+        let jwks = fetch_new_jwks(&auth_info.jwks_url).await?;
+
+        Ok(CachedJwks {
+            jwks: RwLock::new(jwks),
+            auth_info: auth_info.clone(),
+        })
+    }
+
+    async fn update_jwks(&self) -> Result<(), AppError> {
+        let new_jwks = fetch_new_jwks(&self.auth_info.jwks_url).await?;
+
+        // The following 2 lines lock the mutex to update its value.
+        // It needs to be fast since the cached jwks is shared across thread.
+        let mut jwks_write_lock = self
+            .jwks
+            .write()
+            .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
+
+        *jwks_write_lock = new_jwks;
+        Ok(())
+    }
+
+    fn get_matching_key(&self, token_kid: &str) -> Result<Option<Jwk>, AppError> {
+        // Copy the matching key. Since this is stored in a mutex,
+        // we create a copy to avoid locking the value for to long.
+        let jwks_read_lock = self
+            .jwks
+            .read()
+            .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
+
+        Ok(jwks_read_lock
+            .keys
+            .iter()
+            .find(|jwk| jwk.kid == token_kid)
+            .cloned())
+    }
 }
 
 impl fmt::Display for Jwks {
@@ -61,12 +122,7 @@ where
                 msg: err.to_string(),
             })?;
 
-        let token_data = hanko_token_decode(
-            bearer.token(),
-            &state.auth.jwks_url,
-            &state.auth.token_audience,
-        )
-        .await?;
+        let token_data = hanko_token_decode(bearer.token(), &state.cached_keys).await?;
 
         // Validate if the token is expired.
         if token_data.exp < Utc::now().timestamp() {
@@ -81,29 +137,8 @@ where
 
 pub async fn hanko_token_decode(
     token: &str,
-    jwks_url: &str,
-    token_audience: &str,
+    cached_jwk: &CachedJwks,
 ) -> Result<UserEmailJwtPayload, AppError> {
-    async fn fetch_new_jwks(jwks_url: &str) -> Result<Jwks, AppError> {
-        // Fetch the latest jwks stored into the Hanko server using the endpoints.
-        // This is called when we discovered the jwks kid does not exist in the cache variable.
-        // The key rotation is not that often so this function should not be called a lot.
-        let response = reqwest::get(jwks_url)
-            .await
-            .map_err(|e| AppError::ReqwestError { msg: e.to_string() })?;
-        let new_jwks = response
-            .json::<Jwks>()
-            .await
-            .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
-
-        // The following 2 lines lock the mutex to re-write it. It needs to be fast since the cached jwks is shared across thread.
-        let mut cache_write = JWKS_CACHE.lock().await;
-
-        *cache_write = Some(new_jwks.clone());
-
-        Ok(new_jwks)
-    }
-
     fn decode_token(
         jwk: &Jwk,
         token: &str,
@@ -114,7 +149,7 @@ pub async fn hanko_token_decode(
             .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
 
         let mut validation = Validation::new(Algorithm::RS256);
-        validation.set_audience(&[token_audience.to_string()]);
+        validation.set_audience(&[token_audience]);
 
         let token_data = decode::<UserEmailJwtPayload>(token, &decoding_key, &validation)
             .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
@@ -135,54 +170,23 @@ pub async fn hanko_token_decode(
         }
     }
 
-    // This static variable is shared across all axum threads.
-    // It cached the JWKS hosted on the hanko server so we don't have to query it from hanko everytime.
-    static JWKS_CACHE: Lazy<Mutex<Option<Jwks>>> = Lazy::new(|| Mutex::new(None));
     let token_kid = find_token_kid(token)?;
 
-    // Try to get the JWKS from cache. The mutex is being locked for the copy of the object only.
-    let cached_jwks = {
-        let cache_read = JWKS_CACHE.lock().await;
-        cache_read.clone()
-    };
-
-    let jwk = match &cached_jwks {
-        Some(cached_jwks) => {
-            let used_jwk = cached_jwks.keys.iter().find(|jwk| jwk.kid == token_kid);
-
-            match used_jwk {
-                Some(jwk) => jwk.clone(),
-                None => {
-                    // This will be trigger when the jwks needs to be updated. The user token present a kid not existing in the list
-                    let new_jwks = fetch_new_jwks(jwks_url).await?;
-
-                    match new_jwks.keys.iter().find(|jwk| jwk.kid == token_kid) {
-                        Some(jwk) => jwk.clone(),
-                        None => {
-                            return Err(AppError::JwtError {
-                                msg: "The kid of the user does not math any of the jwk."
-                                    .to_string(),
-                            });
-                        }
-                    }
+    match cached_jwk.get_matching_key(&token_kid) {
+        Ok(jwk) => match jwk {
+            Some(jwk) => decode_token(&jwk, token, &cached_jwk.auth_info.token_audience),
+            None => {
+                // If no matching jwk found, we need to update the jkws by querying hanko.
+                // This is due to key rotation, should not happen often.
+                cached_jwk.update_jwks().await?;
+                match cached_jwk.get_matching_key(&token_kid)? {
+                    Some(jwk) => decode_token(&jwk, token, &cached_jwk.auth_info.token_audience),
+                    None => Err(AppError::NonMatchingKid {
+                        msg: format!("No json web token found with kid {}", token_kid),
+                    }),
                 }
             }
-        }
-        None => {
-            // This will only occured the first time the function is ran. We need to fetch the jwks at least the first time.
-            let new_jwks = fetch_new_jwks(jwks_url).await?;
-
-            match new_jwks.keys.iter().find(|jwk| jwk.kid == token_kid) {
-                Some(jwk) => jwk.clone(),
-                None => {
-                    return Err(AppError::JwtError {
-                        msg: "The kid of the user does not math any of the jwk.".to_string(),
-                    });
-                }
-            }
-        }
-    };
-
-    // Finally decode the token using the found jwk and the token.
-    decode_token(&jwk, token, token_audience)
+        },
+        Err(err) => Err(err),
+    }
 }

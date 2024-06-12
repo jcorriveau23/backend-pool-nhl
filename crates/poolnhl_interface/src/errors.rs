@@ -16,6 +16,8 @@ pub enum AppError {
     JwtError { msg: String },
     ObjectIdError { msg: String },
     ReqwestError { msg: String },
+    NonMatchingKid { msg: String },
+    RwLockError { msg: String },
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;
@@ -26,7 +28,7 @@ impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             AppError::CustomError { msg } => write!(f, "Custom Error: '{}'", msg),
-            AppError::AuthError { msg } => write!(f, "Authentification Error: '{}'", msg),
+            AppError::AuthError { msg } => write!(f, "Authentication Error: '{}'", msg),
             AppError::MongoError { msg } => write!(f, "MongoDB Error: '{}'", msg),
             AppError::ParseError { msg } => write!(f, "Parse Error: '{}'", msg),
             AppError::BcryptError { msg } => write!(f, "Bcrypt Error: '{}'", msg),
@@ -36,6 +38,8 @@ impl fmt::Display for AppError {
             AppError::JwtError { msg } => write!(f, "Jwt Decoding Error: '{}'", msg),
             AppError::ObjectIdError { msg } => write!(f, "string to object ID Error: '{}'", msg),
             AppError::ReqwestError { msg } => write!(f, "Reqwest Error: '{}'", msg),
+            AppError::NonMatchingKid { msg } => write!(f, "Non matching kid Error: '{}'", msg),
+            AppError::RwLockError { msg } => write!(f, "Mutex locking error '{}'", msg),
         }
     }
 }

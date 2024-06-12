@@ -54,7 +54,7 @@ impl DraftRouter {
                     match command {
                         Command::JoinRoom { pool_name } => {
                             // join the requested room.
-                            let (rx, users) = draft_service.join_room(&pool_name, *addr).await;
+                            let (rx, users) = draft_service.join_room(&pool_name, *addr).await?;
                             let _ = socket.send(Message::Text(users)).await;
 
                             return Ok((rx, pool_name));
@@ -131,7 +131,12 @@ impl DraftRouter {
                                             }
                                         }
                                         Command::OnReady => {
-                                            draft_service.on_ready(&current_pool_name, addr).await
+                                            if let Err(e) = draft_service
+                                                .on_ready(&current_pool_name, addr)
+                                                .await
+                                            {
+                                                let _ = send_task_sender.send(e.to_string()).await;
+                                            }
                                         }
                                         Command::StartDraft => {
                                             if let Some(user) = &user {
@@ -208,7 +213,7 @@ impl DraftRouter {
                 };
 
                 // Make sure that if we lose the socket communication we force the user to leave the room.
-                draft_service.leave_room(&current_pool_name, addr);
+                let _ = draft_service.leave_room(&current_pool_name, addr);
             }
         }
     }

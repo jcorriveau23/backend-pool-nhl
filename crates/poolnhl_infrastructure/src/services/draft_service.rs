@@ -7,29 +7,29 @@ use poolnhl_interface::draft::service::DraftService;
 use poolnhl_interface::errors::AppError;
 use poolnhl_interface::users::model::UserEmailJwtPayload;
 use std::net::SocketAddr;
-use tokio::sync::{broadcast, Mutex};
+use std::sync::{Arc, RwLock};
+use tokio::sync::broadcast;
 
 use poolnhl_interface::draft::model::DraftServerInfo;
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::pool::model::{Player, Pool, PoolSettings};
 
 use crate::database_connection::DatabaseConnection;
-use crate::jwt::hanko_token_decode;
-use crate::settings::Auth;
+use crate::jwt::{hanko_token_decode, CachedJwks};
 
 pub struct MongoDraftService {
     db: DatabaseConnection,
-    auth: Auth,
 
-    draft_server_info: Mutex<DraftServerInfo>,
+    draft_server_info: RwLock<DraftServerInfo>,
+    cached_jwks: Arc<CachedJwks>,
 }
 
 impl MongoDraftService {
-    pub fn new(db: DatabaseConnection, auth: Auth) -> Self {
+    pub fn new(db: DatabaseConnection, cached_jwks: Arc<CachedJwks>) -> Self {
         Self {
             db,
-            auth,
-            draft_server_info: Mutex::new(DraftServerInfo::new()),
+            cached_jwks: cached_jwks,
+            draft_server_info: RwLock::new(DraftServerInfo::new()),
         }
     }
 
@@ -87,7 +87,10 @@ impl MongoDraftService {
             .map_err(|e| AppError::MongoError { msg: e.to_string() })?
         {
             Some(updated_pool) => {
-                let draft_server_info = self.draft_server_info.lock().await;
+                let draft_server_info = self
+                    .draft_server_info
+                    .read()
+                    .map_err(|e| AppError::RwLockError { msg: e.to_string() })?;
 
                 if let Some(room) = draft_server_info.rooms.get(pool_name) {
                     return room.send_pool_info(updated_pool);
@@ -113,7 +116,10 @@ impl DraftService for MongoDraftService {
 
         // Create a context so the mutex is getting released
         {
-            let draft_server_info = self.draft_server_info.lock().await;
+            let draft_server_info = self
+                .draft_server_info
+                .read()
+                .map_err(|e| AppError::RwLockError { msg: e.to_string() })?;
 
             // List all users that participate in the pool.
             // These will be added as official pool participants.
@@ -230,25 +236,29 @@ impl DraftService for MongoDraftService {
 
     // List the active room.
     async fn list_rooms(&self) -> Result<Vec<String>> {
-        let draft_server_info = self.draft_server_info.lock().await;
+        let draft_server_info = self
+            .draft_server_info
+            .read()
+            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?;
         Ok(draft_server_info.list_rooms())
     }
 
-    // Authentificate the token received as inputs.
+    // Authenticate the token received as inputs.
     // This commands is only being made during the socket initial negociation.
     async fn authenticate_web_socket(
         &self,
         token: &str,
         socket_addr: SocketAddr,
     ) -> Option<UserEmailJwtPayload> {
-        if let Ok(user) =
-            hanko_token_decode(token, &self.auth.jwks_url, &self.auth.token_audience).await
-        {
-            let mut draft_server_info = self.draft_server_info.lock().await;
+        if let Ok(user) = hanko_token_decode(token, &self.cached_jwks).await {
+            let mut draft_server_info = self.draft_server_info.write().expect(
+                "Could not aquire the draft server Mutex to finish web socket authentication.",
+            );
             draft_server_info.add_socket(&socket_addr.to_string(), user.clone());
             return Some(user);
         }
 
+        // The user is not authenticated but still can connect to rooms as read only.
         None
     }
 
@@ -257,20 +267,29 @@ impl DraftService for MongoDraftService {
         &self,
         pool_name: &str,
         socket_addr: SocketAddr,
-    ) -> (broadcast::Receiver<String>, String) {
-        let mut draft_server_info = self.draft_server_info.lock().await;
-        draft_server_info.join_room(pool_name, &socket_addr.to_string())
+    ) -> Result<(broadcast::Receiver<String>, String)> {
+        let mut draft_server_info = self
+            .draft_server_info
+            .write()
+            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?;
+        Ok(draft_server_info.join_room(pool_name, &socket_addr.to_string()))
     }
 
     // LeaveRoom command.
-    async fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr) {
-        let mut draft_server_info = self.draft_server_info.lock().await;
+    async fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr) -> Result<()> {
+        let mut draft_server_info = self
+            .draft_server_info
+            .write()
+            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?;
         draft_server_info.leave_room(pool_name, &socket_addr.to_string())
     }
 
     // OnReady command. This command can only be made when the pool is into CREATED status.
-    async fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr) {
-        let mut draft_server_info = self.draft_server_info.lock().await;
+    async fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr) -> Result<()> {
+        let mut draft_server_info = self
+            .draft_server_info
+            .write()
+            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?;
         draft_server_info.on_ready(pool_name, &socket_addr.to_string())
     }
 }

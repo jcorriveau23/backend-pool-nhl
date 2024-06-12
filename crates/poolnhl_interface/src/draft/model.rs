@@ -138,7 +138,7 @@ impl DraftServerInfo {
     }
 
     // Socket command: Leave the socket room. (1 room per pool)
-    pub fn leave_room(&mut self, pool_name: &str, socket_id: &str) {
+    pub fn leave_room(&mut self, pool_name: &str, socket_id: &str) -> Result<(), AppError> {
         if let Some(user) = self.authenticated_sockets.get(socket_id) {
             if let Some(room) = self.rooms.get_mut(pool_name) {
                 room.users.remove(&user.sub);
@@ -158,16 +158,18 @@ impl DraftServerInfo {
                 }
             }
         }
+        Ok(())
     }
 
     // Socket command: Change the is_ready state to true or false.
     // All users in room needs to be ready to start the draft.
-    pub fn on_ready(&mut self, pool_name: &str, socket_id: &str) {
+    pub fn on_ready(&mut self, pool_name: &str, socket_id: &str) -> Result<(), AppError> {
         if let Some(user) = self.authenticated_sockets.get(socket_id) {
             if let Some(room) = self.rooms.get_mut(pool_name) {
                 let _ = room.on_ready(user);
             }
         }
+        Ok(())
     }
 }
 

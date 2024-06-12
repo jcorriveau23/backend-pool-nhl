@@ -26,11 +26,11 @@ pub trait DraftService {
         &self,
         pool_name: &str,
         socket_addr: SocketAddr,
-    ) -> (broadcast::Receiver<String>, String);
-    async fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr);
-    async fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr);
+    ) -> Result<(broadcast::Receiver<String>, String)>;
+    async fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr) -> Result<()>;
+    async fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr) -> Result<()>;
 
-    // Socket jwt token authentifications (called only on socket connection)
+    // Socket jwt token authentications (called only on socket connection)
     async fn authenticate_web_socket(
         &self,
         token: &str,
