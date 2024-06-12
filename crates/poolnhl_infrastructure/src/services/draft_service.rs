@@ -236,7 +236,7 @@ impl DraftService for MongoDraftService {
 
     // Authentificate the token received as inputs.
     // This commands is only being made during the socket initial negociation.
-    async fn authentificate_web_socket(
+    async fn authenticate_web_socket(
         &self,
         token: &str,
         socket_addr: SocketAddr,

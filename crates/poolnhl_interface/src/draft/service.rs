@@ -31,7 +31,7 @@ pub trait DraftService {
     async fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr);
 
     // Socket jwt token authentifications (called only on socket connection)
-    async fn authentificate_web_socket(
+    async fn authenticate_web_socket(
         &self,
         token: &str,
         socket_addr: SocketAddr,

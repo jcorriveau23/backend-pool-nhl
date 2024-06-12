@@ -62,8 +62,8 @@ impl RoomState {
 pub struct DraftServerInfo {
     // Mapping of pool names to coresponding room informations.
     pub rooms: HashMap<String, RoomState>,
-    // Map a socket id to the user information, these users are authentificated..
-    pub authentificated_sockets: HashMap<String, UserEmailJwtPayload>,
+    // Map a socket id to the user information, these users are authenticated..
+    pub authenticated_sockets: HashMap<String, UserEmailJwtPayload>,
 }
 
 impl DraftServerInfo {
@@ -71,7 +71,7 @@ impl DraftServerInfo {
     pub fn new() -> Self {
         Self {
             rooms: HashMap::new(),
-            authentificated_sockets: HashMap::new(),
+            authenticated_sockets: HashMap::new(),
         }
     }
 
@@ -85,18 +85,18 @@ impl DraftServerInfo {
             .collect::<Vec<String>>()
     }
 
-    // Add the socket id to the list of authentificated sockets.
+    // Add the socket id to the list of authenticated sockets.
     pub fn add_socket(&mut self, socket_id: &str, user_token: UserEmailJwtPayload) {
-        if !self.authentificated_sockets.contains_key(socket_id) {
-            self.authentificated_sockets
+        if !self.authenticated_sockets.contains_key(socket_id) {
+            self.authenticated_sockets
                 .insert(socket_id.to_string(), user_token);
         }
     }
 
-    // Remove the socket id to the list of authentificated sockets.
+    // Remove the socket id to the list of authenticated sockets.
     pub fn remove_socket(&mut self, socket_id: &str) {
-        if !self.authentificated_sockets.contains_key(socket_id) {
-            self.authentificated_sockets.remove(socket_id);
+        if !self.authenticated_sockets.contains_key(socket_id) {
+            self.authenticated_sockets.remove(socket_id);
         }
     }
 
@@ -112,8 +112,8 @@ impl DraftServerInfo {
             .entry(pool_name.to_string())
             .or_insert(RoomState::new(pool_name));
 
-        // If the user is authentificated
-        if let Some(user) = self.authentificated_sockets.get(socket_id) {
+        // If the user is authenticated
+        if let Some(user) = self.authenticated_sockets.get(socket_id) {
             room.users.insert(
                 user.sub.clone(),
                 RoomUser {
@@ -125,8 +125,8 @@ impl DraftServerInfo {
         }
 
         // Send the updated users list to the room using the sender.
-        // return the receiver even to non authentificated users so they the
-        // socket is able to receive update even if the user is not authentificated.
+        // return the receiver even to non authenticated users so they the
+        // socket is able to receive update even if the user is not authenticated.
 
         let users = serde_json::to_string(&CommandResponse::Users {
             room_users: room.users.clone(),
@@ -139,7 +139,7 @@ impl DraftServerInfo {
 
     // Socket command: Leave the socket room. (1 room per pool)
     pub fn leave_room(&mut self, pool_name: &str, socket_id: &str) {
-        if let Some(user) = self.authentificated_sockets.get(socket_id) {
+        if let Some(user) = self.authenticated_sockets.get(socket_id) {
             if let Some(room) = self.rooms.get_mut(pool_name) {
                 room.users.remove(&user.sub);
 
@@ -163,7 +163,7 @@ impl DraftServerInfo {
     // Socket command: Change the is_ready state to true or false.
     // All users in room needs to be ready to start the draft.
     pub fn on_ready(&mut self, pool_name: &str, socket_id: &str) {
-        if let Some(user) = self.authentificated_sockets.get(socket_id) {
+        if let Some(user) = self.authenticated_sockets.get(socket_id) {
             if let Some(room) = self.rooms.get_mut(pool_name) {
                 let _ = room.on_ready(user);
             }
@@ -171,7 +171,7 @@ impl DraftServerInfo {
     }
 }
 
-// A room authentificated users, There users can make some socket commands.
+// A room authenticated users, There users can make some socket commands.
 #[derive(Debug, Serialize, Deserialize, Eq, Clone)]
 pub struct RoomUser {
     pub id: String,
