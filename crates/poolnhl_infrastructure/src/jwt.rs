@@ -89,6 +89,21 @@ impl CachedJwks {
             .find(|jwk| jwk.kid == token_kid)
             .cloned())
     }
+
+    async fn get_matching_key_and_update(&self, token_kid: &str) -> Result<Jwk, AppError> {
+        match self.get_matching_key(token_kid)? {
+            Some(matching_jwk) => Ok(matching_jwk),
+            None => {
+                // If the matching key is not found, it is probably due to the keys being rotated.
+                // We need to query the JWKS back again.
+                self.update_jwks().await?;
+                self.get_matching_key(token_kid)?
+                    .ok_or(AppError::NonMatchingKid {
+                        msg: format!("No json web token found with kid {}", token_kid),
+                    })
+            }
+        }
+    }
 }
 
 impl fmt::Display for Jwks {
@@ -172,21 +187,8 @@ pub async fn hanko_token_decode(
 
     let token_kid = find_token_kid(token)?;
 
-    match cached_jwk.get_matching_key(&token_kid) {
-        Ok(jwk) => match jwk {
-            Some(jwk) => decode_token(&jwk, token, &cached_jwk.auth_info.token_audience),
-            None => {
-                // If no matching jwk found, we need to update the jkws by querying hanko.
-                // This is due to key rotation, should not happen often.
-                cached_jwk.update_jwks().await?;
-                match cached_jwk.get_matching_key(&token_kid)? {
-                    Some(jwk) => decode_token(&jwk, token, &cached_jwk.auth_info.token_audience),
-                    None => Err(AppError::NonMatchingKid {
-                        msg: format!("No json web token found with kid {}", token_kid),
-                    }),
-                }
-            }
-        },
+    match cached_jwk.get_matching_key_and_update(&token_kid).await {
+        Ok(jwk) => decode_token(&jwk, token, &cached_jwk.auth_info.token_audience),
         Err(err) => Err(err),
     }
 }
