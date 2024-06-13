@@ -4,6 +4,8 @@ use axum::extract::{Json, Path, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
+use axum_extra::headers::authorization::Bearer;
+use axum_extra::TypedHeader;
 use futures::{SinkExt, StreamExt};
 use poolnhl_infrastructure::services::ServiceRegistry;
 use poolnhl_interface::draft::model::Command;
@@ -32,13 +34,15 @@ impl DraftRouter {
 
     async fn ws_handler(
         ws: WebSocketUpgrade,
+        TypedHeader(authorization): TypedHeader<Bearer>,
         ConnectInfo(addr): ConnectInfo<SocketAddr>,
         State(draft_service): State<DraftServiceHandle>,
-        Path(token): Path<String>,
     ) -> impl IntoResponse {
         println!("socket {}", addr);
-        println!("token {}", token);
-        let user = draft_service.authenticate_web_socket(&token, addr).await;
+        println!("token {}", authorization.token());
+        let user = draft_service
+            .authenticate_web_socket(&authorization.token(), addr)
+            .await;
         ws.on_upgrade(move |socket| Self::handle_socket(socket, user, addr, draft_service))
     }
 

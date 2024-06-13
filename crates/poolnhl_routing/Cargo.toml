@@ -8,6 +8,7 @@ publish = false
 poolnhl_interface = { path = "../poolnhl_interface" }
 poolnhl_infrastructure = { path = "../poolnhl_infrastructure" }
 axum = { version = "0.7", features = ["ws"] }
+axum-extra = { version = "0.9", features = ["typed-header"] }
 tokio = "1.38"
 tower-http = {version="0.5", features = ["trace"] }
 tracing-subscriber = "0.3"
