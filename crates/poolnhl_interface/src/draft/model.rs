@@ -207,9 +207,7 @@ impl DraftServerInfo {
                     if room.users.is_empty() {
                         rooms.remove(pool_name);
                     }
-                    // Release the lock here to avoid waiting for sending the data back to sockets.
-                    // Send the updated users list to the room.
-                    // User in the room, will be able to know that
+
                     return Ok(room_users);
                 }
                 None => {
@@ -228,6 +226,7 @@ impl DraftServerInfo {
         socket_id: &str,
         user_token: UserEmailJwtPayload,
     ) -> Result<(), AppError> {
+        println!("Add socket: {} {}", socket_id, user_token.email);
         // Add the socket id to the list of authenticated sockets.
         if !self.is_socket_authenticated(socket_id)? {
             self.authenticated_sockets

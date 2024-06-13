@@ -83,6 +83,7 @@ impl DraftRouter {
         match DraftRouter::waiting_join_room_command(&mut socket, &addr, &draft_service).await {
             Err(_) => (), // An error occured during the initial waiting to join room function. Close the socket connection.
             Ok((mut rx, current_pool_name)) => {
+                println!("upgraded socket");
                 // Actual websocket statemachine (one will be spawned per connection)
                 let (mut sender, mut receiver) = socket.split();
 
