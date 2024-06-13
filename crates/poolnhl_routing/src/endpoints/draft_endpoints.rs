@@ -37,6 +37,8 @@ impl DraftRouter {
         Path(token): Path<String>,
     ) -> impl IntoResponse {
         let user = draft_service.authenticate_web_socket(&token, addr).await;
+        println!("socket {}", addr);
+        println!("token {}", token);
         ws.on_upgrade(move |socket| Self::handle_socket(socket, user, addr, draft_service))
     }
 
