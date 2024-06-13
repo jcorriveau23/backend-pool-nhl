@@ -920,8 +920,6 @@ impl Pool {
         participants.shuffle(&mut thread_rng());
         self.participants = Some(participants.clone());
 
-        // TODO: randomize the list of participants so the draft order is random
-
         self.status = PoolState::Draft;
         self.context = Some(PoolContext::new(&participants));
         Ok(())
@@ -1166,7 +1164,6 @@ impl PoolContext {
             }
         }
 
-        // TODO: needs to consider the settings that ignore the X worst players of each position.
         // Convert the HashMap into a Vec of tuples
         if let Some(ignore_x_worst_players) = &pool_settings.ignore_x_worst_players {
             for (

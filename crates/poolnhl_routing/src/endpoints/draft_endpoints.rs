@@ -54,8 +54,10 @@ impl DraftRouter {
                     match command {
                         Command::JoinRoom { pool_name } => {
                             // join the requested room.
-                            let (rx, users) = draft_service.join_room(&pool_name, *addr).await?;
-                            let _ = socket.send(Message::Text(users)).await;
+                            let rx = draft_service.join_room(&pool_name, *addr).await?;
+
+                            // TODO: Make sure this line can be removed..
+                            //let _ = socket.send(Message::Text(users)).await;
 
                             return Ok((rx, pool_name));
                         }

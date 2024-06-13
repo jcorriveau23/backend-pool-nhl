@@ -30,69 +30,61 @@ pub struct MongoPoolService {
     db: DatabaseConnection,
 }
 
+pub async fn get_optional_short_pool_by_name(
+    collection: &Collection<Pool>,
+    _name: &str,
+) -> Result<Option<Pool>> {
+    let find_option = FindOneOptions::builder()
+        .projection(doc! {"context.score_by_day": 0})
+        .build();
+
+    let short_pool = collection
+        .find_one(doc! {"name": &_name}, find_option)
+        .await
+        .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
+
+    Ok(short_pool)
+}
+
+pub async fn update_pool(
+    updated_field: Document,
+    collection: &Collection<Pool>,
+    pool_name: &str,
+) -> Result<Pool> {
+    // Update the fields in the mongoDB pool document.
+    let find_one_and_update_options = FindOneAndUpdateOptions::builder()
+        .return_document(ReturnDocument::After)
+        .projection(doc! {"context.score_by_day": 0})
+        .build();
+
+    collection
+        .find_one_and_update(
+            doc! {"name": pool_name},
+            updated_field,
+            find_one_and_update_options,
+        )
+        .await
+        .map_err(|e| AppError::MongoError { msg: e.to_string() })?
+        .ok_or(AppError::CustomError {
+            msg: format!("no pool found with name '{}'", pool_name),
+        })
+}
+
+pub async fn get_short_pool_by_name(
+    collection: &Collection<Pool>,
+    pool_name: &str,
+) -> Result<Pool> {
+    // Return the pool information without the score_by_day member
+    get_optional_short_pool_by_name(collection, pool_name)
+        .await?
+        .ok_or(AppError::CustomError {
+            msg: format!("no pool found with name '{}'", pool_name),
+        })
+}
+
 impl MongoPoolService {
     pub fn new(db: DatabaseConnection) -> Self {
         Self { db }
-    }
-
-    async fn get_optional_short_pool_by_name(
-        &self,
-        collection: &Collection<Pool>,
-        _name: &str,
-    ) -> Result<Option<Pool>> {
-        let find_option = FindOneOptions::builder()
-            .projection(doc! {"context.score_by_day": 0})
-            .build();
-
-        let short_pool = collection
-            .find_one(doc! {"name": &_name}, find_option)
-            .await
-            .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
-
-        Ok(short_pool)
-    }
-
-    // Return the pool information without the score_by_day member
-    async fn get_short_pool_by_name(
-        &self,
-        collection: &Collection<Pool>,
-        _name: &str,
-    ) -> Result<Pool> {
-        let short_pool = self
-            .get_optional_short_pool_by_name(collection, _name)
-            .await?;
-
-        short_pool.ok_or(AppError::CustomError {
-            msg: format!("no pool found with name '{}'", _name),
-        })
-    }
-
-    async fn update_pool(
-        &self,
-        updated_field: Document,
-        collection: &Collection<Pool>,
-        pool_name: &str,
-    ) -> Result<Pool> {
-        // Update the fields in the mongoDB pool document.
-        let find_one_and_update_options = FindOneAndUpdateOptions::builder()
-            .return_document(ReturnDocument::After)
-            .projection(doc! {"context.score_by_day": 0})
-            .build();
-
-        match collection
-            .find_one_and_update(
-                doc! {"name": pool_name},
-                updated_field,
-                find_one_and_update_options,
-            )
-            .await
-            .map_err(|e| AppError::MongoError { msg: e.to_string() })?
-        {
-            Some(updated_pool) => Ok(updated_pool),
-            None => Err(AppError::CustomError {
-                msg: "The pool could not be updated.".to_string(),
-            }),
-        }
     }
 }
 
@@ -189,9 +181,7 @@ impl PoolService for MongoPoolService {
 
     async fn delete_pool(&self, user_id: &str, req: PoolDeletionRequest) -> Result<Pool> {
         let collection = self.db.collection::<Pool>("pools");
-        let pool = self
-            .get_short_pool_by_name(&collection, &req.pool_name)
-            .await?;
+        let pool = get_short_pool_by_name(&collection, &req.pool_name).await?;
 
         pool.has_owner_privileges(user_id)?;
 
@@ -212,9 +202,7 @@ impl PoolService for MongoPoolService {
     async fn create_trade(&self, user_id: &str, req: &mut CreateTradeRequest) -> Result<Pool> {
         // Create a trade and update the database
         let collection = self.db.collection::<Pool>("pools");
-        let mut pool = self
-            .get_short_pool_by_name(&collection, &req.pool_name)
-            .await?;
+        let mut pool = get_short_pool_by_name(&collection, &req.pool_name).await?;
 
         // Create the new trade in the pool
         pool.create_trade(&mut req.trade, user_id)?;
@@ -226,16 +214,13 @@ impl PoolService for MongoPoolService {
             }
         };
 
-        self.update_pool(updated_fields, &collection, &req.pool_name)
-            .await
+        update_pool(updated_fields, &collection, &req.pool_name).await
     }
 
     async fn delete_trade(&self, user_id: &str, req: DeleteTradeRequest) -> Result<Pool> {
         let collection = self.db.collection::<Pool>("pools");
 
-        let mut pool = self
-            .get_short_pool_by_name(&collection, &req.pool_name)
-            .await?;
+        let mut pool = get_short_pool_by_name(&collection, &req.pool_name).await?;
 
         // Delete the trade
         pool.delete_trade(user_id, req.trade_id)?;
@@ -247,16 +232,13 @@ impl PoolService for MongoPoolService {
             }
         };
 
-        self.update_pool(updated_fields, &collection, &req.pool_name)
-            .await
+        update_pool(updated_fields, &collection, &req.pool_name).await
     }
 
     async fn respond_trade(&self, user_id: &str, req: RespondTradeRequest) -> Result<Pool> {
         let collection = self.db.collection::<Pool>("pools");
 
-        let mut pool = self
-            .get_short_pool_by_name(&collection, &req.pool_name)
-            .await?;
+        let mut pool = get_short_pool_by_name(&collection, &req.pool_name).await?;
 
         // repond the trade
         pool.respond_trade(user_id, req.is_accepted, req.trade_id)?;
@@ -275,16 +257,13 @@ impl PoolService for MongoPoolService {
                     }
                 };
 
-                self.update_pool(updated_fields, &collection, &req.pool_name)
-                    .await
+                update_pool(updated_fields, &collection, &req.pool_name).await
             }
         }
     }
     async fn fill_spot(&self, user_id: &str, req: FillSpotRequest) -> Result<Pool> {
         let collection = self.db.collection::<Pool>("pools");
-        let mut pool = self
-            .get_short_pool_by_name(&collection, &req.pool_name)
-            .await?;
+        let mut pool = get_short_pool_by_name(&collection, &req.pool_name).await?;
 
         // Fill the player into the starting roster.
         pool.fill_spot(user_id, &req.filled_spot_user_id, req.player_id)?;
@@ -303,16 +282,13 @@ impl PoolService for MongoPoolService {
                     }
                 };
 
-                self.update_pool(updated_fields, &collection, &req.pool_name)
-                    .await
+                update_pool(updated_fields, &collection, &req.pool_name).await
             }
         }
     }
     async fn add_player(&self, user_id: &str, req: AddPlayerRequest) -> Result<Pool> {
         let collection = self.db.collection::<Pool>("pools");
-        let mut pool = self
-            .get_short_pool_by_name(&collection, &req.pool_name)
-            .await?;
+        let mut pool = get_short_pool_by_name(&collection, &req.pool_name).await?;
 
         // Add the player into the reservist of a pooler
         pool.add_player(user_id, &req.added_player_user_id, &req.player)?;
@@ -332,17 +308,14 @@ impl PoolService for MongoPoolService {
 
                 // Update the fields in the mongoDB pool document.
 
-                self.update_pool(updated_fields, &collection, &req.pool_name)
-                    .await
+                update_pool(updated_fields, &collection, &req.pool_name).await
             }
         }
     }
 
     async fn remove_player(&self, user_id: &str, req: RemovePlayerRequest) -> Result<Pool> {
         let collection = self.db.collection::<Pool>("pools");
-        let mut pool = self
-            .get_short_pool_by_name(&collection, &req.pool_name)
-            .await?;
+        let mut pool = get_short_pool_by_name(&collection, &req.pool_name).await?;
 
         // Remove the player from the roster.
         pool.remove_player(user_id, &req.removed_player_user_id, req.player_id)?;
@@ -362,8 +335,7 @@ impl PoolService for MongoPoolService {
 
                 // Update the fields in the mongoDB pool document.
 
-                self.update_pool(updated_fields, &collection, &req.pool_name)
-                    .await
+                update_pool(updated_fields, &collection, &req.pool_name).await
             }
         }
     }
@@ -375,9 +347,7 @@ impl PoolService for MongoPoolService {
     ) -> Result<Pool> {
         let collection = self.db.collection::<Pool>("pools");
 
-        let pool = self
-            .get_short_pool_by_name(&collection, &req.pool_name)
-            .await?;
+        let pool = get_short_pool_by_name(&collection, &req.pool_name).await?;
 
         pool.can_update_in_progress_pool_settings(user_id, &req.pool_settings)?;
 
@@ -388,15 +358,12 @@ impl PoolService for MongoPoolService {
             }
         };
 
-        self.update_pool(updated_fields, &collection, &req.pool_name)
-            .await
+        update_pool(updated_fields, &collection, &req.pool_name).await
     }
 
     async fn modify_roster(&self, user_id: &str, req: ModifyRosterRequest) -> Result<Pool> {
         let collection = self.db.collection::<Pool>("pools");
-        let mut pool = self
-            .get_short_pool_by_name(&collection, &req.pool_name)
-            .await?;
+        let mut pool = get_short_pool_by_name(&collection, &req.pool_name).await?;
 
         pool.modify_roster(
             user_id,
@@ -421,17 +388,14 @@ impl PoolService for MongoPoolService {
 
                 // Update the fields in the mongoDB pool document.
 
-                self.update_pool(updated_fields, &collection, &req.pool_name)
-                    .await
+                update_pool(updated_fields, &collection, &req.pool_name).await
             }
         }
     }
 
     async fn protect_players(&self, user_id: &str, req: ProtectPlayersRequest) -> Result<Pool> {
         let collection = self.db.collection::<Pool>("pools");
-        let mut pool = self
-            .get_short_pool_by_name(&collection, &req.pool_name)
-            .await?;
+        let mut pool = get_short_pool_by_name(&collection, &req.pool_name).await?;
 
         pool.protect_players(
             user_id,
@@ -455,8 +419,7 @@ impl PoolService for MongoPoolService {
 
                 // Update the fields in the mongoDB pool document.
 
-                self.update_pool(updated_fields, &collection, &req.pool_name)
-                    .await
+                update_pool(updated_fields, &collection, &req.pool_name).await
             }
         }
     }
@@ -474,8 +437,7 @@ impl PoolService for MongoPoolService {
             }
         };
 
-        self.update_pool(updated_fields, &collection, &req.pool_name)
-            .await
+        update_pool(updated_fields, &collection, &req.pool_name).await
     }
 
     async fn generate_dynasty(&self, user_id: &str, req: GenerateDynastieRequest) -> Result<Pool> {
@@ -533,10 +495,7 @@ impl PoolService for MongoPoolService {
                 "settings": to_bson(&pool.settings).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
             }
         };
-        let updated_pool = self
-            .update_pool(updated_fields, &collection, &req.pool_name)
-            .await?;
 
-        return Ok(updated_pool);
+        update_pool(updated_fields, &collection, &req.pool_name).await
     }
 }
