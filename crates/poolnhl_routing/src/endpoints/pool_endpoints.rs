@@ -3,7 +3,6 @@ use axum::routing::{get, post};
 use axum::Router;
 
 use poolnhl_infrastructure::services::ServiceRegistry;
-use poolnhl_interface::draft::model::UserToken;
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::pool::model::{
     AddPlayerRequest, CreateTradeRequest, DeleteTradeRequest, FillSpotRequest,
@@ -12,6 +11,7 @@ use poolnhl_interface::pool::model::{
     RespondTradeRequest, UpdatePoolSettingsRequest,
 };
 use poolnhl_interface::pool::service::PoolServiceHandle;
+use poolnhl_interface::users::model::UserEmailJwtPayload;
 
 pub struct PoolRouter;
 
@@ -67,116 +67,116 @@ impl PoolRouter {
     }
 
     async fn create_pool(
-        token: UserToken,
+        token: UserEmailJwtPayload,
         State(pool_service): State<PoolServiceHandle>,
         Json(body): Json<PoolCreationRequest>,
     ) -> Result<Json<Pool>> {
-        pool_service.create_pool(&token._id, body).await.map(Json)
+        pool_service.create_pool(&token.sub, body).await.map(Json)
     }
 
     async fn delete_pool(
-        token: UserToken,
+        token: UserEmailJwtPayload,
         State(pool_service): State<PoolServiceHandle>,
         Json(body): Json<PoolDeletionRequest>,
     ) -> Result<Json<Pool>> {
-        pool_service.delete_pool(&token._id, body).await.map(Json)
+        pool_service.delete_pool(&token.sub, body).await.map(Json)
     }
 
     async fn add_player(
-        token: UserToken,
+        token: UserEmailJwtPayload,
         State(pool_service): State<PoolServiceHandle>,
         Json(body): Json<AddPlayerRequest>,
     ) -> Result<Json<Pool>> {
-        pool_service.add_player(&token._id, body).await.map(Json)
+        pool_service.add_player(&token.sub, body).await.map(Json)
     }
 
     async fn remove_player(
-        token: UserToken,
+        token: UserEmailJwtPayload,
         State(pool_service): State<PoolServiceHandle>,
         Json(body): Json<RemovePlayerRequest>,
     ) -> Result<Json<Pool>> {
-        pool_service.remove_player(&token._id, body).await.map(Json)
+        pool_service.remove_player(&token.sub, body).await.map(Json)
     }
 
     async fn create_trade(
-        token: UserToken,
+        token: UserEmailJwtPayload,
         State(pool_service): State<PoolServiceHandle>,
         Json(mut body): Json<CreateTradeRequest>,
     ) -> Result<Json<Pool>> {
         pool_service
-            .create_trade(&token._id, &mut body)
+            .create_trade(&token.sub, &mut body)
             .await
             .map(Json)
     }
 
     async fn delete_trade(
-        token: UserToken,
+        token: UserEmailJwtPayload,
         State(pool_service): State<PoolServiceHandle>,
         Json(body): Json<DeleteTradeRequest>,
     ) -> Result<Json<Pool>> {
-        pool_service.delete_trade(&token._id, body).await.map(Json)
+        pool_service.delete_trade(&token.sub, body).await.map(Json)
     }
 
     async fn respond_trade(
-        token: UserToken,
+        token: UserEmailJwtPayload,
         State(pool_service): State<PoolServiceHandle>,
         Json(body): Json<RespondTradeRequest>,
     ) -> Result<Json<Pool>> {
-        pool_service.respond_trade(&token._id, body).await.map(Json)
+        pool_service.respond_trade(&token.sub, body).await.map(Json)
     }
 
     async fn fill_spot(
-        token: UserToken,
+        token: UserEmailJwtPayload,
         State(pool_service): State<PoolServiceHandle>,
         Json(body): Json<FillSpotRequest>,
     ) -> Result<Json<Pool>> {
-        pool_service.fill_spot(&token._id, body).await.map(Json)
+        pool_service.fill_spot(&token.sub, body).await.map(Json)
     }
 
     async fn protect_players(
-        token: UserToken,
+        token: UserEmailJwtPayload,
         State(pool_service): State<PoolServiceHandle>,
         Json(body): Json<ProtectPlayersRequest>,
     ) -> Result<Json<Pool>> {
         pool_service
-            .protect_players(&token._id, body)
+            .protect_players(&token.sub, body)
             .await
             .map(Json)
     }
 
     async fn modify_roster(
-        token: UserToken,
+        token: UserEmailJwtPayload,
         State(pool_service): State<PoolServiceHandle>,
         Json(body): Json<ModifyRosterRequest>,
     ) -> Result<Json<Pool>> {
-        pool_service.modify_roster(&token._id, body).await.map(Json)
+        pool_service.modify_roster(&token.sub, body).await.map(Json)
     }
 
     async fn update_pool_settings(
-        token: UserToken,
+        token: UserEmailJwtPayload,
         State(pool_service): State<PoolServiceHandle>,
         Json(body): Json<UpdatePoolSettingsRequest>,
     ) -> Result<Json<Pool>> {
         pool_service
-            .update_pool_settings(&token._id, body)
+            .update_pool_settings(&token.sub, body)
             .await
             .map(Json)
     }
 
     async fn mark_as_final(
-        token: UserToken,
+        token: UserEmailJwtPayload,
         State(pool_service): State<PoolServiceHandle>,
         Json(body): Json<MarkAsFinalRequest>,
     ) -> Result<Json<Pool>> {
-        pool_service.mark_as_final(&token._id, body).await.map(Json)
+        pool_service.mark_as_final(&token.sub, body).await.map(Json)
     }
     async fn generate_dynasty(
-        token: UserToken,
+        token: UserEmailJwtPayload,
         State(pool_service): State<PoolServiceHandle>,
         Json(body): Json<GenerateDynastieRequest>,
     ) -> Result<Json<Pool>> {
         pool_service
-            .generate_dynasty(&token._id, body)
+            .generate_dynasty(&token.sub, body)
             .await
             .map(Json)
     }

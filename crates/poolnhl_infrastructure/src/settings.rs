@@ -20,7 +20,11 @@ pub struct Database {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Auth {
-    pub secret: String,
+    // The endpoint hosted by hanko where is stored the JWKS to validate the jwt token.
+    pub jwks_url: String,
+
+    // The token audience to be able to validate the token (i.g., hockeypool.live).
+    pub token_audience: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

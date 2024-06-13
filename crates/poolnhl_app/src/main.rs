@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use poolnhl_infrastructure::{
-    database_connection::DatabaseManager, services::ServiceRegistry, settings::Settings,
+    database_connection::DatabaseManager, jwt::CachedJwks, services::ServiceRegistry,
+    settings::Settings,
 };
 
 use poolnhl_routing::router::ApplicationController;
@@ -16,8 +19,14 @@ async fn main() {
     .await
     .expect("Could not initialize the database");
 
-    // setup the services to be served.
-    let services = ServiceRegistry::new(db, &settings);
+    // query and cached the JSON Web key set fetch from hanko.
+    // This will allow to validate the JWT sent to the application.
+    let cached_jwks = Arc::new(
+        CachedJwks::new(&settings.auth)
+            .await
+            .expect("Was not able to query the JWKS from hanko server."),
+    );
+    let services = ServiceRegistry::new(db, cached_jwks);
 
     // Run the application.
     ApplicationController::run(settings, services).await;

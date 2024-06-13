@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     errors::AppError,
     pool::model::{Player, Pool, PoolSettings},
+    users::model::UserEmailJwtPayload,
 };
 
 #[derive(Debug)]
@@ -38,8 +39,8 @@ impl RoomState {
     }
 
     // Change the is_ready state of a user and send they updated users informations to the room.
-    pub fn on_ready(&mut self, user: &UserToken) -> Result<(), AppError> {
-        if let Some(room_user) = self.users.get_mut(&user._id) {
+    pub fn on_ready(&mut self, user: &UserEmailJwtPayload) -> Result<(), AppError> {
+        if let Some(room_user) = self.users.get_mut(&user.sub) {
             room_user.is_ready = !room_user.is_ready;
             if let Ok(pool_string) = serde_json::to_string(&CommandResponse::Users {
                 room_users: self.users.clone(),
@@ -61,8 +62,8 @@ impl RoomState {
 pub struct DraftServerInfo {
     // Mapping of pool names to coresponding room informations.
     pub rooms: HashMap<String, RoomState>,
-    // Map a socket id to the user information, these users are authentificated..
-    pub authentificated_sockets: HashMap<String, UserToken>,
+    // Map a socket id to the user information, these users are authenticated..
+    pub authenticated_sockets: HashMap<String, UserEmailJwtPayload>,
 }
 
 impl DraftServerInfo {
@@ -70,7 +71,7 @@ impl DraftServerInfo {
     pub fn new() -> Self {
         Self {
             rooms: HashMap::new(),
-            authentificated_sockets: HashMap::new(),
+            authenticated_sockets: HashMap::new(),
         }
     }
 
@@ -84,18 +85,18 @@ impl DraftServerInfo {
             .collect::<Vec<String>>()
     }
 
-    // Add the socket id to the list of authentificated sockets.
-    pub fn add_socket(&mut self, socket_id: &str, user_token: UserToken) {
-        if !self.authentificated_sockets.contains_key(socket_id) {
-            self.authentificated_sockets
+    // Add the socket id to the list of authenticated sockets.
+    pub fn add_socket(&mut self, socket_id: &str, user_token: UserEmailJwtPayload) {
+        if !self.authenticated_sockets.contains_key(socket_id) {
+            self.authenticated_sockets
                 .insert(socket_id.to_string(), user_token);
         }
     }
 
-    // Remove the socket id to the list of authentificated sockets.
+    // Remove the socket id to the list of authenticated sockets.
     pub fn remove_socket(&mut self, socket_id: &str) {
-        if !self.authentificated_sockets.contains_key(socket_id) {
-            self.authentificated_sockets.remove(socket_id);
+        if !self.authenticated_sockets.contains_key(socket_id) {
+            self.authenticated_sockets.remove(socket_id);
         }
     }
 
@@ -111,21 +112,21 @@ impl DraftServerInfo {
             .entry(pool_name.to_string())
             .or_insert(RoomState::new(pool_name));
 
-        // If the user is authentificated
-        if let Some(user) = self.authentificated_sockets.get(socket_id) {
+        // If the user is authenticated
+        if let Some(user) = self.authenticated_sockets.get(socket_id) {
             room.users.insert(
-                user._id.clone(),
+                user.sub.clone(),
                 RoomUser {
-                    _id: user._id.clone(),
-                    name: user.name.clone(),
+                    id: user.sub.clone(),
+                    email: user.email.address.clone(),
                     is_ready: false,
                 },
             );
         }
 
         // Send the updated users list to the room using the sender.
-        // return the receiver even to non authentificated users so they the
-        // socket is able to receive update even if the user is not authentificated.
+        // return the receiver even to non authenticated users so they the
+        // socket is able to receive update even if the user is not authenticated.
 
         let users = serde_json::to_string(&CommandResponse::Users {
             room_users: room.users.clone(),
@@ -137,10 +138,10 @@ impl DraftServerInfo {
     }
 
     // Socket command: Leave the socket room. (1 room per pool)
-    pub fn leave_room(&mut self, pool_name: &str, socket_id: &str) {
-        if let Some(user) = self.authentificated_sockets.get(socket_id) {
+    pub fn leave_room(&mut self, pool_name: &str, socket_id: &str) -> Result<(), AppError> {
+        if let Some(user) = self.authenticated_sockets.get(socket_id) {
             if let Some(room) = self.rooms.get_mut(pool_name) {
-                room.users.remove(&user._id);
+                room.users.remove(&user.sub);
 
                 // Send the updated users list to the room.
                 // User in the room, will be able to know that
@@ -157,41 +158,32 @@ impl DraftServerInfo {
                 }
             }
         }
+        Ok(())
     }
 
     // Socket command: Change the is_ready state to true or false.
     // All users in room needs to be ready to start the draft.
-    pub fn on_ready(&mut self, pool_name: &str, socket_id: &str) {
-        if let Some(user) = self.authentificated_sockets.get(socket_id) {
+    pub fn on_ready(&mut self, pool_name: &str, socket_id: &str) -> Result<(), AppError> {
+        if let Some(user) = self.authenticated_sockets.get(socket_id) {
             if let Some(room) = self.rooms.get_mut(pool_name) {
                 let _ = room.on_ready(user);
             }
         }
+        Ok(())
     }
 }
 
-// A room authentificated users, There users can make some socket commands.
+// A room authenticated users, There users can make some socket commands.
 #[derive(Debug, Serialize, Deserialize, Eq, Clone)]
 pub struct RoomUser {
-    pub _id: String,
-    pub name: String,
+    pub id: String,
+    pub email: String,
     pub is_ready: bool,
-}
-#[derive(Debug, Serialize, Deserialize, Eq, Clone)]
-pub struct UserToken {
-    // The User token information.
-    pub _id: String,
-    pub name: String,
-}
-impl PartialEq for UserToken {
-    fn eq(&self, other: &Self) -> bool {
-        self._id == other._id
-    }
 }
 
 impl PartialEq for RoomUser {
     fn eq(&self, other: &Self) -> bool {
-        self._id == other._id
+        self.id == other.id
     }
 }
 

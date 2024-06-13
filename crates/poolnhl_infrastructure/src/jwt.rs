@@ -1,27 +1,126 @@
-use std::time::{self, SystemTime};
+use std::fmt;
 
 use chrono::Utc;
-use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation};
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 
-use once_cell::sync::Lazy;
-use poolnhl_interface::{draft::model::UserToken, errors::AppError};
-use serde::{Deserialize, Serialize};
+use poolnhl_interface::{errors::AppError, users::model::UserEmailJwtPayload};
+use serde::Deserialize;
+use std::sync::RwLock;
 
-use axum::{
-    async_trait,
-    extract::{FromRequestParts, TypedHeader},
+use axum::{async_trait, extract::FromRequestParts, http::request::Parts, RequestPartsExt};
+use axum_extra::{
     headers::{authorization::Bearer, Authorization},
-    http::request::Parts,
-    RequestPartsExt,
+    TypedHeader,
 };
 
-use crate::services::{users_service::User, ServiceRegistry};
+use crate::{services::ServiceRegistry, settings::Auth};
 
-static VALIDATION: Lazy<Validation> = Lazy::new(Validation::default);
-static HEADER: Lazy<Header> = Lazy::new(Header::default);
+#[derive(Debug, Deserialize, Clone)]
+struct Jwk {
+    kty: String,
+    kid: String,
+    n: String,
+    e: String,
+    alg: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct Jwks {
+    keys: Vec<Jwk>,
+}
+
+pub struct CachedJwks {
+    jwks: RwLock<Jwks>,
+    pub auth_info: Auth,
+}
+
+async fn fetch_new_jwks(jwks_url: &str) -> Result<Jwks, AppError> {
+    // Fetch the latest jwks stored into the Hanko server using the endpoints.
+    // This is called when we discovered the jwks kid does not exist in the cache variable.
+    // The key rotation is not that often so this function should not be called a lot.
+    let response = reqwest::get(jwks_url)
+        .await
+        .map_err(|e| AppError::ReqwestError { msg: e.to_string() })?;
+
+    let new_jwks = response
+        .json::<Jwks>()
+        .await
+        .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
+
+    Ok(new_jwks)
+}
+
+impl CachedJwks {
+    pub async fn new(auth_info: &Auth) -> Result<Self, AppError> {
+        // On the cached creation first fetch the JSON web key sets.
+        let jwks = fetch_new_jwks(&auth_info.jwks_url).await?;
+
+        Ok(CachedJwks {
+            jwks: RwLock::new(jwks),
+            auth_info: auth_info.clone(),
+        })
+    }
+
+    async fn update_jwks(&self) -> Result<(), AppError> {
+        let new_jwks = fetch_new_jwks(&self.auth_info.jwks_url).await?;
+
+        // The following 2 lines lock the mutex to update its value.
+        // It needs to be fast since the cached jwks is shared across thread.
+        let mut jwks_write_lock = self
+            .jwks
+            .write()
+            .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
+
+        *jwks_write_lock = new_jwks;
+        Ok(())
+    }
+
+    fn get_matching_key(&self, token_kid: &str) -> Result<Option<Jwk>, AppError> {
+        // Copy the matching key. Since this is stored in a mutex,
+        // we create a copy to avoid locking the value for to long.
+        let jwks_read_lock = self
+            .jwks
+            .read()
+            .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
+
+        Ok(jwks_read_lock
+            .keys
+            .iter()
+            .find(|jwk| jwk.kid == token_kid)
+            .cloned())
+    }
+
+    async fn get_matching_key_and_update(&self, token_kid: &str) -> Result<Jwk, AppError> {
+        match self.get_matching_key(token_kid)? {
+            Some(matching_jwk) => Ok(matching_jwk),
+            None => {
+                // If the matching key is not found, it is probably due to the keys being rotated.
+                // We need to query the JWKS back again.
+                self.update_jwks().await?;
+                self.get_matching_key(token_kid)?
+                    .ok_or(AppError::NonMatchingKid {
+                        msg: format!("No json web token found with kid {}", token_kid),
+                    })
+            }
+        }
+    }
+}
+
+impl fmt::Display for Jwks {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for key in &self.keys {
+            writeln!(f, "kty: {:?}", key.kty)?;
+            writeln!(f, "kid: {:?}", key.kid)?;
+            writeln!(f, "n: {:?}", key.n)?;
+            writeln!(f, "e: {:?}", key.e)?;
+            writeln!(f, "alg: {:?}", key.alg)?;
+        }
+        Ok(())
+    }
+}
 
 #[async_trait]
-impl FromRequestParts<ServiceRegistry> for UserToken
+impl FromRequestParts<ServiceRegistry> for UserEmailJwtPayload
 where
     ServiceRegistry: Send + Sync,
 {
@@ -38,60 +137,58 @@ where
                 msg: err.to_string(),
             })?;
 
-        let token_data = decode(bearer.token(), &state.secret)?;
+        let token_data = hanko_token_decode(bearer.token(), &state.cached_keys).await?;
 
         // Validate if the token is expired.
-        if token_data.claims.exp < Utc::now().timestamp() as usize {
+        if token_data.exp < Utc::now().timestamp() {
             return Err(AppError::AuthError {
                 msg: "The token is expired, please reconnect.".to_string(),
             });
         }
 
-        Ok(token_data.claims.user)
+        Ok(token_data)
     }
 }
 
-impl From<&User> for UserToken {
-    fn from(user: &User) -> Self {
-        Self {
-            _id: user._id.to_string(),
-            name: user.name.clone(),
+pub async fn hanko_token_decode(
+    token: &str,
+    cached_jwk: &CachedJwks,
+) -> Result<UserEmailJwtPayload, AppError> {
+    fn decode_token(
+        jwk: &Jwk,
+        token: &str,
+        token_audience: &str,
+    ) -> Result<UserEmailJwtPayload, AppError> {
+        // Decode the string token. using the related jwk. A related jwk is then the token 'kid' match the jwk 'kid'.
+        let decoding_key = DecodingKey::from_rsa_components(&jwk.n, &jwk.e)
+            .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
+
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.set_audience(&[token_audience]);
+
+        let token_data = decode::<UserEmailJwtPayload>(token, &decoding_key, &validation)
+            .map_err(|e| AppError::JwtError { msg: e.to_string() })?;
+
+        Ok(token_data.claims)
+    }
+
+    fn find_token_kid(token: &str) -> Result<String, AppError> {
+        // Find the User token kid value. This kid is compared with the jwks kid to find which key should be used to validate the token.
+        let header = decode_header(token).map_err(|e| AppError::JwtError { msg: e.to_string() })?;
+        match header.kid {
+            Some(kid) => Ok(kid),
+            None => {
+                return Err(AppError::JwtError {
+                    msg: "Could not recover the kid of the header.".to_string(),
+                })
+            }
         }
     }
-}
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Claims {
-    pub exp: usize, // Expiration time (as UTC timestamp). validate_exp defaults to true in validation
-    pub iat: usize, // Issued at (as UTC timestamp)
-    pub user: UserToken,
-}
+    let token_kid = find_token_kid(token)?;
 
-impl Claims {
-    pub fn new(user: &User) -> Self {
-        Self {
-            exp: (chrono::Local::now() + chrono::Duration::days(7)).timestamp() as usize,
-            iat: chrono::Local::now().timestamp() as usize,
-            user: UserToken::from(user),
-        }
+    match cached_jwk.get_matching_key_and_update(&token_kid).await {
+        Ok(jwk) => decode_token(&jwk, token, &cached_jwk.auth_info.token_audience),
+        Err(err) => Err(err),
     }
-}
-
-pub fn create(user: &User, secret: &str) -> Result<String, AppError> {
-    let encoding_key = EncodingKey::from_secret(secret.as_bytes());
-    let claims = Claims::new(user);
-
-    jsonwebtoken::encode(&HEADER, &claims, &encoding_key).map_err(|_| AppError::JwtError {
-        msg: "Could not create the token".to_string(),
-    })
-}
-
-pub fn decode(token: &str, secret: &str) -> Result<TokenData<Claims>, AppError> {
-    let decoding_key = DecodingKey::from_secret(secret.as_bytes());
-
-    jsonwebtoken::decode::<Claims>(token, &decoding_key, &VALIDATION).map_err(|_| {
-        AppError::JwtError {
-            msg: "Could not decode the token".to_string(),
-        }
-    })
 }

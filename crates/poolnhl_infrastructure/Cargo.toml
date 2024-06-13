@@ -5,18 +5,16 @@ edition = "2021"
 publish = false
 
 [dependencies]
-async-trait = "0.1.68"
-axum = { version = "0.6.18", features = ["macros", "headers"] }
-config = "0.13.3"
-futures = "0.3.28"
-mongodb = "2.6.0"
-chrono = "0.4.26"
-bcrypt = "0.14.0"
-web3 = "0.18.0"
-hex = "0.4.3"
-jsonwebtoken = "8.3.0"
-once_cell = "1.18.0"
 poolnhl_interface = { path = "../poolnhl_interface" }
-serde = { version = "1.0.164", features = ["derive"] }
-tokio = { version = "1.29.1" }
-reqwest = { version = "0.11"}
+async-trait = "0.1"
+axum = { version = "0.7", features = ["macros"] }
+axum-extra = { version = "0.9", features = ["typed-header"] }
+config = "0.13"
+futures = "0.3"
+mongodb = "2.8"
+chrono = "0.4"
+jsonwebtoken = "9.3"
+once_cell = "1.19"
+serde = { version = "1.0", features = ["derive"] }
+tokio = "1.38"
+reqwest = { version = "0.12", features = ["json"]}
