@@ -1,6 +1,6 @@
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{Json, Path, Query, State, WebSocketUpgrade};
+use axum::extract::{Json, Path, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
@@ -11,7 +11,6 @@ use poolnhl_interface::draft::service::DraftServiceHandle;
 use poolnhl_interface::errors::{AppError, Result};
 use poolnhl_interface::users::model::UserEmailJwtPayload;
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::sync::{broadcast, mpsc};
 
@@ -20,7 +19,7 @@ pub struct DraftRouter;
 impl DraftRouter {
     pub fn new(service_registry: ServiceRegistry) -> Router {
         Router::new()
-            .route("/ws", get(Self::ws_handler))
+            .route("/ws/:jwt", get(Self::ws_handler))
             .route("/rooms", get(Self::get_rooms))
             .with_state(service_registry)
     }
@@ -33,19 +32,13 @@ impl DraftRouter {
 
     async fn ws_handler(
         ws: WebSocketUpgrade,
-        Query(params): Query<HashMap<String, String>>,
+        Path(jwt): Path<String>,
         ConnectInfo(addr): ConnectInfo<SocketAddr>,
         State(draft_service): State<DraftServiceHandle>,
     ) -> impl IntoResponse {
-        let jwt = params.get("token");
         println!("socket {}", addr);
-        let user = match jwt {
-            Some(jwt) => {
-                println!("jwt {}", jwt);
-                draft_service.authenticate_web_socket(&jwt, addr).await
-            }
-            None => None,
-        };
+        println!("jwt {}", &jwt);
+        let user = draft_service.authenticate_web_socket(&jwt, addr).await;
         ws.on_upgrade(move |socket| Self::handle_socket(socket, user, addr, draft_service))
     }
 
