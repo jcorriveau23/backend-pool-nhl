@@ -226,7 +226,6 @@ impl DraftServerInfo {
         socket_id: &str,
         user_token: UserEmailJwtPayload,
     ) -> Result<(), AppError> {
-        println!("Add socket: {} {}", socket_id, user_token.email.address);
         // Add the socket id to the list of authenticated sockets.
         if !self.is_socket_authenticated(socket_id)? {
             self.authenticated_sockets
@@ -301,7 +300,11 @@ impl DraftServerInfo {
         }
     }
 
-    pub fn on_ready(&self, pool_name: &str, socket_id: &str) -> Result<(), AppError> {
+    pub fn on_ready(
+        &self,
+        pool_name: &str,
+        socket_id: &str,
+    ) -> Result<HashMap<String, RoomUser>, AppError> {
         // Socket command: Change the is_ready state to true or false.
         // All users in room needs to be ready to start the draft.
         if let Some(user) = self.get_authenticated_user_with_socket(socket_id)? {
@@ -316,9 +319,12 @@ impl DraftServerInfo {
                 })?;
 
                 room.on_ready(&user.sub);
+                return Ok(room.users.clone());
             }
         }
-        Ok(())
+        Err(AppError::CustomError {
+            msg: "The user is not authenticated".to_string(),
+        })
     }
 }
 

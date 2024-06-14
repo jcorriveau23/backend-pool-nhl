@@ -1,9 +1,13 @@
-use axum::extract::connect_info::ConnectInfo;
-use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{Json, Path, State, WebSocketUpgrade};
-use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::Router;
+use axum::{
+    extract::{
+        connect_info::ConnectInfo,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Json, Path, State,
+    },
+    response::IntoResponse,
+    routing::get,
+    Router,
+};
 use futures::{SinkExt, StreamExt};
 use poolnhl_infrastructure::services::ServiceRegistry;
 use poolnhl_interface::draft::model::Command;
@@ -36,8 +40,6 @@ impl DraftRouter {
         ConnectInfo(addr): ConnectInfo<SocketAddr>,
         State(draft_service): State<DraftServiceHandle>,
     ) -> impl IntoResponse {
-        println!("socket {}", addr);
-        println!("jwt {}", &jwt);
         let user = draft_service.authenticate_web_socket(&jwt, addr).await;
         ws.on_upgrade(move |socket| Self::handle_socket(socket, user, addr, draft_service))
     }
@@ -57,9 +59,6 @@ impl DraftRouter {
                         Command::JoinRoom { pool_name } => {
                             // join the requested room.
                             let rx = draft_service.join_room(&pool_name, *addr).await?;
-
-                            // TODO: Make sure this line can be removed..
-                            //let _ = socket.send(Message::Text(users)).await;
 
                             return Ok((rx, pool_name));
                         }
@@ -85,7 +84,6 @@ impl DraftRouter {
         match DraftRouter::waiting_join_room_command(&mut socket, &addr, &draft_service).await {
             Err(_) => (), // An error occured during the initial waiting to join room function. Close the socket connection.
             Ok((mut rx, current_pool_name)) => {
-                println!("upgraded socket");
                 // Actual websocket statemachine (one will be spawned per connection)
                 let (mut sender, mut receiver) = socket.split();
 

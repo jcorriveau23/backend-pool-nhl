@@ -1188,10 +1188,6 @@ impl PoolContext {
 
                 // Print the players with the least total points
                 for (player_id, (points, number_of_games)) in least_points_players {
-                    println!(
-                        "Forwards {}: Total Points = {}, Total Games = {}",
-                        player_id, points, number_of_games
-                    );
                     *total_points -= points;
                     *total_number_of_games -= number_of_games;
                 }
@@ -1210,10 +1206,6 @@ impl PoolContext {
 
                 // Print the players with the least total points
                 for (player_id, (points, number_of_games)) in least_points_players {
-                    println!(
-                        "Defense {}: Total Points = {}, Total Games = {}",
-                        player_id, points, number_of_games
-                    );
                     *total_points -= points;
                     *total_number_of_games -= number_of_games;
                 }
@@ -1231,10 +1223,6 @@ impl PoolContext {
 
                 // Print the players with the least total points
                 for (player_id, (points, number_of_games)) in least_points_players {
-                    println!(
-                        "Goalies {}: Total Points = {}, Total Games = {}",
-                        player_id, points, number_of_games
-                    );
                     *total_points -= points;
                     *total_number_of_games -= number_of_games;
                 }

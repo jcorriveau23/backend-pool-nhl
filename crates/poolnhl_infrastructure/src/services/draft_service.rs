@@ -226,7 +226,11 @@ impl DraftService for MongoDraftService {
 
     // OnReady command. This command can only be made when the pool is into CREATED status.
     async fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr) -> Result<()> {
-        self.draft_server_info
-            .on_ready(pool_name, &socket_addr.to_string())
+        let room_users = self
+            .draft_server_info
+            .on_ready(pool_name, &socket_addr.to_string())?;
+
+        let tx = self.draft_server_info.get_room_tx(pool_name)?;
+        send_users_info(tx, room_users)
     }
 }
