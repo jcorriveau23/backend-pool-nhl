@@ -33,6 +33,7 @@ impl RoomState {
             user.sub.to_string(),
             RoomUser {
                 id: user.sub.to_string(),
+                name: user.email.address.to_string(),
                 email: Some(user.email.address.to_string()),
                 is_ready: false,
             },
@@ -332,6 +333,7 @@ impl DraftServerInfo {
 #[derive(Debug, Serialize, Deserialize, Eq, Clone)]
 pub struct RoomUser {
     pub id: String,
+    pub name: String,
     pub email: Option<String>,
     pub is_ready: bool,
 }

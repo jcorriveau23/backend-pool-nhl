@@ -68,9 +68,7 @@ impl DraftService for MongoDraftService {
         // These will be added as official pool participants.
         let room_users = self.draft_server_info.get_room_users(pool_name)?;
 
-        // TODO this should be updated related to user refactor.
-        let participant_ids = room_users.iter().map(|user| user.id.to_string()).collect();
-        pool.start_draft(user_id, &participant_ids)?;
+        pool.start_draft(user_id, &room_users)?;
 
         // Update the whole pool information in database.
         let collection = self.db.collection::<Pool>("pools");

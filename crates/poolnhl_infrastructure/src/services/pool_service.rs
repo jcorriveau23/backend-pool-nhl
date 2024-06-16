@@ -11,7 +11,7 @@ use poolnhl_interface::errors::AppError;
 
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::pool::model::{
-    GenerateDynastieRequest, PoolContext, PoolState, END_SEASON_DATE, POOL_CREATION_SEASON,
+    GenerateDynastyRequest, PoolContext, PoolState, END_SEASON_DATE, POOL_CREATION_SEASON,
 };
 use poolnhl_interface::pool::{
     model::{
@@ -432,7 +432,7 @@ impl PoolService for MongoPoolService {
 
         let updated_fields = doc! {
             "$set": doc!{
-                "final_rank": to_bson(&pool.final_rank).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "draft_order": to_bson(&pool.draft_order).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
                 "status":  to_bson(&pool.status).map_err(|e| AppError::MongoError { msg: e.to_string() })?
             }
         };
@@ -440,7 +440,7 @@ impl PoolService for MongoPoolService {
         update_pool(updated_fields, &collection, &req.pool_name).await
     }
 
-    async fn generate_dynasty(&self, user_id: &str, req: GenerateDynastieRequest) -> Result<Pool> {
+    async fn generate_dynasty(&self, user_id: &str, req: GenerateDynastyRequest) -> Result<Pool> {
         let collection = self.db.collection::<Pool>("pools");
         let mut pool = self.get_pool_by_name(&req.pool_name).await?;
 
@@ -448,7 +448,7 @@ impl PoolService for MongoPoolService {
 
         let mut new_settings = pool.settings.clone();
         let new_dynasty_settings = new_settings
-            .dynastie_settings
+            .dynasty_settings
             .as_mut()
             .expect("The pool should have dynasty object.");
 
@@ -458,18 +458,18 @@ impl PoolService for MongoPoolService {
             .insert(0, pool.name.clone());
         new_dynasty_settings.next_season_pool_name = None;
 
-        // If the pool is dynastie type, we need to create a new pool in dynastie status.
+        // If the pool is dynasty type, we need to create a new pool in dynasty status.
         // With almost everying thing from the last pool save into it.
 
         let pool_context = &pool.context.expect("The pool should have a pool context.");
-        let new_dynastie_pool = Pool {
+        let new_dynasty_pool = Pool {
             name: req.new_pool_name,
             owner: pool.owner,
             participants: pool.participants,
             settings: new_settings,
-            status: PoolState::Dynastie,
-            final_rank: pool.final_rank.clone(),
-            nb_player_drafted: 0,
+            status: PoolState::Dynasty,
+            final_rank: None,
+            draft_order: pool.final_rank.clone(),
             trades: None,
             context: Some(PoolContext {
                 pooler_roster: pool_context.pooler_roster.clone(),
@@ -486,7 +486,7 @@ impl PoolService for MongoPoolService {
         };
 
         collection
-            .insert_one(&new_dynastie_pool, None)
+            .insert_one(&new_dynasty_pool, None)
             .await
             .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
 
