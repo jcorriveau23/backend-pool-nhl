@@ -1,4 +1,5 @@
-use crate::logger;
+use std::net::SocketAddr;
+
 use axum::Router;
 
 use poolnhl_infrastructure::services::ServiceRegistry;
@@ -14,7 +15,9 @@ pub struct ApplicationController;
 
 impl ApplicationController {
     pub async fn run(settings: Settings, service_registry: ServiceRegistry) {
-        logger::setup(&settings.logger.level);
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .init();
 
         let router: Router = Router::new()
             .nest(
@@ -25,14 +28,19 @@ impl ApplicationController {
                     .merge(DailyLeadersRouter::new(service_registry.clone()))
                     .merge(NhlRouter::new(service_registry.clone())),
             )
+            // logging so we can see whats going on
             .layer(TraceLayer::new_for_http());
 
         let listener =
             tokio::net::TcpListener::bind(&format!("127.0.0.1:{}", settings.server.port))
                 .await
-                .unwrap();
-        axum::serve(listener, router)
-            .await
-            .expect("Failed to start the server");
+                .expect("Could not start the TCP listener");
+
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .expect("Failed to start the server");
     }
 }

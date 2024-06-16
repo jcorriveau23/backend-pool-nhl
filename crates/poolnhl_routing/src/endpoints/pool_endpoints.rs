@@ -6,7 +6,7 @@ use poolnhl_infrastructure::services::ServiceRegistry;
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::pool::model::{
     AddPlayerRequest, CreateTradeRequest, DeleteTradeRequest, FillSpotRequest,
-    GenerateDynastieRequest, MarkAsFinalRequest, ModifyRosterRequest, Pool, PoolCreationRequest,
+    GenerateDynastyRequest, MarkAsFinalRequest, ModifyRosterRequest, Pool, PoolCreationRequest,
     PoolDeletionRequest, ProjectedPoolShort, ProtectPlayersRequest, RemovePlayerRequest,
     RespondTradeRequest, UpdatePoolSettingsRequest,
 };
@@ -173,7 +173,7 @@ impl PoolRouter {
     async fn generate_dynasty(
         token: UserEmailJwtPayload,
         State(pool_service): State<PoolServiceHandle>,
-        Json(body): Json<GenerateDynastieRequest>,
+        Json(body): Json<GenerateDynastyRequest>,
     ) -> Result<Json<Pool>> {
         pool_service
             .generate_dynasty(&token.sub, body)

@@ -26,7 +26,7 @@ pub trait DraftService {
         &self,
         pool_name: &str,
         socket_addr: SocketAddr,
-    ) -> Result<(broadcast::Receiver<String>, String)>;
+    ) -> Result<broadcast::Receiver<String>>;
     async fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr) -> Result<()>;
     async fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr) -> Result<()>;
 

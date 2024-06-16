@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::RwLock};
 use tokio::sync::broadcast;
 
 use serde::{Deserialize, Serialize};
@@ -9,11 +9,11 @@ use crate::{
     users::model::UserEmailJwtPayload,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RoomState {
     pub pool_name: String,
 
-    // Map a user to its ready state.
+    // Map a user id to its informations room information.
     pub users: HashMap<String, RoomUser>,
     tx: broadcast::Sender<String>,
 }
@@ -27,149 +27,305 @@ impl RoomState {
         }
     }
 
-    // Send the pool updated informations to the room.
-    pub fn send_pool_info(&self, pool: Pool) -> Result<(), AppError> {
-        if let Ok(pool_string) = serde_json::to_string(&CommandResponse::Pool { pool }) {
-            let _ = self.tx.send(pool_string);
-            return Ok(());
-        }
-        Err(AppError::CustomError {
-            msg: "Could not serialize the pool into a json string.".to_string(),
-        })
+    pub fn add_user(&mut self, user: &UserEmailJwtPayload) -> () {
+        // Add a user to a room.
+        self.users.insert(
+            user.sub.to_string(),
+            RoomUser {
+                id: user.sub.to_string(),
+                name: user.email.address.to_string(),
+                email: Some(user.email.address.to_string()),
+                is_ready: false,
+            },
+        );
     }
 
-    // Change the is_ready state of a user and send they updated users informations to the room.
-    pub fn on_ready(&mut self, user: &UserEmailJwtPayload) -> Result<(), AppError> {
-        if let Some(room_user) = self.users.get_mut(&user.sub) {
+    pub fn on_ready(&mut self, user_id: &str) -> () {
+        // Change the is_ready state of a user and send they updated users informations to the room.
+        if let Some(room_user) = self.users.get_mut(user_id) {
             room_user.is_ready = !room_user.is_ready;
-            if let Ok(pool_string) = serde_json::to_string(&CommandResponse::Users {
-                room_users: self.users.clone(),
-            }) {
-                let _ = self.tx.send(pool_string);
-                return Ok(());
-            }
-            return Err(AppError::CustomError {
-                msg: "Could not serialize the users info into a json string.".to_string(),
-            });
         }
-        Err(AppError::CustomError {
-            msg: "could not found the user in the room.".to_string(),
-        })
     }
 }
 
 #[derive(Debug)]
 pub struct DraftServerInfo {
-    // Mapping of pool names to coresponding room informations.
-    pub rooms: HashMap<String, RoomState>,
-    // Map a socket id to the user information, these users are authenticated..
-    pub authenticated_sockets: HashMap<String, UserEmailJwtPayload>,
+    // Mapping of pool names to its corresponding room informations.
+    pub rooms: RwLock<HashMap<String, RoomState>>,
+
+    // Map a socket id to the user information, these list only authenticated users are authenticated.
+    pub authenticated_sockets: RwLock<HashMap<String, UserEmailJwtPayload>>,
 }
 
 impl DraftServerInfo {
     // Create a new room.
     pub fn new() -> Self {
         Self {
-            rooms: HashMap::new(),
-            authenticated_sockets: HashMap::new(),
+            rooms: RwLock::new(HashMap::new()),
+            authenticated_sockets: RwLock::new(HashMap::new()),
         }
     }
 
-    // List the active rooms.
-    pub fn list_rooms(&self) -> Vec<String> {
-        // Return the list of active rooms.
+    pub fn is_user_in_room(&self, user_id: &str, pool_name: &str) -> Result<bool, AppError> {
+        // Tells us if the user is in room. Read lock without copy.
+        Ok(self
+            .rooms
+            .read()
+            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
+            .get(pool_name)
+            .map_or(false, |room| room.users.contains_key(user_id)))
+    }
 
-        self.rooms
+    pub fn list_rooms(&self) -> Result<Vec<String>, AppError> {
+        // Return the list of active rooms ascopies. (only callable to debug)
+
+        Ok(self
+            .rooms
+            .read()
+            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
             .keys()
             .map(|s| s.to_string())
-            .collect::<Vec<String>>()
+            .collect::<Vec<String>>())
     }
 
-    // Add the socket id to the list of authenticated sockets.
-    pub fn add_socket(&mut self, socket_id: &str, user_token: UserEmailJwtPayload) {
-        if !self.authenticated_sockets.contains_key(socket_id) {
-            self.authenticated_sockets
-                .insert(socket_id.to_string(), user_token);
-        }
-    }
-
-    // Remove the socket id to the list of authenticated sockets.
-    pub fn remove_socket(&mut self, socket_id: &str) {
-        if !self.authenticated_sockets.contains_key(socket_id) {
-            self.authenticated_sockets.remove(socket_id);
-        }
-    }
-
-    // Socket command: Join the socket room. (1 room per pool)
-    pub fn join_room(
-        &mut self,
-        pool_name: &str,
-        socket_id: &str,
-    ) -> (broadcast::Receiver<String>, String) {
-        // If the room does not exist create it.
-        let room = self
+    pub fn get_room_tx(&self, pool_name: &str) -> Result<broadcast::Sender<String>, AppError> {
+        // Return the room tx sender as copy to avoid locking readlock the room to long.
+        // The tx is very lightweight it contains an Arc. The goal to limit the amount of time read locking whole rooms.
+        let rooms = self
             .rooms
-            .entry(pool_name.to_string())
-            .or_insert(RoomState::new(pool_name));
+            .read()
+            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?;
 
-        // If the user is authenticated
-        if let Some(user) = self.authenticated_sockets.get(socket_id) {
-            room.users.insert(
-                user.sub.clone(),
-                RoomUser {
-                    id: user.sub.clone(),
-                    email: user.email.address.clone(),
-                    is_ready: false,
-                },
-            );
-        }
+        let room = rooms.get(pool_name).ok_or(AppError::CustomError {
+            msg: format!("Room '{}' could not be found.", pool_name),
+        })?;
 
-        // Send the updated users list to the room using the sender.
-        // return the receiver even to non authenticated users so they the
-        // socket is able to receive update even if the user is not authenticated.
-
-        let users = serde_json::to_string(&CommandResponse::Users {
-            room_users: room.users.clone(),
-        })
-        .unwrap();
-        let _ = room.tx.send(users.clone());
-
-        (room.tx.subscribe(), users)
+        Ok(room.tx.clone())
     }
 
-    // Socket command: Leave the socket room. (1 room per pool)
-    pub fn leave_room(&mut self, pool_name: &str, socket_id: &str) -> Result<(), AppError> {
-        if let Some(user) = self.authenticated_sockets.get(socket_id) {
-            if let Some(room) = self.rooms.get_mut(pool_name) {
-                room.users.remove(&user.sub);
+    pub fn get_room_users(&self, pool_name: &str) -> Result<Vec<RoomUser>, AppError> {
+        // Return the list of the room users as copy. There is a limit of 20 users per room.
+        let rooms = self
+            .rooms
+            .read()
+            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?;
 
-                // Send the updated users list to the room.
-                // User in the room, will be able to know that
-                let _ = room.tx.send(
-                    serde_json::to_string(&CommandResponse::Users {
-                        room_users: room.users.clone(),
+        let room = rooms.get(pool_name).ok_or(AppError::CustomError {
+            msg: format!("Room '{}' could not be found.", pool_name),
+        })?;
+
+        Ok(room.users.values().cloned().collect())
+    }
+
+    pub fn is_socket_authenticated(&self, socket_id: &str) -> Result<bool, AppError> {
+        // Tells if the socket is autenticated. Read lock without any copies.
+        Ok(self
+            .authenticated_sockets
+            .read()
+            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
+            .contains_key(socket_id))
+    }
+
+    pub fn get_authenticated_user_with_socket(
+        &self,
+        socket_id: &str,
+    ) -> Result<Option<UserEmailJwtPayload>, AppError> {
+        // Get the a copy of the authenticated user associated with a socket id.
+        Ok(self
+            .authenticated_sockets
+            .read()
+            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
+            .get(socket_id)
+            .cloned())
+    }
+
+    pub fn is_room_created(&self, pool_name: &str) -> Result<bool, AppError> {
+        Ok(self
+            .rooms
+            .read()
+            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
+            .contains_key(pool_name))
+    }
+
+    pub fn create_room(&mut self, pool_name: &str) -> Result<(), AppError> {
+        self.rooms
+            .write()
+            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
+            .insert(pool_name.to_string(), RoomState::new(pool_name));
+
+        Ok(())
+    }
+
+    pub fn delete_room(&mut self, pool_name: &str) -> Result<(), AppError> {
+        self.rooms
+            .write()
+            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
+            .remove(pool_name);
+
+        Ok(())
+    }
+
+    pub fn add_user_to_room(
+        &self,
+        user: &UserEmailJwtPayload,
+        pool_name: &str,
+    ) -> Result<(), AppError> {
+        let mut rooms = self
+            .rooms
+            .write()
+            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?;
+
+        let room = rooms
+            .entry(pool_name.to_string())
+            .or_insert_with(|| RoomState {
+                pool_name: pool_name.to_string(),
+                users: HashMap::new(),
+                tx: broadcast::channel(24).0,
+            });
+
+        room.add_user(user);
+
+        Ok(())
+    }
+
+    pub fn remove_user_from_room(
+        &self,
+        user_id: &str,
+        pool_name: &str,
+    ) -> Result<HashMap<String, RoomUser>, AppError> {
+        if self.is_user_in_room(user_id, pool_name)? {
+            let mut rooms = self
+                .rooms
+                .write()
+                .map_err(|e| AppError::RwLockError { msg: e.to_string() })?;
+
+            match rooms.get_mut(pool_name) {
+                Some(room) => {
+                    room.users.remove(user_id);
+
+                    let room_users = room.users.clone();
+                    // If the room is empty, we can delete the room.
+                    if room.users.is_empty() {
+                        rooms.remove(pool_name);
+                    }
+
+                    return Ok(room_users);
+                }
+                None => {
+                    return Err(AppError::CustomError {
+                        msg: format!("The room '{}' was not found.", pool_name),
                     })
-                    .unwrap(),
-                );
-
-                if room.users.is_empty() {
-                    // There is no more user listening to the room, we can remove the room.
-                    self.rooms.remove(pool_name);
                 }
             }
         }
+
+        Ok(HashMap::new())
+    }
+
+    pub fn add_socket(
+        &self,
+        socket_id: &str,
+        user_token: UserEmailJwtPayload,
+    ) -> Result<(), AppError> {
+        // Add the socket id to the list of authenticated sockets.
+        if !self.is_socket_authenticated(socket_id)? {
+            self.authenticated_sockets
+                .write()
+                .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
+                .insert(socket_id.to_string(), user_token);
+        }
         Ok(())
     }
 
-    // Socket command: Change the is_ready state to true or false.
-    // All users in room needs to be ready to start the draft.
-    pub fn on_ready(&mut self, pool_name: &str, socket_id: &str) -> Result<(), AppError> {
-        if let Some(user) = self.authenticated_sockets.get(socket_id) {
-            if let Some(room) = self.rooms.get_mut(pool_name) {
-                let _ = room.on_ready(user);
-            }
+    pub fn remove_socket(&mut self, socket_id: &str) -> Result<(), AppError> {
+        // Remove the socket id to the list of authenticated sockets.
+        if self.is_socket_authenticated(socket_id)? {
+            self.authenticated_sockets
+                .write()
+                .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
+                .remove(socket_id);
         }
         Ok(())
+    }
+
+    pub fn join_room(
+        &self,
+        pool_name: &str,
+        socket_id: &str,
+    ) -> Result<(broadcast::Receiver<String>, HashMap<String, RoomUser>), AppError> {
+        // Socket command: Join the socket room. (1 room per pool)
+
+        // If the user is authenticated, add the user to the room.
+        if let Some(user) = self.get_authenticated_user_with_socket(socket_id)? {
+            self.add_user_to_room(&user, pool_name)?
+        }
+
+        let (room_tx, room_users) = {
+            // Scope the read lock to a block to ensure it's released as soon as possible
+            match self
+                .rooms
+                .read()
+                .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
+                .get(pool_name)
+            {
+                Some(room) => (room.tx.clone(), room.users.clone()),
+                None => {
+                    return Err(AppError::RwLockError {
+                        msg: "The room could not be found.".to_string(),
+                    })
+                }
+            }
+        };
+
+        // Send the updated users list to the room using the sender.
+        // return the receiver even to non authenticated users so the user socket is able to receive pool updates
+        // even if the user is not authenticated.
+
+        Ok((room_tx.subscribe(), room_users))
+    }
+
+    pub fn leave_room(
+        &self,
+        pool_name: &str,
+        socket_id: &str,
+    ) -> Result<HashMap<String, RoomUser>, AppError> {
+        // Socket command: Leave the socket room. (1 room per pool)
+        match self.get_authenticated_user_with_socket(socket_id)? {
+            Some(user) => Ok(self.remove_user_from_room(&user.sub, pool_name)?),
+            None => Err(AppError::CustomError {
+                msg: format!(
+                    "user with socket id '{}' is not authentificated in the pool '{}'",
+                    socket_id, pool_name
+                ),
+            }),
+        }
+    }
+
+    pub fn on_ready(
+        &self,
+        pool_name: &str,
+        socket_id: &str,
+    ) -> Result<HashMap<String, RoomUser>, AppError> {
+        // Socket command: Change the is_ready state to true or false.
+        // All users in room needs to be ready to start the draft.
+        if let Some(user) = self.get_authenticated_user_with_socket(socket_id)? {
+            if self.is_room_created(pool_name)? {
+                let mut rooms = self
+                    .rooms
+                    .write()
+                    .map_err(|e| AppError::RwLockError { msg: e.to_string() })?;
+
+                let room = rooms.get_mut(pool_name).ok_or(AppError::CustomError {
+                    msg: format!("Room '{}' could not be found.", pool_name),
+                })?;
+
+                room.on_ready(&user.sub);
+                return Ok(room.users.clone());
+            }
+        }
+        Err(AppError::CustomError {
+            msg: "The user is not authenticated".to_string(),
+        })
     }
 }
 
@@ -177,7 +333,8 @@ impl DraftServerInfo {
 #[derive(Debug, Serialize, Deserialize, Eq, Clone)]
 pub struct RoomUser {
     pub id: String,
-    pub email: String,
+    pub name: String,
+    pub email: Option<String>,
     pub is_ready: bool,
 }
 
@@ -201,7 +358,7 @@ pub enum Command {
 
 // Response return to the sockets clients as commands response.
 #[derive(Deserialize, Serialize)]
-enum CommandResponse {
+pub enum CommandResponse {
     Pool {
         pool: Pool,
     },

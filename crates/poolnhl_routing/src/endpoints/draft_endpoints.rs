@@ -1,9 +1,13 @@
-use axum::extract::connect_info::ConnectInfo;
-use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{Json, Path, State, WebSocketUpgrade};
-use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::Router;
+use axum::{
+    extract::{
+        connect_info::ConnectInfo,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Json, Path, State,
+    },
+    response::IntoResponse,
+    routing::get,
+    Router,
+};
 use futures::{SinkExt, StreamExt};
 use poolnhl_infrastructure::services::ServiceRegistry;
 use poolnhl_interface::draft::model::Command;
@@ -19,7 +23,7 @@ pub struct DraftRouter;
 impl DraftRouter {
     pub fn new(service_registry: ServiceRegistry) -> Router {
         Router::new()
-            .route("/ws/:token", get(Self::ws_handler))
+            .route("/ws/:jwt", get(Self::ws_handler))
             .route("/rooms", get(Self::get_rooms))
             .with_state(service_registry)
     }
@@ -32,11 +36,11 @@ impl DraftRouter {
 
     async fn ws_handler(
         ws: WebSocketUpgrade,
+        Path(jwt): Path<String>,
         ConnectInfo(addr): ConnectInfo<SocketAddr>,
         State(draft_service): State<DraftServiceHandle>,
-        Path(token): Path<String>,
     ) -> impl IntoResponse {
-        let user = draft_service.authenticate_web_socket(&token, addr).await;
+        let user = draft_service.authenticate_web_socket(&jwt, addr).await;
         ws.on_upgrade(move |socket| Self::handle_socket(socket, user, addr, draft_service))
     }
 
@@ -54,8 +58,7 @@ impl DraftRouter {
                     match command {
                         Command::JoinRoom { pool_name } => {
                             // join the requested room.
-                            let (rx, users) = draft_service.join_room(&pool_name, *addr).await?;
-                            let _ = socket.send(Message::Text(users)).await;
+                            let rx = draft_service.join_room(&pool_name, *addr).await?;
 
                             return Ok((rx, pool_name));
                         }

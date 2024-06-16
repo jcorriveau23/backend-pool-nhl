@@ -1,4 +1,4 @@
-use crate::errors::AppError;
+use crate::{draft::model::RoomUser, errors::AppError};
 use chrono::{Duration, Local, NaiveDate, Timelike, Utc};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
@@ -33,7 +33,7 @@ pub struct PlayerTypeSettings {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct DynastieSettings {
+pub struct DynastySettings {
     // Other pool configuration
     pub next_season_number_players_protected: u8,
     pub tradable_picks: u8, // numbers of the next season picks participants are able to trade with each other.
@@ -41,8 +41,8 @@ pub struct DynastieSettings {
     pub next_season_pool_name: Option<String>,
 }
 
-impl PartialEq<DynastieSettings> for DynastieSettings {
-    fn eq(&self, other: &DynastieSettings) -> bool {
+impl PartialEq<DynastySettings> for DynastySettings {
+    fn eq(&self, other: &DynastySettings) -> bool {
         self.next_season_number_players_protected == other.next_season_number_players_protected
             && self.tradable_picks == other.tradable_picks
     }
@@ -94,7 +94,7 @@ pub struct PoolSettings {
     pub can_trade: bool, // Tell if trades are activated.
 
     pub ignore_x_worst_players: Option<PlayerTypeSettings>,
-    pub dynastie_settings: Option<DynastieSettings>,
+    pub dynasty_settings: Option<DynastySettings>,
 }
 
 impl PoolSettings {
@@ -129,7 +129,26 @@ impl PoolSettings {
             },
             can_trade: false,
             ignore_x_worst_players: None,
-            dynastie_settings: None,
+            dynasty_settings: None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct PoolUser {
+    pub id: String,
+    pub name: String,
+
+    // tells if the user is owned by an app users or manage by the pool owner
+    pub is_owned: bool,
+}
+
+impl From<RoomUser> for PoolUser {
+    fn from(room_user: RoomUser) -> Self {
+        PoolUser {
+            id: room_user.id,
+            name: room_user.name,
+            is_owned: room_user.email.is_some(),
         }
     }
 }
@@ -139,14 +158,17 @@ pub struct Pool {
     pub name: String, // the name of the pool.
     pub owner: String,
 
-    pub participants: Option<Vec<String>>, // The ID of each participants.
+    pub participants: Vec<PoolUser>, // The ID of each participants.
 
     pub settings: PoolSettings,
 
     pub status: PoolState, // State of the pool.
+
+    // When the pool is complete, this stored the pool final rank.
     pub final_rank: Option<Vec<String>>,
 
-    pub nb_player_drafted: u8,
+    // When the draft is on, this is filled up with the draft order.
+    pub draft_order: Option<Vec<String>>,
 
     // Trade information.
     pub trades: Option<Vec<Trade>>,
@@ -164,11 +186,11 @@ impl Pool {
         Self {
             name: pool_name.to_string(),
             owner: owner.to_string(),
-            participants: None,
+            participants: Vec::new(),
             settings: pool_settings.clone(),
             status: PoolState::Created,
             final_rank: None,
-            nb_player_drafted: 0,
+            draft_order: None,
             trades: None,
             context: None,
             date_updated: 0,
@@ -480,30 +502,23 @@ impl Pool {
                 }
 
                 // First, validate that the player selected is not picked by any of the other poolers.
-                match &self.participants {
-                    None => Err(AppError::CustomError {
-                        msg: "The pool has no context yet.".to_string(),
-                    }),
-                    Some(participants) => {
-                        for participant in participants.iter() {
-                            if context.pooler_roster[participant]
-                                .validate_player_possession(player.id)
-                            {
-                                return Err(AppError::CustomError {
-                                    msg: "This player is already picked.".to_string(),
-                                });
-                            }
-                        }
 
-                        context.add_player_to_roster(player.id, added_to_user_id)?;
-
-                        context
-                            .players
-                            .insert(player.id.to_string(), player.clone());
-
-                        Ok(())
+                for participant in self.participants.iter() {
+                    if context.pooler_roster[&participant.id].validate_player_possession(player.id)
+                    {
+                        return Err(AppError::CustomError {
+                            msg: "This player is already picked.".to_string(),
+                        });
                     }
                 }
+
+                context.add_player_to_roster(player.id, added_to_user_id)?;
+
+                context
+                    .players
+                    .insert(player.id.to_string(), player.clone());
+
+                Ok(())
             }
         }
     }
@@ -700,14 +715,14 @@ impl Pool {
     ) -> Result<(), AppError> {
         // make sure the user making the resquest is a pool participants.
 
-        self.validate_pool_status(&PoolState::Dynastie)?;
+        self.validate_pool_status(&PoolState::Dynasty)?;
         self.validate_participant(user_id)?;
 
-        match &self.settings.dynastie_settings {
+        match &self.settings.dynasty_settings {
             None => Err(AppError::CustomError {
-                msg: "Dynastie settings does not exist.".to_string(),
+                msg: "Dynasty settings does not exist.".to_string(),
             }),
-            Some(dynastie_settings) => {
+            Some(dynasty_settings) => {
                 // validate that the numbers of players protected is ok.
 
                 if forw_protected.len() > self.settings.number_forwards as usize {
@@ -740,7 +755,7 @@ impl Pool {
                     + reserv_protected.len();
 
                 if tot_player_protected as u8
-                    != dynastie_settings.next_season_number_players_protected
+                    != dynasty_settings.next_season_number_players_protected
                 {
                     return Err(AppError::CustomError {
                         msg: "The number of protected players is not valid".to_string(),
@@ -800,13 +815,13 @@ impl Pool {
                                 + roster.chosen_defenders.len()
                                 + roster.chosen_goalies.len()
                                 + roster.chosen_reservists.len()
-                                != dynastie_settings.next_season_number_players_protected as usize
+                                != dynasty_settings.next_season_number_players_protected as usize
                             {
                                 return Ok(());
                             }
                         }
 
-                        // All participants have protected their players, we can migrate pool status from dynastie to draft.
+                        // All participants have protected their players, we can migrate pool status from dynasty to draft.
                         self.status = PoolState::Draft;
 
                         Ok(())
@@ -838,7 +853,7 @@ impl Pool {
             });
         }
 
-        // Get the final ranking of the pool. For dynastie pool, this will be use as draft order for the next season.
+        // Get the final ranking of the pool. For dynasty pool, this will be use as draft order for the next season.
         self.final_rank = Some(context.get_final_rank(&self.settings)?);
         self.status = PoolState::Final;
 
@@ -861,15 +876,14 @@ impl Pool {
             });
         }
 
-        match &mut self.settings.dynastie_settings {
-            Some(dynastie_settings) => {
-                dynastie_settings.next_season_pool_name = Some(new_pool_name.to_string());
+        match &mut self.settings.dynasty_settings {
+            Some(dynasty_settings) => {
+                dynasty_settings.next_season_pool_name = Some(new_pool_name.to_string());
                 Ok(())
             }
             None => Err(AppError::CustomError {
-                msg:
-                    "The pool is not of type dynastie it cannot create a dynastie for next season."
-                        .to_string(),
+                msg: "The pool is not of type dynasty it cannot create a dynasty for next season."
+                    .to_string(),
             }),
         }
     }
@@ -886,7 +900,7 @@ impl Pool {
             || settings.number_defenders != self.settings.number_defenders
             || settings.number_goalies != self.settings.number_goalies
             || settings.number_reservists != self.settings.number_reservists
-            || settings.dynastie_settings != self.settings.dynastie_settings
+            || settings.dynasty_settings != self.settings.dynasty_settings
         {
             return Err(AppError::CustomError {
                 msg: "These settings cannot be updated while the pool is in progress.".to_string(),
@@ -906,24 +920,31 @@ impl Pool {
     pub fn start_draft(
         &mut self,
         user_id: &str,
-        participants: &Vec<String>,
+        room_users: &Vec<RoomUser>,
     ) -> Result<(), AppError> {
         self.validate_pool_status(&PoolState::Created)?;
         self.has_owner_privileges(user_id)?;
 
-        if self.settings.number_poolers as usize != participants.len() {
+        if self.settings.number_poolers as usize != room_users.len() {
             return Err(AppError::CustomError {
                 msg: "The number of participants is not good.".to_string(),
             });
         }
-        let mut participants = participants.clone();
-        participants.shuffle(&mut thread_rng());
-        self.participants = Some(participants.clone());
 
-        // TODO: randomize the list of participants so the draft order is random
+        // Shuffle the pool participants. so the draft order is
+        let mut room_users = room_users.clone();
+        room_users.shuffle(&mut thread_rng());
 
         self.status = PoolState::Draft;
-        self.context = Some(PoolContext::new(&participants));
+
+        let user_ids: Vec<String> = room_users.iter().map(|user| user.id.clone()).collect();
+
+        self.context = Some(PoolContext::new(&user_ids));
+
+        self.participants = room_users.into_iter().map(PoolUser::from).collect();
+
+        // Set the draft order with the shuffle list.
+        self.draft_order = Some(user_ids);
         Ok(())
     }
 
@@ -931,39 +952,42 @@ impl Pool {
         // Match against
 
         let has_privileges = self.has_owner_rights(user_id);
-        match (&mut self.context, &self.participants, &self.final_rank) {
-            (Some(context), _, Some(final_rank)) => {
-                // This is a dynastie draft context.
-                // The final rank is being used as draft order.
-                if context.draft_player_dynastie(
-                    user_id,
-                    player,
-                    final_rank,
-                    &self.settings,
-                    has_privileges,
-                )? {
+        match (&mut self.context, &self.draft_order) {
+            (Some(context), Some(draft_order)) => {
+                let mut is_done = false;
+
+                if self.settings.dynasty_settings.is_some() && context.past_tradable_picks.is_some()
+                {
+                    // This is a dynasty draft context.
+                    // The final rank is being used as draft order.
+                    is_done = context.draft_player_dynasty(
+                        user_id,
+                        player,
+                        draft_order,
+                        &self.settings,
+                        has_privileges,
+                    )?;
+                } else {
+                    // This is a dynasty draft context.
+                    // The participant order is being used as draft order.
+                    is_done = context.draft_player(
+                        user_id,
+                        player,
+                        draft_order,
+                        &self.settings,
+                        has_privileges,
+                    )?;
+                }
+
+                if is_done {
                     // The draft is done.
                     self.status = PoolState::InProgress;
                 }
-                Ok(())
-            }
-            (Some(context), Some(participants), None) => {
-                // This is a dynastie draft context.
-                // The participant order is being used as draft order.
-                if context.draft_player(
-                    user_id,
-                    player,
-                    participants,
-                    &self.settings,
-                    has_privileges,
-                )? {
-                    // The draft is done.
-                    self.status = PoolState::InProgress;
-                }
+
                 Ok(())
             }
             _ => Err(AppError::CustomError {
-                msg: "There is no pool context or participants in the pool yet.".to_string(),
+                msg: "There is no pool context or draft order in the pool yet.".to_string(),
             }),
         }
     }
@@ -974,39 +998,27 @@ impl Pool {
         self.has_owner_privileges(user_id)?;
         self.validate_pool_status(&PoolState::Draft)?;
 
-        match (&mut self.context, &self.participants, &self.final_rank) {
-            (Some(context), _, Some(final_rank)) => {
-                // This is a dynastie draft context.
+        match (&mut self.context, &self.draft_order) {
+            (Some(context), Some(draft_order)) => {
+                // This is a dynasty draft context.
                 // The final rank is being used as draft order.
-                context.undo_draft_player(final_rank, &self.settings)
-            }
-            (Some(context), Some(participants), None) => {
-                // This is a classic draft context.
-                // The participants order is being used as draft order.
-                context.undo_draft_player(participants, &self.settings)
+                context.undo_draft_player(draft_order, &self.settings)
             }
             _ => Err(AppError::CustomError {
-                msg: "There is no pool context or participants in the pool yet.".to_string(),
+                msg: "There is no pool context or draft order in the pool yet.".to_string(),
             }),
         }
     }
 
     pub fn validate_participant(&self, user_id: &str) -> Result<(), AppError> {
         // Validate that the user is a pool participant.
-        match &self.participants {
-            None => Err(AppError::CustomError {
-                msg: "Pool has no participants yet.".to_string(),
-            }),
-            Some(participants) => {
-                if !participants.contains(&user_id.to_string()) {
-                    return Err(AppError::CustomError {
-                        msg: format!("User {} is not a pool participants.", user_id),
-                    });
-                }
-
-                Ok(())
-            }
+        if !self.participants.iter().any(|user| user.id == user_id) {
+            return Err(AppError::CustomError {
+                msg: format!("User {} is not a pool participants.", user_id),
+            });
         }
+
+        Ok(())
     }
 
     pub fn validate_pool_status(&self, expected_status: &PoolState) -> Result<(), AppError> {
@@ -1059,7 +1071,7 @@ impl Pool {
 pub enum PoolState {
     Final,
     InProgress,
-    Dynastie,
+    Dynasty,
     Draft,
     Created,
 }
@@ -1070,7 +1082,7 @@ impl fmt::Display for PoolState {
         match self {
             PoolState::Final => write!(f, "Final"),
             PoolState::InProgress => write!(f, "In progress"),
-            PoolState::Dynastie => write!(f, "Dynastie"),
+            PoolState::Dynasty => write!(f, "Dynasty"),
             PoolState::Draft => write!(f, "Draft"),
             PoolState::Created => write!(f, "Created"),
         }
@@ -1166,7 +1178,6 @@ impl PoolContext {
             }
         }
 
-        // TODO: needs to consider the settings that ignore the X worst players of each position.
         // Convert the HashMap into a Vec of tuples
         if let Some(ignore_x_worst_players) = &pool_settings.ignore_x_worst_players {
             for (
@@ -1190,11 +1201,7 @@ impl PoolContext {
                     .take(ignore_x_worst_players.forwards as usize);
 
                 // Print the players with the least total points
-                for (player_id, (points, number_of_games)) in least_points_players {
-                    println!(
-                        "Forwards {}: Total Points = {}, Total Games = {}",
-                        player_id, points, number_of_games
-                    );
+                for (_, (points, number_of_games)) in least_points_players {
                     *total_points -= points;
                     *total_number_of_games -= number_of_games;
                 }
@@ -1212,11 +1219,7 @@ impl PoolContext {
                     .take(ignore_x_worst_players.defense as usize);
 
                 // Print the players with the least total points
-                for (player_id, (points, number_of_games)) in least_points_players {
-                    println!(
-                        "Defense {}: Total Points = {}, Total Games = {}",
-                        player_id, points, number_of_games
-                    );
+                for (_, (points, number_of_games)) in least_points_players {
                     *total_points -= points;
                     *total_number_of_games -= number_of_games;
                 }
@@ -1233,11 +1236,7 @@ impl PoolContext {
                     .take(ignore_x_worst_players.goalies as usize);
 
                 // Print the players with the least total points
-                for (player_id, (points, number_of_games)) in least_points_players {
-                    println!(
-                        "Goalies {}: Total Points = {}, Total Games = {}",
-                        player_id, points, number_of_games
-                    );
+                for (_, (points, number_of_games)) in least_points_players {
                     *total_points -= points;
                     *total_number_of_games -= number_of_games;
                 }
@@ -1254,8 +1253,8 @@ impl PoolContext {
                 HashMap<String, (u16, u16)>,
             ),
         )> = user_total_points.iter().collect();
-        // Sort the total points vector. And fill the final_rank list with it.
 
+        // Sort the total points vector. And fill the final_rank list with it.
         // Sort the vector by total points and then by total games in descending order
         user_points_vec.sort_by(|a, b| {
             b.1 .0
@@ -1345,8 +1344,8 @@ impl PoolContext {
             // If done, clone the tradable picks, into the past_tradable_picks and reset the tradable picks.
             let mut new_tradable_picks = vec![];
 
-            if let Some(dynastie_settings) = &settings.dynastie_settings {
-                for _pick_round in 0..dynastie_settings.tradable_picks {
+            if let Some(dynasty_settings) = &settings.dynasty_settings {
+                for _ in 0..dynasty_settings.tradable_picks {
                     let mut round = HashMap::new();
 
                     for participant in self.pooler_roster.keys() {
@@ -1362,11 +1361,11 @@ impl PoolContext {
         Ok(is_done)
     }
 
-    pub fn draft_player_dynastie(
+    pub fn draft_player_dynasty(
         &mut self,
         user_id: &str,
         player: &Player,
-        final_rank: &Vec<String>, // being used as draft order.
+        draft_order: &Vec<String>, // being used as draft order.
         settings: &PoolSettings,
         has_privileges: bool,
     ) -> Result<bool, AppError> {
@@ -1379,8 +1378,8 @@ impl PoolContext {
                 });
             }
         }
-        // Find the next draft id for dynastie type pool.
-        let next_drafter = self.find_dynastie_next_drafter(final_rank, settings)?;
+        // Find the next draft id for dynasty type pool.
+        let next_drafter = self.find_dynasty_next_drafter(draft_order, settings)?;
 
         if !has_privileges && next_drafter != user_id {
             return Err(AppError::CustomError {
@@ -1394,12 +1393,12 @@ impl PoolContext {
         self.is_draft_done(settings)
     }
 
-    pub fn find_dynastie_next_drafter(
+    pub fn find_dynasty_next_drafter(
         &mut self,
-        final_rank: &Vec<String>, // being used as draft order.
+        draft_order: &Vec<String>, // being used as draft order.
         settings: &PoolSettings,
     ) -> Result<String, AppError> {
-        // Draft the right player in dynastie mode.
+        // Draft the right player in dynasty mode.
         // This takes into account the trade that have been traded during last season (past_tradable_picks).
 
         // Get the maximum number of player a user can draft.
@@ -1410,7 +1409,7 @@ impl PoolContext {
 
         match &self.past_tradable_picks {
             None => Err(AppError::CustomError {
-                msg: "There should be tradable_picks in dynastie type pool.".to_string(),
+                msg: "There should be tradable_picks in dynasty type pool.".to_string(),
             }),
             Some(past_tradable_picks) => {
                 // To make sure the program never go into an infinite loop. we use a counter.
@@ -1420,14 +1419,14 @@ impl PoolContext {
                     let nb_players_drafted = self.players_name_drafted.len();
 
                     let index_draft =
-                        final_rank.len() - 1 - (nb_players_drafted % final_rank.len());
+                        draft_order.len() - 1 - (nb_players_drafted % draft_order.len());
                     // Fetch the next drafter without considering if the trade has been traded yet.
-                    next_drafter = &final_rank[index_draft];
+                    next_drafter = &draft_order[index_draft];
 
-                    if nb_players_drafted < (past_tradable_picks.len() * final_rank.len()) {
+                    if nb_players_drafted < (past_tradable_picks.len() * draft_order.len()) {
                         // use the tradable_picks to see if the pick got traded so it is to the person owning the pick to draft.
 
-                        next_drafter = &past_tradable_picks[nb_players_drafted / final_rank.len()]
+                        next_drafter = &past_tradable_picks[nb_players_drafted / draft_order.len()]
                             [next_drafter];
                     }
 
@@ -1436,7 +1435,7 @@ impl PoolContext {
 
                         continue_count += 1;
 
-                        if continue_count >= final_rank.len() {
+                        if continue_count >= draft_order.len() {
                             return Err(AppError::CustomError {
                                 msg: "All poolers have the maximum amount player drafted."
                                     .to_string(),
@@ -1457,7 +1456,7 @@ impl PoolContext {
         &mut self,
         user_id: &str,
         player: &Player,
-        participants: &Vec<String>, // being used as draft order.
+        draft_order: &Vec<String>, // being used as draft order.
         settings: &PoolSettings,
         has_privileges: bool,
     ) -> Result<bool, AppError> {
@@ -1477,15 +1476,15 @@ impl PoolContext {
         let players_drafted = self.players_name_drafted.len();
 
         // Snake draft, reverse draft order each round.
-        let round = players_drafted / participants.len();
+        let round = players_drafted / draft_order.len();
 
         let index = if round % 2 == 1 {
-            participants.len() - 1 - (players_drafted % participants.len())
+            draft_order.len() - 1 - (players_drafted % draft_order.len())
         } else {
-            players_drafted % participants.len()
+            players_drafted % draft_order.len()
         };
 
-        let next_drafter = &participants[index];
+        let next_drafter = &draft_order[index];
 
         if !has_privileges && next_drafter != user_id {
             return Err(AppError::CustomError {
@@ -1494,7 +1493,7 @@ impl PoolContext {
         }
 
         // Add the drafted player if everything goes right.
-        self.add_drafted_player(player, next_drafter, settings)?;
+        self.add_drafted_player(player, &next_drafter, settings)?;
 
         self.is_draft_done(settings)
     }
@@ -1527,11 +1526,11 @@ impl PoolContext {
         let pick_number = self.players_name_drafted.len();
         let latest_drafter;
 
-        match (&settings.dynastie_settings, &self.past_tradable_picks) {
-            (Some(dynastie_settings), Some(past_tradable_picks)) => {
-                // This comes from a Dynastie draft.
+        match (&settings.dynasty_settings, &self.past_tradable_picks) {
+            (Some(dynasty_settings), Some(past_tradable_picks)) => {
+                // This comes from a Dynasty draft.
 
-                let nb_tradable_picks = dynastie_settings.tradable_picks;
+                let nb_tradable_picks = dynasty_settings.tradable_picks;
 
                 let index = participants.len() - 1 - (pick_number % participants.len());
 
@@ -1539,24 +1538,23 @@ impl PoolContext {
 
                 if pick_number < nb_tradable_picks as usize * participants.len() {
                     // use the tradable_picks to see who will draft next.
-
                     latest_drafter =
                         past_tradable_picks[pick_number / participants.len()][next_drafter].clone();
                 } else {
-                    // Use the final_rank to see who draft next.
+                    // Use the draft order to see who draft next.
                     latest_drafter = next_drafter.clone();
                 }
             }
             _ => {
                 // this comes from a newly created draft.
 
-                // Snake draft, reverse draft order each round.
                 let round = pick_number / participants.len();
 
+                // Snake draft, reverse draft order each round.
                 let index = if round % 2 == 1 {
-                    participants.len() - 1 - (pick_number % participants.len())
+                    participants.len() - 1 - (pick_number % participants.len()) // reversed
                 } else {
-                    pick_number % participants.len()
+                    pick_number % participants.len() // Original
                 };
 
                 latest_drafter = participants[index].clone();
@@ -2104,7 +2102,7 @@ pub struct ModifyRosterRequest {
     pub reserv_list: Vec<u32>,
 }
 
-// payload to sent when protecting the list of players for dynastie draft.
+// payload to sent when protecting the list of players for dynasty draft.
 #[derive(Debug, Deserialize, Clone)]
 pub struct ProtectPlayersRequest {
     pub pool_name: String,
@@ -2128,9 +2126,9 @@ pub struct MarkAsFinalRequest {
     pub pool_name: String,
 }
 
-// payload to sent when generating a new season for a dynastie type of pool.
+// payload to sent when generating a new season for a dynasty type of pool.
 #[derive(Debug, Deserialize, Clone)]
-pub struct GenerateDynastieRequest {
+pub struct GenerateDynastyRequest {
     pub pool_name: String,
     pub new_pool_name: String,
 }
