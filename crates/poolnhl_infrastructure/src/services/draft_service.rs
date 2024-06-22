@@ -172,7 +172,15 @@ impl DraftService for MongoDraftService {
 
     // List the active room.
     async fn list_rooms(&self) -> Result<Vec<String>> {
-        Ok(self.draft_server_info.list_rooms()?)
+        self.draft_server_info.list_rooms()
+    }
+
+    async fn list_room_users(&self, pool_name: &str) -> Result<HashMap<String, RoomUser>> {
+        self.draft_server_info.list_room_users(pool_name)
+    }
+
+    async fn list_authenticated_sockets(&self) -> Result<HashMap<String, UserEmailJwtPayload>> {
+        self.draft_server_info.list_authenticated_sockets()
     }
 
     // Authenticate the token received as inputs.
@@ -192,8 +200,16 @@ impl DraftService for MongoDraftService {
                     Err(_) => return None,
                 }
             }
-            Err(_) => None,
+            Err(e) => {
+                println!("{}", e);
+                None
+            }
         }
+    }
+
+    async fn unauthenticate_web_socket(&self, socket_addr: SocketAddr) -> Result<()> {
+        self.draft_server_info
+            .remove_socket(&socket_addr.to_string())
     }
 
     // JoinRoom command.
@@ -218,6 +234,7 @@ impl DraftService for MongoDraftService {
             .draft_server_info
             .leave_room(pool_name, &socket_addr.to_string())?;
 
+        println!("!!!!!!!!!!!!!!!!!!!!!!!Leaving {}", socket_addr.to_string());
         let tx = self.draft_server_info.get_room_tx(pool_name)?;
         send_users_info(tx, room_users)
     }

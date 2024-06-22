@@ -10,12 +10,12 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use poolnhl_infrastructure::services::ServiceRegistry;
-use poolnhl_interface::draft::model::Command;
+use poolnhl_interface::draft::model::{Command, RoomUser};
 use poolnhl_interface::draft::service::DraftServiceHandle;
 use poolnhl_interface::errors::{AppError, Result};
 use poolnhl_interface::users::model::UserEmailJwtPayload;
 
-use std::net::SocketAddr;
+use std::{collections::HashMap, net::SocketAddr};
 use tokio::sync::{broadcast, mpsc};
 
 pub struct DraftRouter;
@@ -24,14 +24,32 @@ impl DraftRouter {
     pub fn new(service_registry: ServiceRegistry) -> Router {
         Router::new()
             .route("/ws/:jwt", get(Self::ws_handler))
-            .route("/rooms", get(Self::get_rooms))
+            .route("/rooms", get(Self::list_rooms))
+            .route("/room-users/:room", get(Self::list_room_users))
+            .route(
+                "/authenticated-sockets",
+                get(Self::list_authenticated_sockets),
+            )
             .with_state(service_registry)
     }
 
-    async fn get_rooms(
+    async fn list_rooms(
         State(draft_service): State<DraftServiceHandle>,
     ) -> Result<Json<Vec<String>>> {
         draft_service.list_rooms().await.map(Json)
+    }
+
+    async fn list_room_users(
+        State(draft_service): State<DraftServiceHandle>,
+        Path(pool_name): Path<String>,
+    ) -> Result<Json<HashMap<String, RoomUser>>> {
+        draft_service.list_room_users(&pool_name).await.map(Json)
+    }
+
+    async fn list_authenticated_sockets(
+        State(draft_service): State<DraftServiceHandle>,
+    ) -> Result<Json<HashMap<String, UserEmailJwtPayload>>> {
+        draft_service.list_authenticated_sockets().await.map(Json)
     }
 
     async fn ws_handler(
@@ -80,6 +98,7 @@ impl DraftRouter {
     ) {
         // At the beginning there is a state where the user needs to join a room
         // before leaving the initial socket state.
+        let is_authenticated_users = user.is_some();
 
         match DraftRouter::waiting_join_room_command(&mut socket, &addr, &draft_service).await {
             Err(_) => (), // An error occured during the initial waiting to join room function. Close the socket connection.
@@ -215,8 +234,11 @@ impl DraftRouter {
                     _ = (&mut recv_messages) => send_messages.abort(),
                 };
 
-                // Make sure that if we lose the socket communication we force the user to leave the room.
-                let _ = draft_service.leave_room(&current_pool_name, addr);
+                // Make sure that if we lose the socket communication we force the user to leave the room and unauthenticate.
+                if is_authenticated_users {
+                    let _ = draft_service.leave_room(&current_pool_name, addr).await;
+                    let _ = draft_service.unauthenticate_web_socket(addr).await;
+                }
             }
         }
     }

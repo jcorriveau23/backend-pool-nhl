@@ -88,6 +88,27 @@ impl DraftServerInfo {
             .collect::<Vec<String>>())
     }
 
+    pub fn list_room_users(&self, pool_name: &str) -> Result<HashMap<String, RoomUser>, AppError> {
+        self.rooms
+            .read()
+            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
+            .get(pool_name)
+            .map(|room_state| room_state.users.clone())
+            .ok_or(AppError::CustomError {
+                msg: format!("The room {} does not exist.", pool_name),
+            })
+    }
+
+    pub fn list_authenticated_sockets(
+        &self,
+    ) -> Result<HashMap<String, UserEmailJwtPayload>, AppError> {
+        Ok(self
+            .authenticated_sockets
+            .read()
+            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
+            .clone())
+    }
+
     pub fn get_room_tx(&self, pool_name: &str) -> Result<broadcast::Sender<String>, AppError> {
         // Return the room tx sender as copy to avoid locking readlock the room to long.
         // The tx is very lightweight it contains an Arc. The goal to limit the amount of time read locking whole rooms.
@@ -237,7 +258,7 @@ impl DraftServerInfo {
         Ok(())
     }
 
-    pub fn remove_socket(&mut self, socket_id: &str) -> Result<(), AppError> {
+    pub fn remove_socket(&self, socket_id: &str) -> Result<(), AppError> {
         // Remove the socket id to the list of authenticated sockets.
         if self.is_socket_authenticated(socket_id)? {
             self.authenticated_sockets
