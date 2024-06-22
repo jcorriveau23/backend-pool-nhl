@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -7,6 +8,8 @@ use crate::pool::model::{Player, PoolSettings};
 use crate::users::model::UserEmailJwtPayload;
 use std::net::SocketAddr;
 use tokio::sync::broadcast;
+
+use super::model::RoomUser;
 
 #[async_trait]
 pub trait DraftService {
@@ -36,9 +39,12 @@ pub trait DraftService {
         token: &str,
         socket_addr: SocketAddr,
     ) -> Option<UserEmailJwtPayload>;
+    async fn unauthenticate_web_socket(&self, socket_addr: SocketAddr) -> Result<()>;
 
     // end point that list the active rooms.
     async fn list_rooms(&self) -> Result<Vec<String>>;
+    async fn list_room_users(&self, pool_name: &str) -> Result<HashMap<String, RoomUser>>;
+    async fn list_authenticated_sockets(&self) -> Result<HashMap<String, UserEmailJwtPayload>>;
 }
 
 pub type DraftServiceHandle = Arc<dyn DraftService + Send + Sync>;
