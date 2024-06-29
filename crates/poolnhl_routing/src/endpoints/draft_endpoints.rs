@@ -72,11 +72,17 @@ impl DraftRouter {
     ) -> Result<(broadcast::Receiver<String>, String)> {
         while let Some(Ok(msg)) = socket.recv().await {
             if let Message::Text(command) = msg {
+                println!("{}", command);
                 if let Ok(command) = serde_json::from_str::<Command>(&command) {
                     match command {
-                        Command::JoinRoom { pool_name } => {
+                        Command::JoinRoom {
+                            pool_name,
+                            number_poolers,
+                        } => {
                             // join the requested room.
-                            let rx = draft_service.join_room(&pool_name, *addr).await?;
+                            let rx = draft_service
+                                .join_room(&pool_name, number_poolers, *addr)
+                                .await?;
 
                             return Ok((rx, pool_name));
                         }
@@ -200,7 +206,10 @@ impl DraftRouter {
                                                 }
                                             }
                                         }
-                                        Command::JoinRoom { pool_name: _ } => {}
+                                        Command::JoinRoom {
+                                            pool_name: _,
+                                            number_poolers: _,
+                                        } => {}
                                     }
                                 } else {
                                     let _ = send_task_sender

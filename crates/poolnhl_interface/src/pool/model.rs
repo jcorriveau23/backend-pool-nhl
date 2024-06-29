@@ -91,8 +91,6 @@ pub struct PoolSettings {
     pub defense_settings: SkaterSettings,
     pub goalies_settings: GoaliesSettings,
 
-    pub can_trade: bool, // Tell if trades are activated.
-
     pub ignore_x_worst_players: Option<PlayerTypeSettings>,
     pub dynasty_settings: Option<DynastySettings>,
 }
@@ -127,7 +125,6 @@ impl PoolSettings {
                 points_per_assists: 2,
                 points_per_overtimes: 1,
             },
-            can_trade: false,
             ignore_x_worst_players: None,
             dynasty_settings: None,
         }
