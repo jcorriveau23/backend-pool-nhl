@@ -1,7 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::RwLock};
 use tokio::sync::broadcast;
-
-use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::{
     errors::AppError,
@@ -40,6 +40,25 @@ impl RoomState {
                 is_ready: false,
             },
         );
+    }
+
+    pub fn add_unmanaged_user(&mut self, user_name: &str) -> () {
+        // Add a user to a room.
+        let user_id = Uuid::new_v4();
+        self.users.insert(
+            user_id.to_string(),
+            RoomUser {
+                id: user_id.to_string(),
+                name: user_name.to_string(),
+                email: None,
+                is_ready: true,
+            },
+        );
+    }
+
+    pub fn remove_user(&mut self, user_id: &str) -> () {
+        // Add a user to a room.
+        self.users.remove(user_id);
     }
 
     pub fn on_ready(&mut self, user_id: &str) -> () {
@@ -353,6 +372,58 @@ impl DraftServerInfo {
             msg: "The user is not authenticated".to_string(),
         })
     }
+
+    pub fn add_user(
+        &self,
+        pool_name: &str,
+        user_name: &str,
+        socket_id: &str,
+    ) -> Result<HashMap<String, RoomUser>, AppError> {
+        if let Some(user) = self.get_authenticated_user_with_socket(socket_id)? {
+            if self.is_room_created(pool_name)? {
+                let mut rooms = self
+                    .rooms
+                    .write()
+                    .map_err(|e| AppError::RwLockError { msg: e.to_string() })?;
+
+                let room = rooms.get_mut(pool_name).ok_or(AppError::CustomError {
+                    msg: format!("Room '{}' could not be found.", pool_name),
+                })?;
+
+                room.add_unmanaged_user(&user_name);
+                return Ok(room.users.clone());
+            }
+        }
+        Err(AppError::CustomError {
+            msg: "The user is not authenticated".to_string(),
+        })
+    }
+
+    pub fn remove_user(
+        &self,
+        pool_name: &str,
+        user_id: &str,
+        socket_id: &str,
+    ) -> Result<HashMap<String, RoomUser>, AppError> {
+        if let Some(user) = self.get_authenticated_user_with_socket(socket_id)? {
+            if self.is_room_created(pool_name)? {
+                let mut rooms = self
+                    .rooms
+                    .write()
+                    .map_err(|e| AppError::RwLockError { msg: e.to_string() })?;
+
+                let room = rooms.get_mut(pool_name).ok_or(AppError::CustomError {
+                    msg: format!("Room '{}' could not be found.", pool_name),
+                })?;
+
+                room.users.remove(user_id);
+                return Ok(room.users.clone());
+            }
+        }
+        Err(AppError::CustomError {
+            msg: "The user is not authenticated".to_string(),
+        })
+    }
 }
 
 // A room authenticated users, There users can make some socket commands.
@@ -379,6 +450,12 @@ pub enum Command {
     },
     LeaveRoom,
     OnReady,
+    AddUser {
+        user_name: String,
+    },
+    RemoveUser {
+        user_id: String,
+    },
     OnPoolSettingChanges {
         pool_settings: PoolSettings,
     },

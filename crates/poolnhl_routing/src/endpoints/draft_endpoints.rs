@@ -166,6 +166,22 @@ impl DraftRouter {
                                                 let _ = send_task_sender.send(e.to_string()).await;
                                             }
                                         }
+                                        Command::AddUser { user_name } => {
+                                            if let Err(e) = draft_service
+                                                .add_user(&current_pool_name, &user_name, addr)
+                                                .await
+                                            {
+                                                let _ = send_task_sender.send(e.to_string()).await;
+                                            }
+                                        }
+                                        Command::RemoveUser { user_id } => {
+                                            if let Err(e) = draft_service
+                                                .remove_user(&current_pool_name, &user_id, addr)
+                                                .await
+                                            {
+                                                let _ = send_task_sender.send(e.to_string()).await;
+                                            }
+                                        }
                                         Command::StartDraft => {
                                             if let Some(user) = &user {
                                                 if let Err(e) = draft_service
