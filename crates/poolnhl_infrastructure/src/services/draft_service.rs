@@ -216,11 +216,14 @@ impl DraftService for MongoDraftService {
     async fn join_room(
         &self,
         pool_name: &str,
+        number_poolers: u8,
         socket_addr: SocketAddr,
     ) -> Result<broadcast::Receiver<String>> {
-        let (rx, room_users) = self
-            .draft_server_info
-            .join_room(pool_name, &socket_addr.to_string())?;
+        let (rx, room_users) = self.draft_server_info.join_room(
+            pool_name,
+            number_poolers,
+            &socket_addr.to_string(),
+        )?;
 
         let tx = self.draft_server_info.get_room_tx(pool_name)?;
         send_users_info(tx, room_users)?;
@@ -234,7 +237,6 @@ impl DraftService for MongoDraftService {
             .draft_server_info
             .leave_room(pool_name, &socket_addr.to_string())?;
 
-        println!("!!!!!!!!!!!!!!!!!!!!!!!Leaving {}", socket_addr.to_string());
         let tx = self.draft_server_info.get_room_tx(pool_name)?;
         send_users_info(tx, room_users)
     }

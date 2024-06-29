@@ -12,6 +12,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct RoomState {
     pub pool_name: String,
+    pub number_poolers: u8,
 
     // Map a user id to its informations room information.
     pub users: HashMap<String, RoomUser>,
@@ -19,9 +20,10 @@ pub struct RoomState {
 }
 
 impl RoomState {
-    pub fn new(pool_name: &str) -> Self {
+    pub fn new(pool_name: &str, number_poolers: u8) -> Self {
         Self {
             pool_name: pool_name.to_string(),
+            number_poolers,
             users: HashMap::new(),
             tx: broadcast::channel(100).0,
         }
@@ -168,28 +170,29 @@ impl DraftServerInfo {
             .contains_key(pool_name))
     }
 
-    pub fn create_room(&mut self, pool_name: &str) -> Result<(), AppError> {
-        self.rooms
-            .write()
-            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
-            .insert(pool_name.to_string(), RoomState::new(pool_name));
+    // pub fn create_room(&mut self, pool_name: &str) -> Result<(), AppError> {
+    //     self.rooms
+    //         .write()
+    //         .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
+    //         .insert(pool_name.to_string(), RoomState::new(pool_name));
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
-    pub fn delete_room(&mut self, pool_name: &str) -> Result<(), AppError> {
-        self.rooms
-            .write()
-            .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
-            .remove(pool_name);
+    // pub fn delete_room(&mut self, pool_name: &str) -> Result<(), AppError> {
+    //     self.rooms
+    //         .write()
+    //         .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
+    //         .remove(pool_name);
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     pub fn add_user_to_room(
         &self,
         user: &UserEmailJwtPayload,
         pool_name: &str,
+        number_poolers: u8,
     ) -> Result<(), AppError> {
         let mut rooms = self
             .rooms
@@ -200,6 +203,7 @@ impl DraftServerInfo {
             .entry(pool_name.to_string())
             .or_insert_with(|| RoomState {
                 pool_name: pool_name.to_string(),
+                number_poolers,
                 users: HashMap::new(),
                 tx: broadcast::channel(24).0,
             });
@@ -272,13 +276,14 @@ impl DraftServerInfo {
     pub fn join_room(
         &self,
         pool_name: &str,
+        number_poolers: u8,
         socket_id: &str,
     ) -> Result<(broadcast::Receiver<String>, HashMap<String, RoomUser>), AppError> {
         // Socket command: Join the socket room. (1 room per pool)
 
         // If the user is authenticated, add the user to the room.
         if let Some(user) = self.get_authenticated_user_with_socket(socket_id)? {
-            self.add_user_to_room(&user, pool_name)?
+            self.add_user_to_room(&user, pool_name, number_poolers)?
         }
 
         let (room_tx, room_users) = {
@@ -368,13 +373,20 @@ impl PartialEq for RoomUser {
 // Commands that the soket server can receive.
 #[derive(Deserialize, Serialize)]
 pub enum Command {
-    JoinRoom { pool_name: String },
+    JoinRoom {
+        pool_name: String,
+        number_poolers: u8,
+    },
     LeaveRoom,
     OnReady,
-    OnPoolSettingChanges { pool_settings: PoolSettings },
+    OnPoolSettingChanges {
+        pool_settings: PoolSettings,
+    },
     StartDraft,
     UndoDraftPlayer,
-    DraftPlayer { player: Player },
+    DraftPlayer {
+        player: Player,
+    },
 }
 
 // Response return to the sockets clients as commands response.

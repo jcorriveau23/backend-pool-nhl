@@ -28,6 +28,7 @@ pub trait DraftService {
     async fn join_room(
         &self,
         pool_name: &str,
+        number_poolers: u8,
         socket_addr: SocketAddr,
     ) -> Result<broadcast::Receiver<String>>;
     async fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr) -> Result<()>;
