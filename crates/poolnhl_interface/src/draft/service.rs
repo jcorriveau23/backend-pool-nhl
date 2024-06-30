@@ -33,6 +33,18 @@ pub trait DraftService {
     ) -> Result<broadcast::Receiver<String>>;
     async fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr) -> Result<()>;
     async fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr) -> Result<()>;
+    async fn add_user(
+        &self,
+        pool_name: &str,
+        user_name: &str,
+        socket_addr: SocketAddr,
+    ) -> Result<()>;
+    async fn remove_user(
+        &self,
+        pool_name: &str,
+        user_id: &str,
+        socket_addr: SocketAddr,
+    ) -> Result<()>;
 
     // Socket jwt token authentications (called only on socket connection)
     async fn authenticate_web_socket(

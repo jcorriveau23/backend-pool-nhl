@@ -250,4 +250,34 @@ impl DraftService for MongoDraftService {
         let tx = self.draft_server_info.get_room_tx(pool_name)?;
         send_users_info(tx, room_users)
     }
+
+    // AddUser command. This command can only be made when the pool is into CREATED status.
+    async fn add_user(
+        &self,
+        pool_name: &str,
+        user_name: &str,
+        socket_addr: SocketAddr,
+    ) -> Result<()> {
+        let room_users =
+            self.draft_server_info
+                .add_user(pool_name, user_name, &socket_addr.to_string())?;
+
+        let tx = self.draft_server_info.get_room_tx(pool_name)?;
+        send_users_info(tx, room_users)
+    }
+
+    // RemoveUser command. This command can only be made when the pool is into CREATED status.
+    async fn remove_user(
+        &self,
+        pool_name: &str,
+        user_id: &str,
+        socket_addr: SocketAddr,
+    ) -> Result<()> {
+        let room_users =
+            self.draft_server_info
+                .remove_user(pool_name, user_id, &socket_addr.to_string())?;
+
+        let tx = self.draft_server_info.get_room_tx(pool_name)?;
+        send_users_info(tx, room_users)
+    }
 }
