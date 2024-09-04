@@ -10,6 +10,8 @@ use crate::pool::model::{
     RespondTradeRequest, UpdatePoolSettingsRequest,
 };
 
+use super::model::CompleteProtectionRequest;
+
 #[async_trait]
 pub trait PoolService {
     // Get pool info calls
@@ -39,6 +41,11 @@ pub trait PoolService {
     ) -> Result<Pool>;
     // Dynasty call
     async fn protect_players(&self, user_id: &str, req: ProtectPlayersRequest) -> Result<Pool>;
+    async fn complete_protection(
+        &self,
+        user_id: &str,
+        req: CompleteProtectionRequest,
+    ) -> Result<Pool>;
     async fn mark_as_final(&self, user_id: &str, req: MarkAsFinalRequest) -> Result<Pool>;
     async fn generate_dynasty(&self, user_id: &str, req: GenerateDynastyRequest) -> Result<Pool>;
 }
