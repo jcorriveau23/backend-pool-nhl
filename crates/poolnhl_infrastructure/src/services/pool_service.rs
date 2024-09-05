@@ -465,10 +465,10 @@ impl PoolService for MongoPoolService {
             .insert(0, pool.name.clone());
         new_dynasty_settings.next_season_pool_name = None;
 
-        let mut protected_players: HashMap<String, HashSet<u32>> = HashMap::new();
+        let mut protected_players = HashMap::new();
 
         for pool_user in &pool.participants {
-            protected_players.insert(pool_user.id.clone(), HashSet::new());
+            protected_players.insert(pool_user.id.clone(), Vec::new());
         }
 
         // If the pool is dynasty type, we need to create a new pool in dynasty status.

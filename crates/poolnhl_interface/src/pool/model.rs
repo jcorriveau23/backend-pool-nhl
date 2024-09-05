@@ -734,7 +734,7 @@ impl Pool {
     pub fn protect_players(
         &mut self,
         user_id: &str,
-        protected_players: &HashSet<u32>,
+        protected_players: &Vec<u32>,
     ) -> Result<(), AppError> {
         // make sure the user making the resquest is a pool participants.
         self.validate_pool_status(&PoolState::Dynasty)?;
@@ -751,7 +751,10 @@ impl Pool {
         if protected_players.len() != dynasty_settings.next_season_number_players_protected as usize
         {
             return Err(AppError::CustomError {
-                msg: "The amount of players protected is not valid.".to_string(),
+                msg: format!(
+                    "The amount of players protected should be {}.",
+                    dynasty_settings.next_season_number_players_protected
+                ),
             });
         }
 
@@ -760,25 +763,27 @@ impl Pool {
             msg: "Pool context does not exist.".to_string(),
         })?;
 
-        if let Some(ref mut user_protected_players) = context.protected_players {
-            for player_id in protected_players.iter() {
-                let player =
-                    context
-                        .players
-                        .get(&player_id.to_string())
-                        .ok_or(AppError::CustomError {
-                            msg: "This player is not included in this pool".to_string(),
-                        })?;
+        let ref mut user_protected_players =
+            context.protected_players.get_or_insert_with(HashMap::new);
 
-                if !context.pooler_roster[user_id].validate_player_possession(player.id) {
-                    return Err(AppError::CustomError {
-                        msg: format!("You do not possess '{}'.", player.name),
-                    });
-                }
+        for player_id in protected_players.iter() {
+            let player =
+                context
+                    .players
+                    .get(&player_id.to_string())
+                    .ok_or(AppError::CustomError {
+                        msg: "This player is not included in this pool".to_string(),
+                    })?;
 
-                user_protected_players.insert(user_id.to_string(), protected_players.clone());
+            if !context.pooler_roster[user_id].validate_player_possession(player.id) {
+                return Err(AppError::CustomError {
+                    msg: format!("You do not possess '{}'.", player.name),
+                });
             }
+
+            user_protected_players.insert(user_id.to_string(), protected_players.clone());
         }
+
         Ok(())
     }
 
@@ -1118,7 +1123,7 @@ pub struct PoolContext {
     pub score_by_day: Option<HashMap<String, HashMap<String, DailyRosterPoints>>>,
     pub tradable_picks: Option<Vec<HashMap<String, String>>>,
     pub past_tradable_picks: Option<Vec<HashMap<String, String>>>,
-    pub protected_players: Option<HashMap<String, HashSet<u32>>>,
+    pub protected_players: Option<HashMap<String, Vec<u32>>>,
     pub players: HashMap<String, Player>,
 }
 
@@ -2187,7 +2192,7 @@ pub struct ModifyRosterRequest {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ProtectPlayersRequest {
     pub pool_name: String,
-    pub protected_players: HashSet<u32>,
+    pub protected_players: Vec<u32>,
 }
 
 // payload to sent when generating a new season for a dynasty type of pool.
