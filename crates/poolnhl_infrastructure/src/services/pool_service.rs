@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use chrono::{Duration, NaiveDate};
@@ -11,7 +11,8 @@ use poolnhl_interface::errors::AppError;
 
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::pool::model::{
-    GenerateDynastyRequest, PoolContext, PoolState, END_SEASON_DATE, POOL_CREATION_SEASON,
+    CompleteProtectionRequest, GenerateDynastyRequest, PoolContext, PoolState, END_SEASON_DATE,
+    POOL_CREATION_SEASON,
 };
 use poolnhl_interface::pool::{
     model::{
@@ -243,24 +244,22 @@ impl PoolService for MongoPoolService {
         // repond the trade
         pool.respond_trade(user_id, req.is_accepted, req.trade_id)?;
 
-        match &pool.context {
-            None => Err(AppError::CustomError {
-                msg: "The pool does not have pool context.".to_string(),
-            }),
-            Some(context) => {
-                // Update the field in the pool
-                let updated_fields = doc! {
-                    "$set": doc!{
-                        "trades": to_bson(&pool.trades).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                        "context.pooler_roster": to_bson(&context.pooler_roster ).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                        "context.tradable_picks": to_bson(&context.tradable_picks ).map_err(|e| AppError::MongoError { msg: e.to_string() })?
-                    }
-                };
+        let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
+            msg: "pool context does not exist.".to_string(),
+        })?;
 
-                update_pool(updated_fields, &collection, &req.pool_name).await
+        // Update the field in the pool
+        let updated_fields = doc! {
+            "$set": doc!{
+                "trades": to_bson(&pool.trades).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.pooler_roster": to_bson(&context.pooler_roster ).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.tradable_picks": to_bson(&context.tradable_picks ).map_err(|e| AppError::MongoError { msg: e.to_string() })?
             }
-        }
+        };
+
+        update_pool(updated_fields, &collection, &req.pool_name).await
     }
+
     async fn fill_spot(&self, user_id: &str, req: FillSpotRequest) -> Result<Pool> {
         let collection = self.db.collection::<Pool>("pools");
         let mut pool = get_short_pool_by_name(&collection, &req.pool_name).await?;
@@ -270,22 +269,20 @@ impl PoolService for MongoPoolService {
 
         // Update fields with the filled spot
 
-        match &pool.context {
-            None => Err(AppError::CustomError {
-                msg: "The pool does not have pool context.".to_string(),
-            }),
-            Some(context) => {
-                // Update the field in the pool
-                let updated_fields = doc! {
-                    "$set": doc!{
-                        "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?
-                    }
-                };
+        let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
+            msg: "pool context does not exist.".to_string(),
+        })?;
 
-                update_pool(updated_fields, &collection, &req.pool_name).await
+        // Update the field in the pool
+        let updated_fields = doc! {
+            "$set": doc!{
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?
             }
-        }
+        };
+
+        update_pool(updated_fields, &collection, &req.pool_name).await
     }
+
     async fn add_player(&self, user_id: &str, req: AddPlayerRequest) -> Result<Pool> {
         let collection = self.db.collection::<Pool>("pools");
         let mut pool = get_short_pool_by_name(&collection, &req.pool_name).await?;
@@ -293,24 +290,20 @@ impl PoolService for MongoPoolService {
         // Add the player into the reservist of a pooler
         pool.add_player(user_id, &req.added_player_user_id, &req.player)?;
 
-        // updated fields.
-        match &pool.context {
-            None => Err(AppError::CustomError {
-                msg: "The pool does not have pool context.".to_string(),
-            }),
-            Some(context) => {
-                let updated_fields = doc! {
-                    "$set": doc!{
-                        "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                        "context.players": to_bson(&context.players).map_err(|e| AppError::MongoError { msg: e.to_string() })?
-                    }
-                };
+        let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
+            msg: "pool context does not exist.".to_string(),
+        })?;
 
-                // Update the fields in the mongoDB pool document.
-
-                update_pool(updated_fields, &collection, &req.pool_name).await
+        let updated_fields = doc! {
+            "$set": doc!{
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.players": to_bson(&context.players).map_err(|e| AppError::MongoError { msg: e.to_string() })?
             }
-        }
+        };
+
+        // Update the fields in the mongoDB pool document.
+
+        update_pool(updated_fields, &collection, &req.pool_name).await
     }
 
     async fn remove_player(&self, user_id: &str, req: RemovePlayerRequest) -> Result<Pool> {
@@ -321,23 +314,19 @@ impl PoolService for MongoPoolService {
         pool.remove_player(user_id, &req.removed_player_user_id, req.player_id)?;
 
         // updated fields.
+        let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
+            msg: "pool context does not exist.".to_string(),
+        })?;
 
-        match &pool.context {
-            None => Err(AppError::CustomError {
-                msg: "The pool does not have pool context.".to_string(),
-            }),
-            Some(context) => {
-                let updated_fields = doc! {
-                    "$set": doc!{
-                        "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                    }
-                };
-
-                // Update the fields in the mongoDB pool document.
-
-                update_pool(updated_fields, &collection, &req.pool_name).await
+        let updated_fields = doc! {
+            "$set": doc!{
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
             }
-        }
+        };
+
+        // Update the fields in the mongoDB pool document.
+
+        update_pool(updated_fields, &collection, &req.pool_name).await
     }
 
     async fn update_pool_settings(
@@ -375,53 +364,69 @@ impl PoolService for MongoPoolService {
         )?;
         // Modify the all the pooler_roster (we could update only the pooler_roster[userId] if necessary)
 
-        match &pool.context {
-            None => Err(AppError::CustomError {
-                msg: "The pool does not have pool context.".to_string(),
-            }),
-            Some(context) => {
-                let updated_fields = doc! {
-                    "$set": doc!{
-                        "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                    }
-                };
+        let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
+            msg: "pool context does not exist.".to_string(),
+        })?;
 
-                // Update the fields in the mongoDB pool document.
-
-                update_pool(updated_fields, &collection, &req.pool_name).await
+        let updated_fields = doc! {
+            "$set": doc!{
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
             }
-        }
+        };
+
+        // Update the fields in the mongoDB pool document.
+
+        update_pool(updated_fields, &collection, &req.pool_name).await
     }
 
     async fn protect_players(&self, user_id: &str, req: ProtectPlayersRequest) -> Result<Pool> {
         let collection = self.db.collection::<Pool>("pools");
         let mut pool = get_short_pool_by_name(&collection, &req.pool_name).await?;
 
-        pool.protect_players(
-            user_id,
-            &req.forw_protected,
-            &req.def_protected,
-            &req.goal_protected,
-            &req.reserv_protected,
-        )?;
+        pool.protect_players(user_id, &req.protected_players)?;
 
-        match &pool.context {
-            None => Err(AppError::CustomError {
-                msg: "The pool does not have pool context.".to_string(),
-            }),
-            Some(context) => {
-                let updated_fields = doc! {
-                    "$set": doc!{
-                        "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                        "status":  to_bson(&pool.status).map_err(|e| AppError::MongoError { msg: e.to_string() })?
-                    }
-                };
+        let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
+            msg: "pool context does not exist.".to_string(),
+        })?;
 
-                // Update the fields in the mongoDB pool document.
-
-                update_pool(updated_fields, &collection, &req.pool_name).await
+        let updated_fields = doc! {
+            "$set": doc!{
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.protected_players": to_bson(&context.protected_players).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "status":  to_bson(&pool.status).map_err(|e| AppError::MongoError { msg: e.to_string() })?
             }
-        }
+        };
+
+        // Update the fields in the mongoDB pool document.
+
+        update_pool(updated_fields, &collection, &req.pool_name).await
+    }
+
+    async fn complete_protection(
+        &self,
+        user_id: &str,
+        req: CompleteProtectionRequest,
+    ) -> Result<Pool> {
+        let collection = self.db.collection::<Pool>("pools");
+        let mut pool = get_short_pool_by_name(&collection, &req.pool_name).await?;
+
+        pool.complete_protection(user_id)?;
+
+        let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
+            msg: "pool context does not exist.".to_string(),
+        })?;
+
+        let updated_fields = doc! {
+            "$set": doc!{
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.players": to_bson(&context.players).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "status":  to_bson(&pool.status).map_err(|e| AppError::MongoError { msg: e.to_string() })?
+            }
+        };
+
+        // Update the fields in the mongoDB pool document.
+
+        update_pool(updated_fields, &collection, &req.pool_name).await
     }
 
     async fn mark_as_final(&self, user_id: &str, req: MarkAsFinalRequest) -> Result<Pool> {
@@ -433,6 +438,7 @@ impl PoolService for MongoPoolService {
         let updated_fields = doc! {
             "$set": doc!{
                 "draft_order": to_bson(&pool.draft_order).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "final_rank": to_bson(&pool.final_rank).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
                 "status":  to_bson(&pool.status).map_err(|e| AppError::MongoError { msg: e.to_string() })?
             }
         };
@@ -442,9 +448,10 @@ impl PoolService for MongoPoolService {
 
     async fn generate_dynasty(&self, user_id: &str, req: GenerateDynastyRequest) -> Result<Pool> {
         let collection = self.db.collection::<Pool>("pools");
-        let mut pool = self.get_pool_by_name(&req.pool_name).await?;
+        let pool = self.get_pool_by_name(&req.pool_name).await?;
 
-        pool.generate_dynasty(&user_id, &req.new_pool_name)?;
+        pool.has_privileges(user_id)?;
+        pool.validate_pool_status(&PoolState::Final)?;
 
         let mut new_settings = pool.settings.clone();
         let new_dynasty_settings = new_settings
@@ -458,9 +465,14 @@ impl PoolService for MongoPoolService {
             .insert(0, pool.name.clone());
         new_dynasty_settings.next_season_pool_name = None;
 
+        let mut protected_players: HashMap<String, HashSet<u32>> = HashMap::new();
+
+        for pool_user in &pool.participants {
+            protected_players.insert(pool_user.id.clone(), HashSet::new());
+        }
+
         // If the pool is dynasty type, we need to create a new pool in dynasty status.
         // With almost everying thing from the last pool save into it.
-
         let pool_context = &pool.context.expect("The pool should have a pool context.");
         let new_dynasty_pool = Pool {
             name: req.new_pool_name,
@@ -469,7 +481,10 @@ impl PoolService for MongoPoolService {
             settings: new_settings,
             status: PoolState::Dynasty,
             final_rank: None,
-            draft_order: pool.final_rank.clone(),
+            draft_order: pool
+                .final_rank
+                .as_ref()
+                .map(|rank| rank.iter().cloned().rev().collect::<Vec<_>>()), // The default draft order is reverse the final ranking.
             trades: None,
             context: Some(PoolContext {
                 pooler_roster: pool_context.pooler_roster.clone(),
@@ -477,6 +492,7 @@ impl PoolService for MongoPoolService {
                 score_by_day: Some(HashMap::new()),
                 tradable_picks: Some(Vec::new()),
                 past_tradable_picks: pool_context.tradable_picks.clone(),
+                protected_players: Some(protected_players),
                 players: pool_context.players.clone(),
             }),
             date_updated: 0,

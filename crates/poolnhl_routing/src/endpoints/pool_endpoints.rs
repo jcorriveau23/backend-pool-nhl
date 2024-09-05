@@ -5,10 +5,10 @@ use axum::Router;
 use poolnhl_infrastructure::services::ServiceRegistry;
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::pool::model::{
-    AddPlayerRequest, CreateTradeRequest, DeleteTradeRequest, FillSpotRequest,
-    GenerateDynastyRequest, MarkAsFinalRequest, ModifyRosterRequest, Pool, PoolCreationRequest,
-    PoolDeletionRequest, ProjectedPoolShort, ProtectPlayersRequest, RemovePlayerRequest,
-    RespondTradeRequest, UpdatePoolSettingsRequest,
+    AddPlayerRequest, CompleteProtectionRequest, CreateTradeRequest, DeleteTradeRequest,
+    FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest, ModifyRosterRequest, Pool,
+    PoolCreationRequest, PoolDeletionRequest, ProjectedPoolShort, ProtectPlayersRequest,
+    RemovePlayerRequest, RespondTradeRequest, UpdatePoolSettingsRequest,
 };
 use poolnhl_interface::pool::service::PoolServiceHandle;
 use poolnhl_interface::users::model::UserEmailJwtPayload;
@@ -33,6 +33,7 @@ impl PoolRouter {
             .route("/respond-trade", post(Self::respond_trade))
             .route("/fill-spot", post(Self::fill_spot))
             .route("/protect-players", post(Self::protect_players))
+            .route("/complete-protection", post(Self::complete_protection))
             .route("/modify-roster", post(Self::modify_roster))
             .route("/update-pool-settings", post(Self::update_pool_settings))
             .route("/mark-as-final", post(Self::mark_as_final))
@@ -140,6 +141,16 @@ impl PoolRouter {
     ) -> Result<Json<Pool>> {
         pool_service
             .protect_players(&token.sub, body)
+            .await
+            .map(Json)
+    }
+    async fn complete_protection(
+        token: UserEmailJwtPayload,
+        State(pool_service): State<PoolServiceHandle>,
+        Json(body): Json<CompleteProtectionRequest>,
+    ) -> Result<Json<Pool>> {
+        pool_service
+            .complete_protection(&token.sub, body)
             .await
             .map(Json)
     }
