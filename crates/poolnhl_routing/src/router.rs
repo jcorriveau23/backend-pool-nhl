@@ -8,7 +8,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::endpoints::daily_leaders_endpoints::DailyLeadersRouter;
 use crate::endpoints::draft_endpoints::DraftRouter;
-use crate::endpoints::nhl_endpoints::NhlRouter;
+use crate::endpoints::players_endpoints::PlayersRouter;
 use crate::endpoints::pool_endpoints::PoolRouter;
 
 pub struct ApplicationController;
@@ -26,7 +26,7 @@ impl ApplicationController {
                     .merge(PoolRouter::new(service_registry.clone()))
                     .merge(DraftRouter::new(service_registry.clone()))
                     .merge(DailyLeadersRouter::new(service_registry.clone()))
-                    .merge(NhlRouter::new(service_registry.clone())),
+                    .merge(PlayersRouter::new(service_registry.clone())),
             )
             // logging so we can see whats going on
             .layer(TraceLayer::new_for_http());

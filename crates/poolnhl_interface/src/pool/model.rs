@@ -477,7 +477,7 @@ impl Pool {
         &mut self,
         user_id: &str,
         added_to_user_id: &str,
-        player: &Player,
+        player: &PoolPlayerInfo,
     ) -> Result<(), AppError> {
         self.validate_pool_status(&PoolState::InProgress)?;
         // Add a player new player into the reservists of a participant.
@@ -734,11 +734,16 @@ impl Pool {
     pub fn protect_players(
         &mut self,
         user_id: &str,
+        protected_players_user_id: &str,
         protected_players: &Vec<u32>,
     ) -> Result<(), AppError> {
         // make sure the user making the resquest is a pool participants.
         self.validate_pool_status(&PoolState::Dynasty)?;
-        self.validate_participant(user_id)?;
+        self.validate_participant(protected_players_user_id)?;
+        if user_id != protected_players_user_id {
+            // If the user making the request is not the roster asking to be modified, the user need to have privilege.
+            self.has_privileges(user_id)?;
+        }
 
         let dynasty_settings =
             self.settings
@@ -775,13 +780,18 @@ impl Pool {
                         msg: "This player is not included in this pool".to_string(),
                     })?;
 
-            if !context.pooler_roster[user_id].validate_player_possession(player.id) {
+            if !context.pooler_roster[protected_players_user_id]
+                .validate_player_possession(player.id)
+            {
                 return Err(AppError::CustomError {
                     msg: format!("You do not possess '{}'.", player.name),
                 });
             }
 
-            user_protected_players.insert(user_id.to_string(), protected_players.clone());
+            user_protected_players.insert(
+                protected_players_user_id.to_string(),
+                protected_players.clone(),
+            );
         }
 
         Ok(())
@@ -975,7 +985,7 @@ impl Pool {
         Ok(())
     }
 
-    pub fn draft_player(&mut self, user_id: &str, player: &Player) -> Result<(), AppError> {
+    pub fn draft_player(&mut self, user_id: &str, player: &PoolPlayerInfo) -> Result<(), AppError> {
         // Match against
 
         let has_privileges = self.has_owner_rights(user_id);
@@ -1124,7 +1134,7 @@ pub struct PoolContext {
     pub tradable_picks: Option<Vec<HashMap<String, String>>>,
     pub past_tradable_picks: Option<Vec<HashMap<String, String>>>,
     pub protected_players: Option<HashMap<String, Vec<u32>>>,
-    pub players: HashMap<String, Player>,
+    pub players: HashMap<String, PoolPlayerInfo>,
 }
 
 impl PoolContext {
@@ -1302,7 +1312,7 @@ impl PoolContext {
     pub fn calculate_cumulated_salary_cap(
         &self,
         pooler_roster: &PoolerRoster,
-        players: &HashMap<String, Player>,
+        players: &HashMap<String, PoolPlayerInfo>,
     ) -> Result<f64, AppError> {
         let cumulated_salary_cap = pooler_roster
             .chosen_forwards
@@ -1326,7 +1336,7 @@ impl PoolContext {
 
     pub fn can_add_player_to_roster(
         &self,
-        player: &Player,
+        player: &PoolPlayerInfo,
         pool_user_id: &str,
         settings: &PoolSettings,
     ) -> Result<bool, AppError> {
@@ -1355,7 +1365,7 @@ impl PoolContext {
 
     pub fn add_drafted_player(
         &mut self,
-        player: &Player,
+        player: &PoolPlayerInfo,
         next_drafter: &str,
         settings: &PoolSettings,
     ) -> Result<(), AppError> {
@@ -1446,7 +1456,7 @@ impl PoolContext {
     pub fn draft_player_dynasty(
         &mut self,
         user_id: &str,
-        player: &Player,
+        player: &PoolPlayerInfo,
         draft_order: &Vec<String>, // being used as draft order.
         settings: &PoolSettings,
         has_privileges: bool,
@@ -1535,7 +1545,7 @@ impl PoolContext {
     pub fn draft_player(
         &mut self,
         user_id: &str,
-        player: &Player,
+        player: &PoolPlayerInfo,
         draft_order: &Vec<String>, // being used as draft order.
         settings: &PoolSettings,
         has_privileges: bool,
@@ -2056,14 +2066,14 @@ pub struct GoalyPoolPoints {
     pub OT: u8,
 }
 
-impl PartialEq<Player> for Player {
-    fn eq(&self, other: &Player) -> bool {
+impl PartialEq<PoolPlayerInfo> for PoolPlayerInfo {
+    fn eq(&self, other: &PoolPlayerInfo) -> bool {
         self.id == other.id
     }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct Player {
+pub struct PoolPlayerInfo {
     pub id: u32, // ID from the NHL API.
     pub name: String,
     pub team: Option<u32>,
@@ -2078,6 +2088,16 @@ pub enum Position {
     F,
     D,
     G,
+}
+
+impl Position {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Position::F => "F",
+            Position::D => "D",
+            Position::G => "G",
+        }
+    }
 }
 
 impl PartialEq<Pick> for Pick {
@@ -2136,7 +2156,7 @@ pub struct PoolDeletionRequest {
 pub struct AddPlayerRequest {
     pub pool_name: String,
     pub added_player_user_id: String,
-    pub player: Player,
+    pub player: PoolPlayerInfo,
 }
 
 // payload to sent when removing player by the owner of the pool.
@@ -2192,6 +2212,7 @@ pub struct ModifyRosterRequest {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ProtectPlayersRequest {
     pub pool_name: String,
+    pub protected_players_user_id: String,
     pub protected_players: Vec<u32>,
 }
 
