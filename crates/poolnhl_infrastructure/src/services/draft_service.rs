@@ -11,7 +11,7 @@ use tokio::sync::broadcast;
 
 use poolnhl_interface::draft::model::{CommandResponse, DraftServerInfo, RoomUser};
 use poolnhl_interface::errors::Result;
-use poolnhl_interface::pool::model::{Player, Pool, PoolSettings};
+use poolnhl_interface::pool::model::{PoolPlayerInfo, Pool, PoolSettings};
 
 use crate::database_connection::DatabaseConnection;
 use crate::jwt::{hanko_token_decode, CachedJwks};
@@ -86,7 +86,7 @@ impl DraftService for MongoDraftService {
         send_pool_info(self.draft_server_info.get_room_tx(pool_name)?, updated_pool)
     }
 
-    async fn draft_player(&self, pool_name: &str, user_id: &str, player: Player) -> Result<()> {
+    async fn draft_player(&self, pool_name: &str, user_id: &str, player: PoolPlayerInfo) -> Result<()> {
         // This commands is being made when a user try to draft a player.
         // An error is returned if the command is not valid (i.e, not the user turn).
         let collection = self.db.collection::<Pool>("pools");

@@ -383,7 +383,11 @@ impl PoolService for MongoPoolService {
         let collection = self.db.collection::<Pool>("pools");
         let mut pool = get_short_pool_by_name(&collection, &req.pool_name).await?;
 
-        pool.protect_players(user_id, &req.protected_players)?;
+        pool.protect_players(
+            user_id,
+            &req.protected_players_user_id,
+            &req.protected_players,
+        )?;
 
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),
