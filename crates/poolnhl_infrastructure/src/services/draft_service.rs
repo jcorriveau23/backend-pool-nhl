@@ -11,7 +11,7 @@ use tokio::sync::broadcast;
 
 use poolnhl_interface::draft::model::{CommandResponse, DraftServerInfo, RoomUser};
 use poolnhl_interface::errors::Result;
-use poolnhl_interface::pool::model::{PoolPlayerInfo, Pool, PoolSettings};
+use poolnhl_interface::pool::model::{Pool, PoolPlayerInfo, PoolSettings};
 
 use crate::database_connection::DatabaseConnection;
 use crate::jwt::{hanko_token_decode, CachedJwks};
@@ -86,7 +86,12 @@ impl DraftService for MongoDraftService {
         send_pool_info(self.draft_server_info.get_room_tx(pool_name)?, updated_pool)
     }
 
-    async fn draft_player(&self, pool_name: &str, user_id: &str, player: PoolPlayerInfo) -> Result<()> {
+    async fn draft_player(
+        &self,
+        pool_name: &str,
+        user_id: &str,
+        player: PoolPlayerInfo,
+    ) -> Result<()> {
         // This commands is being made when a user try to draft a player.
         // An error is returned if the command is not valid (i.e, not the user turn).
         let collection = self.db.collection::<Pool>("pools");
@@ -96,26 +101,22 @@ impl DraftService for MongoDraftService {
         // Draft the player.
         pool.draft_player(user_id, &player)?;
 
-        // updated fields.
-        match &pool.context {
-            None => Err(AppError::CustomError {
-                msg: "There is no context in the pool yet.".to_string(),
-            }),
-            Some(context) => {
-                let updated_fields = doc! {
-                    "$set": doc!{
-                        "context": to_bson(context).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                        "status": to_bson(&pool.status).map_err(|e| AppError::MongoError { msg: e.to_string() })?
-                    }
-                };
-                // Update the fields in the mongoDB pool document.
+        let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
+            msg: "pool context does not exist.".to_string(),
+        })?;
 
-                let updated_pool = update_pool(updated_fields, &collection, pool_name).await?;
-
-                // Get a copy of the pool tx than send the pool information.
-                send_pool_info(self.draft_server_info.get_room_tx(pool_name)?, updated_pool)
+        let updated_fields = doc! {
+            "$set": doc!{
+                "context": to_bson(context).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "status": to_bson(&pool.status).map_err(|e| AppError::MongoError { msg: e.to_string() })?
             }
-        }
+        };
+        // Update the fields in the mongoDB pool document.
+
+        let updated_pool = update_pool(updated_fields, &collection, pool_name).await?;
+
+        // Get a copy of the pool tx than send the pool information.
+        send_pool_info(self.draft_server_info.get_room_tx(pool_name)?, updated_pool)
     }
 
     // Undo the last DraftPlayer command. This command can only be made by the pool owner.
@@ -127,22 +128,19 @@ impl DraftService for MongoDraftService {
         // Undo the last draft selection.
         pool.undo_draft_player(user_id)?;
 
-        match &pool.context {
-            None => Err(AppError::CustomError {
-                msg: "There is no context in the pool yet.".to_string(),
-            }),
-            Some(context) => {
-                let updated_fields = doc! {
-                    "$set": doc!{
-                        "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                        "context.players_name_drafted": to_bson(&context.players_name_drafted).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                    }
-                };
-                // Update the fields in the mongoDB pool document.
-                let updated_pool = update_pool(updated_fields, &collection, &pool.name).await?;
-                send_pool_info(self.draft_server_info.get_room_tx(pool_name)?, updated_pool)
+        let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
+            msg: "pool context does not exist.".to_string(),
+        })?;
+
+        let updated_fields = doc! {
+            "$set": doc!{
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.players_name_drafted": to_bson(&context.players_name_drafted).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
             }
-        }
+        };
+        // Update the fields in the mongoDB pool document.
+        let updated_pool = update_pool(updated_fields, &collection, &pool.name).await?;
+        send_pool_info(self.draft_server_info.get_room_tx(pool_name)?, updated_pool)
     }
 
     // Update pool settings, this command can only be made by the owner.

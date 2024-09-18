@@ -853,7 +853,6 @@ impl Pool {
 
             // Collect the players that should be added to the roster or reservists
             let mut players_to_add = Vec::new();
-            let mut players_to_reserve = Vec::new();
 
             for player_id in protected_players.iter() {
                 added_player_ids.insert(player_id.to_string());
@@ -865,19 +864,11 @@ impl Pool {
                 })?;
 
                 // Add the player to the roster or reservists
-                if context.can_add_player_to_roster(player, &pooler_user_id, &self.settings)? {
-                    players_to_add.push(player.clone());
-                } else {
-                    players_to_reserve.push(player_id.clone());
-                }
+                players_to_add.push(player.clone());
             }
             // After iterating, perform the mutations
             for player in players_to_add {
                 context.add_drafted_player(&player, &pooler_user_id, &self.settings)?;
-            }
-
-            for player_id in players_to_reserve {
-                context.add_player_to_reservists(player_id, &pooler_user_id)?;
             }
 
             // Add all refreshed player IDs to the global set
@@ -989,44 +980,48 @@ impl Pool {
         // Match against
 
         let has_privileges = self.has_owner_rights(user_id);
-        match (&mut self.context, &self.draft_order) {
-            (Some(context), Some(draft_order)) => {
-                let mut is_done = false;
 
-                if self.settings.dynasty_settings.is_some() && context.past_tradable_picks.is_some()
-                {
-                    // This is a dynasty draft context.
-                    // The final rank is being used as draft order.
-                    is_done = context.draft_player_dynasty(
-                        user_id,
-                        player,
-                        draft_order,
-                        &self.settings,
-                        has_privileges,
-                    )?;
-                } else {
-                    // This is a dynasty draft context.
-                    // The participant order is being used as draft order.
-                    is_done = context.draft_player(
-                        user_id,
-                        player,
-                        draft_order,
-                        &self.settings,
-                        has_privileges,
-                    )?;
-                }
+        let context = self.context.as_mut().ok_or_else(|| AppError::CustomError {
+            msg: "pool context does not exist.".to_string(),
+        })?;
 
-                if is_done {
-                    // The draft is done.
-                    self.status = PoolState::InProgress;
-                }
+        let draft_order = self
+            .draft_order
+            .as_ref()
+            .ok_or_else(|| AppError::CustomError {
+                msg: "draft order does not exist.".to_string(),
+            })?;
 
-                Ok(())
-            }
-            _ => Err(AppError::CustomError {
-                msg: "There is no pool context or draft order in the pool yet.".to_string(),
-            }),
+        let mut is_done = false;
+
+        if self.settings.dynasty_settings.is_some() && context.past_tradable_picks.is_some() {
+            // This is a dynasty draft context.
+            // The final rank is being used as draft order.
+            is_done = context.draft_player_dynasty(
+                user_id,
+                player,
+                draft_order,
+                &self.settings,
+                has_privileges,
+            )?;
+        } else {
+            // This is a dynasty draft context.
+            // The participant order is being used as draft order.
+            is_done = context.draft_player(
+                user_id,
+                player,
+                draft_order,
+                &self.settings,
+                has_privileges,
+            )?;
         }
+
+        if is_done {
+            // The draft is done.
+            self.status = PoolState::InProgress;
+        }
+
+        Ok(())
     }
 
     pub fn undo_draft_player(&mut self, user_id: &str) -> Result<(), AppError> {
@@ -1035,16 +1030,18 @@ impl Pool {
         self.has_owner_privileges(user_id)?;
         self.validate_pool_status(&PoolState::Draft)?;
 
-        match (&mut self.context, &self.draft_order) {
-            (Some(context), Some(draft_order)) => {
-                // This is a dynasty draft context.
-                // The final rank is being used as draft order.
-                context.undo_draft_player(draft_order, &self.settings)
-            }
-            _ => Err(AppError::CustomError {
-                msg: "There is no pool context or draft order in the pool yet.".to_string(),
-            }),
-        }
+        let context = self.context.as_mut().ok_or_else(|| AppError::CustomError {
+            msg: "pool context does not exist.".to_string(),
+        })?;
+
+        let draft_order = self
+            .draft_order
+            .as_ref()
+            .ok_or_else(|| AppError::CustomError {
+                msg: "draft order does not exist.".to_string(),
+            })?;
+
+        context.undo_draft_player(draft_order, &self.settings)
     }
 
     pub fn validate_participant(&self, user_id: &str) -> Result<(), AppError> {
@@ -1317,6 +1314,8 @@ impl PoolContext {
         let cumulated_salary_cap = pooler_roster
             .chosen_forwards
             .iter()
+            .chain(pooler_roster.chosen_defenders.iter()) // Chain defenders
+            .chain(pooler_roster.chosen_goalies.iter())
             .map(|player_id| {
                 players
                     .get(&player_id.to_string())
@@ -1405,9 +1404,6 @@ impl PoolContext {
             if !is_added {
                 pooler_roster.chosen_reservists.push(player.id);
             }
-
-            self.players.insert(player.id.to_string(), player.clone());
-            self.players_name_drafted.push(player.id);
         }
         Ok(())
     }
@@ -1463,10 +1459,10 @@ impl PoolContext {
     ) -> Result<bool, AppError> {
         // First, validate that the player selected is not already picked by any of the other poolers.
 
-        for roster in self.pooler_roster.values() {
+        for (id, roster) in &self.pooler_roster {
             if roster.validate_player_possession(player.id) {
                 return Err(AppError::CustomError {
-                    msg: "This player is already picked.".to_string(),
+                    msg: format!("{} is already picked by {}.", player.name, id),
                 });
             }
         }
@@ -1482,6 +1478,8 @@ impl PoolContext {
         // Add the drafted player if everything goes right.
         self.add_drafted_player(player, &next_drafter, settings)?;
 
+        self.players.insert(player.id.to_string(), player.clone());
+        self.players_name_drafted.push(player.id);
         self.is_draft_done(settings)
     }
 
@@ -1512,7 +1510,7 @@ impl PoolContext {
         loop {
             let nb_players_drafted = self.players_name_drafted.len();
 
-            let index_draft = draft_order.len() - 1 - (nb_players_drafted % draft_order.len());
+            let index_draft = nb_players_drafted % draft_order.len();
             // Fetch the next drafter without considering if the trade has been traded yet.
             next_drafter = &draft_order[index_draft];
 
@@ -1585,6 +1583,8 @@ impl PoolContext {
         // Add the drafted player if everything goes right.
         self.add_drafted_player(player, &next_drafter, settings)?;
 
+        self.players.insert(player.id.to_string(), player.clone());
+        self.players_name_drafted.push(player.id);
         self.is_draft_done(settings)
     }
 
@@ -1622,7 +1622,7 @@ impl PoolContext {
 
                 let nb_tradable_picks = dynasty_settings.tradable_picks;
 
-                let index = participants.len() - 1 - (pick_number % participants.len());
+                let index = pick_number % participants.len();
 
                 let next_drafter = &participants[index];
 
