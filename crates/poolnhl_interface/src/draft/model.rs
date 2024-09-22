@@ -390,6 +390,11 @@ impl DraftServerInfo {
                     msg: format!("Room '{}' could not be found.", pool_name),
                 })?;
 
+                if room.users.values().any(|user| user.name == user_name) {
+                    return Err(AppError::CustomError {
+                        msg: format!("There is already a user with the name {}", user_name),
+                    });
+                }
                 room.add_unmanaged_user(&user_name);
                 return Ok(room.users.clone());
             }

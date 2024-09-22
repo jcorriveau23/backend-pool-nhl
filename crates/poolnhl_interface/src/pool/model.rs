@@ -11,10 +11,10 @@ use std::{
 //
 
 pub const START_SEASON_DATE: &str = "2024-10-4";
-pub const END_SEASON_DATE: &str = "2024-04-18";
+pub const END_SEASON_DATE: &str = "2025-04-17";
 pub const POOL_CREATION_SEASON: u32 = 20242025;
 
-pub const TRADE_DEADLINE_DATE: &str = "2024-03-08";
+pub const TRADE_DEADLINE_DATE: &str = "2025-03-07";
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ProjectedPoolShort {
@@ -823,6 +823,16 @@ impl Pool {
                     msg: "The protected players object does not exist.".to_string(),
                 })?;
 
+        if protected_players_map.len() != self.participants.len() {
+            return Err(AppError::CustomError {
+                msg: format!(
+                    "{} out of {} poolers have protected their players.",
+                    protected_players_map.len(),
+                    self.participants.len()
+                ),
+            });
+        }
+
         let mut all_added_player_ids = HashSet::new();
 
         for (pooler_user_id, protected_players) in protected_players_map {
@@ -1467,7 +1477,7 @@ impl PoolContext {
             }
         }
         // Find the next draft id for dynasty type pool.
-        let next_drafter = self.find_dynasty_next_drafter(draft_order, settings)?;
+        let next_drafter = self.find_dynasty_next_drafter(draft_order)?;
 
         if !has_privileges && next_drafter != user_id {
             return Err(AppError::CustomError {
@@ -1480,22 +1490,42 @@ impl PoolContext {
 
         self.players.insert(player.id.to_string(), player.clone());
         self.players_name_drafted.push(player.id);
+
+        // Get the maximum number of player a user can draft.
+        let mut continue_count = 0;
+        let max_player_count = settings.number_forwards
+            + settings.number_defenders
+            + settings.number_goalies
+            + settings.number_reservists;
+
+        // Fill the drafters that have completed with 0.
+        loop {
+            let new_next_drafter = self.find_dynasty_next_drafter(draft_order)?;
+            if self.get_roster_count(&new_next_drafter)? >= max_player_count as usize {
+                if self.is_draft_done(settings)? {
+                    return Ok(true);
+                }
+                self.players_name_drafted.push(0); // Id 0 means the players did not draft because his roster is already full
+
+                continue_count += 1;
+
+                if continue_count >= draft_order.len() {
+                    break;
+                }
+                continue;
+            }
+            break;
+        }
+
         self.is_draft_done(settings)
     }
 
     pub fn find_dynasty_next_drafter(
         &mut self,
         draft_order: &Vec<String>, // being used as draft order.
-        settings: &PoolSettings,
     ) -> Result<String, AppError> {
         // Draft the right player in dynasty mode.
         // This takes into account the trade that have been traded during last season (past_tradable_picks).
-
-        // Get the maximum number of player a user can draft.
-        let max_player_count = settings.number_forwards
-            + settings.number_defenders
-            + settings.number_goalies
-            + settings.number_reservists;
 
         let past_tradable_picks =
             self.past_tradable_picks
@@ -1505,36 +1535,18 @@ impl PoolContext {
                 })?;
 
         // To make sure the program never go into an infinite loop. we use a counter.
-        let mut continue_count = 0;
         let mut next_drafter;
-        loop {
-            let nb_players_drafted = self.players_name_drafted.len();
+        let nb_players_drafted = self.players_name_drafted.len();
 
-            let index_draft = nb_players_drafted % draft_order.len();
-            // Fetch the next drafter without considering if the trade has been traded yet.
-            next_drafter = &draft_order[index_draft];
+        let index_draft = nb_players_drafted % draft_order.len();
+        // Fetch the next drafter without considering if the trade has been traded yet.
+        next_drafter = &draft_order[index_draft];
 
-            if nb_players_drafted < (past_tradable_picks.len() * draft_order.len()) {
-                // use the tradable_picks to see if the pick got traded so it is to the person owning the pick to draft.
+        if nb_players_drafted < (past_tradable_picks.len() * draft_order.len()) {
+            // use the tradable_picks to see if the pick got traded so it is to the person owning the pick to draft.
 
-                next_drafter =
-                    &past_tradable_picks[nb_players_drafted / draft_order.len()][next_drafter];
-            }
-
-            if self.get_roster_count(next_drafter)? >= max_player_count as usize {
-                self.players_name_drafted.push(0); // Id 0 means the players did not draft because his roster is already full
-
-                continue_count += 1;
-
-                if continue_count >= draft_order.len() {
-                    return Err(AppError::CustomError {
-                        msg: "All poolers have the maximum amount player drafted.".to_string(),
-                    });
-                }
-                continue;
-            }
-
-            break;
+            next_drafter =
+                &past_tradable_picks[nb_players_drafted / draft_order.len()][next_drafter];
         }
 
         Ok(next_drafter.clone())
