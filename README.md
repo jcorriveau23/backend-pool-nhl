@@ -1,6 +1,9 @@
 # backend-pool-nhl
 
-Free NHL hockey pool build using the nhl api using react, axum and mongo db.
+[hockeypool.live](https://hockeypool.live)
+
+built with next-js shadcn and rust, [See frontend repository](https://github.com/jcorriveau23/new-frontend-pool-nhl)
+
 
 https://hockeypool.live
 
