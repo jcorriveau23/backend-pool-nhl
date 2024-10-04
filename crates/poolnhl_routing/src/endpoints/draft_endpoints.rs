@@ -58,8 +58,12 @@ impl DraftRouter {
         ConnectInfo(addr): ConnectInfo<SocketAddr>,
         State(draft_service): State<DraftServiceHandle>,
     ) -> impl IntoResponse {
-        let user = draft_service.authenticate_web_socket(&jwt, addr).await;
-        ws.on_upgrade(move |socket| Self::handle_socket(socket, user, addr, draft_service))
+        if jwt != "unauthenticated" {
+            let user = draft_service.authenticate_web_socket(&jwt, addr).await;
+            return ws
+                .on_upgrade(move |socket| Self::handle_socket(socket, user, addr, draft_service));
+        }
+        ws.on_upgrade(move |socket| Self::handle_socket(socket, None, addr, draft_service))
     }
 
     // The initial socket state.
@@ -70,6 +74,7 @@ impl DraftRouter {
         addr: &SocketAddr,
         draft_service: &DraftServiceHandle,
     ) -> Result<(broadcast::Receiver<String>, String)> {
+        println!("waiting to join room");
         while let Some(Ok(msg)) = socket.recv().await {
             if let Message::Text(command) = msg {
                 println!("{}", command);
@@ -104,6 +109,7 @@ impl DraftRouter {
     ) {
         // At the beginning there is a state where the user needs to join a room
         // before leaving the initial socket state.
+        println!("handle socket");
         let is_authenticated_users = user.is_some();
 
         match DraftRouter::waiting_join_room_command(&mut socket, &addr, &draft_service).await {
@@ -182,10 +188,14 @@ impl DraftRouter {
                                                 let _ = send_task_sender.send(e.to_string()).await;
                                             }
                                         }
-                                        Command::StartDraft => {
+                                        Command::StartDraft { draft_order } => {
                                             if let Some(user) = &user {
                                                 if let Err(e) = draft_service
-                                                    .start_draft(&current_pool_name, &user.sub)
+                                                    .start_draft(
+                                                        &current_pool_name,
+                                                        &user.sub,
+                                                        &draft_order,
+                                                    )
                                                     .await
                                                 {
                                                     let _ =

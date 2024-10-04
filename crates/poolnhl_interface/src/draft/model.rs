@@ -189,24 +189,6 @@ impl DraftServerInfo {
             .contains_key(pool_name))
     }
 
-    // pub fn create_room(&mut self, pool_name: &str) -> Result<(), AppError> {
-    //     self.rooms
-    //         .write()
-    //         .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
-    //         .insert(pool_name.to_string(), RoomState::new(pool_name));
-
-    //     Ok(())
-    // }
-
-    // pub fn delete_room(&mut self, pool_name: &str) -> Result<(), AppError> {
-    //     self.rooms
-    //         .write()
-    //         .map_err(|e| AppError::RwLockError { msg: e.to_string() })?
-    //         .remove(pool_name);
-
-    //     Ok(())
-    // }
-
     pub fn add_user_to_room(
         &self,
         user: &UserEmailJwtPayload,
@@ -464,7 +446,9 @@ pub enum Command {
     OnPoolSettingChanges {
         pool_settings: PoolSettings,
     },
-    StartDraft,
+    StartDraft {
+        draft_order: Option<Vec<String>>,
+    },
     UndoDraftPlayer,
     DraftPlayer {
         player: PoolPlayerInfo,

@@ -14,7 +14,12 @@ use super::model::RoomUser;
 #[async_trait]
 pub trait DraftService {
     // Socket Pool commands
-    async fn start_draft(&self, pool_name: &str, user_id: &str) -> Result<()>;
+    async fn start_draft(
+        &self,
+        pool_name: &str,
+        user_id: &str,
+        draft_order: &Option<Vec<String>>,
+    ) -> Result<()>;
     async fn draft_player(
         &self,
         pool_name: &str,

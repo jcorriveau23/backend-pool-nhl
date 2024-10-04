@@ -58,7 +58,12 @@ impl MongoDraftService {
 
 #[async_trait]
 impl DraftService for MongoDraftService {
-    async fn start_draft(&self, pool_name: &str, user_id: &str) -> Result<()> {
+    async fn start_draft(
+        &self,
+        pool_name: &str,
+        user_id: &str,
+        draft_order: &Option<Vec<String>>,
+    ) -> Result<()> {
         // Commands that initiate the draft. This command update the pool state from CREATED -> DRAFT
         // This update the pool in the database.
         let collection = self.db.collection::<Pool>("pools");
@@ -68,7 +73,7 @@ impl DraftService for MongoDraftService {
         // These will be added as official pool participants.
         let room_users = self.draft_server_info.get_room_users(pool_name)?;
 
-        pool.start_draft(user_id, &room_users)?;
+        pool.start_draft(user_id, &room_users, draft_order)?;
 
         // Update the whole pool information in database.
         let collection = self.db.collection::<Pool>("pools");

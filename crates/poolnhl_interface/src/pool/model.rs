@@ -956,6 +956,7 @@ impl Pool {
         &mut self,
         user_id: &str,
         room_users: &Vec<RoomUser>,
+        draft_order: &Option<Vec<String>>,
     ) -> Result<(), AppError> {
         self.validate_pool_status(&PoolState::Created)?;
         self.has_owner_privileges(user_id)?;
@@ -970,19 +971,29 @@ impl Pool {
         }
 
         // Shuffle the pool participants. so the draft order is
-        let mut room_users = room_users.clone();
-        room_users.shuffle(&mut thread_rng());
+        let room_users = room_users.clone();
 
         self.status = PoolState::Draft;
 
-        let user_ids: Vec<String> = room_users.iter().map(|user| user.id.clone()).collect();
+        let mut user_ids: Vec<String> = room_users.iter().map(|user| user.id.clone()).collect();
 
         self.context = Some(PoolContext::new(&user_ids));
 
         self.participants = room_users.into_iter().map(PoolUser::from).collect();
 
         // Set the draft order with the shuffle list.
-        self.draft_order = Some(user_ids);
+        if let Some(draft_order) = draft_order {
+            if !draft_order.iter().all(|user_id| user_ids.contains(user_id)) {
+                return Err(AppError::CustomError {
+                    msg: "The draft order list provided is not valid.".to_string(),
+                });
+            }
+            self.draft_order = Some(user_ids);
+        } else {
+            // If no draft order is provided, shuffle the list of users before assigning the draft order.
+            user_ids.shuffle(&mut thread_rng());
+            self.draft_order = Some(user_ids);
+        }
         Ok(())
     }
 
@@ -1350,14 +1361,14 @@ impl PoolContext {
         settings: &PoolSettings,
     ) -> Result<bool, AppError> {
         // If there is salary cap management, don't add to the starting roster players without contracts or if the user doesn't have enough space.
-        let pooler_roster =
-            self.pooler_roster
-                .get(pool_user_id)
-                .ok_or_else(|| AppError::CustomError {
-                    msg: "Pooler roster does not exist.".to_string(),
-                })?;
-
         if let Some(team_salary_cap) = settings.salary_cap {
+            let pooler_roster =
+                self.pooler_roster
+                    .get(pool_user_id)
+                    .ok_or_else(|| AppError::CustomError {
+                        msg: "Pooler roster does not exist.".to_string(),
+                    })?;
+
             let cumulated_salary_cap =
                 self.calculate_cumulated_salary_cap(pooler_roster, &self.players)?;
 
@@ -1412,6 +1423,12 @@ impl PoolContext {
 
             // If the there is not enough place in the roster, try to add the player in the reservists.
             if !is_added {
+                // Return an error when the player could not be added.
+                if settings.number_reservists == 0 {
+                    return Err(AppError::CustomError {
+                        msg: format!("There is no space for {} in the roster.", player.name),
+                    });
+                }
                 pooler_roster.chosen_reservists.push(player.id);
             }
         }
