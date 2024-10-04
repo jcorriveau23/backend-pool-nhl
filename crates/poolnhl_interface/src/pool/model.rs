@@ -10,7 +10,7 @@ use std::{
 // Date for season
 //
 
-pub const START_SEASON_DATE: &str = "2024-10-4";
+pub const START_SEASON_DATE: &str = "2024-10-8";
 pub const END_SEASON_DATE: &str = "2025-04-17";
 pub const POOL_CREATION_SEASON: u32 = 20242025;
 
@@ -562,7 +562,7 @@ impl Pool {
             self.has_privileges(user_id)?;
         }
 
-        let start_season_date = NaiveDate::parse_from_str(START_SEASON_DATE, "%Y-%m-%d")
+        let start_season_date = NaiveDate::parse_from_str(&self.season_start, "%Y-%m-%d")
             .map_err(|e| AppError::ParseError { msg: e.to_string() })?;
 
         let mut today = Local::now().date_naive();
