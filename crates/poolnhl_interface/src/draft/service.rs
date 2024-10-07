@@ -18,7 +18,7 @@ pub trait DraftService {
         &self,
         pool_name: &str,
         user_id: &str,
-        draft_order: &Option<Vec<String>>,
+        draft_order: &Vec<String>,
     ) -> Result<()>;
     async fn draft_player(
         &self,

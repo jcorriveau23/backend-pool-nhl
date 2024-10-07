@@ -956,44 +956,29 @@ impl Pool {
         &mut self,
         user_id: &str,
         room_users: &Vec<RoomUser>,
-        draft_order: &Option<Vec<String>>,
+        draft_order: &Vec<String>,
     ) -> Result<(), AppError> {
         self.validate_pool_status(&PoolState::Created)?;
         self.has_owner_privileges(user_id)?;
 
-        if self.settings.number_poolers as usize != room_users.len() {
-            return Err(AppError::CustomError {
-                msg: format!(
-                    "The number of participants should be {}.",
-                    self.settings.number_poolers
-                ),
-            });
-        }
-
         // Shuffle the pool participants. so the draft order is
         let room_users = room_users.clone();
 
-        self.status = PoolState::Draft;
-
-        let mut user_ids: Vec<String> = room_users.iter().map(|user| user.id.clone()).collect();
-
-        self.context = Some(PoolContext::new(&user_ids));
-
-        self.participants = room_users.into_iter().map(PoolUser::from).collect();
+        let user_ids: Vec<String> = room_users.iter().map(|user| user.id.clone()).collect();
 
         // Set the draft order with the shuffle list.
-        if let Some(draft_order) = draft_order {
-            if !draft_order.iter().all(|user_id| user_ids.contains(user_id)) {
-                return Err(AppError::CustomError {
-                    msg: "The draft order list provided is not valid.".to_string(),
-                });
-            }
-            self.draft_order = Some(user_ids);
-        } else {
-            // If no draft order is provided, shuffle the list of users before assigning the draft order.
-            user_ids.shuffle(&mut thread_rng());
-            self.draft_order = Some(user_ids);
+        if !draft_order.iter().all(|user_id| user_ids.contains(user_id)) {
+            return Err(AppError::CustomError {
+                msg: "The draft order list provided is not valid.".to_string(),
+            });
         }
+
+        self.status = PoolState::Draft;
+        self.context = Some(PoolContext::new(&user_ids));
+        self.settings.number_poolers = user_ids.len() as u8;
+        self.participants = room_users.into_iter().map(PoolUser::from).collect();
+        self.draft_order = Some(draft_order.clone());
+
         Ok(())
     }
 

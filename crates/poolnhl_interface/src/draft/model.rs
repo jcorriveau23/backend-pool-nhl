@@ -447,7 +447,7 @@ pub enum Command {
         pool_settings: PoolSettings,
     },
     StartDraft {
-        draft_order: Option<Vec<String>>,
+        draft_order: Vec<String>,
     },
     UndoDraftPlayer,
     DraftPlayer {

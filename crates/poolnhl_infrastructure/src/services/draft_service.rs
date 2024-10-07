@@ -62,7 +62,7 @@ impl DraftService for MongoDraftService {
         &self,
         pool_name: &str,
         user_id: &str,
-        draft_order: &Option<Vec<String>>,
+        draft_order: &Vec<String>,
     ) -> Result<()> {
         // Commands that initiate the draft. This command update the pool state from CREATED -> DRAFT
         // This update the pool in the database.
