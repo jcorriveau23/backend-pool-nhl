@@ -58,6 +58,7 @@ impl DraftRouter {
         ConnectInfo(addr): ConnectInfo<SocketAddr>,
         State(draft_service): State<DraftServiceHandle>,
     ) -> impl IntoResponse {
+        println!("{} is trying to log in", jwt);
         if jwt != "unauthenticated" {
             let user = draft_service.authenticate_web_socket(&jwt, addr).await;
             return ws
