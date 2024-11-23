@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 
+use chrono::{Duration, Local, Timelike};
 use mongodb::bson::doc;
 use poolnhl_interface::errors::AppError;
 
@@ -23,8 +24,23 @@ impl DailyLeadersService for MongoDailyLeadersService {
     async fn get_daily_leaders(&self, date: &str) -> Result<DailyLeaders> {
         let collection = self.db.collection::<DailyLeaders>("day_leaders");
 
+        let mut formatted_date = date.to_string();
+
+        if date == "now" {
+            let mut today = Local::now().date_naive();
+
+            let time = Local::now().time();
+
+            // Before 12PM fetch games of yesterday.
+
+            if time.hour() < 12 {
+                today -= Duration::days(1);
+            }
+            formatted_date = today.format("%Y-%m-%d").to_string();
+        }
+
         let daily_leaders = collection
-            .find_one(doc! {"date": &date}, None)
+            .find_one(doc! {"date": &formatted_date}, None)
             .await
             .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
 

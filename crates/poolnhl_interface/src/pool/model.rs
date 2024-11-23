@@ -1,7 +1,5 @@
 use crate::{draft::model::RoomUser, errors::AppError};
 use chrono::{Duration, Local, NaiveDate, Timelike, Utc};
-use rand::seq::SliceRandom;
-use rand::thread_rng;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
