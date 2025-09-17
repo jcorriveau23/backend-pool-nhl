@@ -8,11 +8,11 @@ use std::{
 // Date for season
 //
 
-pub const START_SEASON_DATE: &str = "2024-10-8";
-pub const END_SEASON_DATE: &str = "2025-04-17";
-pub const POOL_CREATION_SEASON: u32 = 20242025;
+pub const START_SEASON_DATE: &str = "2025-10-7";
+pub const END_SEASON_DATE: &str = "2026-04-16";
+pub const POOL_CREATION_SEASON: u32 = 20252026;
 
-pub const TRADE_DEADLINE_DATE: &str = "2025-03-07";
+pub const TRADE_DEADLINE_DATE: &str = "2026-03-07";
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ProjectedPoolShort {
@@ -963,6 +963,12 @@ impl Pool {
         let room_users = room_users.clone();
 
         let user_ids: Vec<String> = room_users.iter().map(|user| user.id.clone()).collect();
+
+        if user_ids.len() as u8 != self.settings.number_poolers {
+            return Err(AppError::CustomError {
+                msg: "The number of pooler should match the expected in the settings.".to_string(),
+            });
+        }
 
         // Set the draft order with the shuffle list.
         if !draft_order.iter().all(|user_id| user_ids.contains(user_id)) {
@@ -2238,7 +2244,7 @@ pub struct CompleteProtectionRequest {
 #[derive(Debug, Deserialize, Clone)]
 pub struct UpdatePoolSettingsRequest {
     pub pool_name: String,
-    pub pool_settings: PoolSettings,
+    pub settings: PoolSettings,
 }
 
 // payload to sent when marking a pool as final

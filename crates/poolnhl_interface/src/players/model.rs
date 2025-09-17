@@ -38,4 +38,8 @@ pub struct PlayerInfo {
     pub points_per_game: Option<f32>,
     pub goal_against_average: Option<f32>,
     pub save_percentage: Option<f32>,
+    pub saves: Option<u32>,
+    pub shots: Option<u32>,
+    pub wins: Option<u32>,
+    pub ot: Option<u32>,
 }

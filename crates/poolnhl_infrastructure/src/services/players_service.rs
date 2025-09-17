@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use futures::TryStreamExt;
 use mongodb::bson::doc;
 use mongodb::options::FindOptions;
+use mongodb::Collection;
 use poolnhl_interface::errors::AppError;
 
 use poolnhl_interface::errors::Result;
@@ -15,12 +16,13 @@ use crate::database_connection::DatabaseConnection;
 
 #[derive(Clone)]
 pub struct MongoPlayersService {
-    db: DatabaseConnection,
+    collection: Collection<PlayerInfo>,
 }
 
 impl MongoPlayersService {
     pub fn new(db: DatabaseConnection) -> Self {
-        Self { db }
+        let collection = db.collection::<PlayerInfo>("players");
+        Self { collection }
     }
 }
 #[async_trait]
@@ -53,8 +55,8 @@ impl PlayersService for MongoPlayersService {
             .limit(limit)
             .build();
 
-        let collection = self.db.collection::<PlayerInfo>("players");
-        let players = collection
+        let players = self
+            .collection
             .find(filter, find_options)
             .await
             .map_err(|e| AppError::MongoError { msg: e.to_string() })?
@@ -72,8 +74,8 @@ impl PlayersService for MongoPlayersService {
 
         let find_options = FindOptions::builder().limit(limit).build();
 
-        let collection = self.db.collection::<PlayerInfo>("players");
-        let players = collection
+        let players = self
+            .collection
             .find(filter, find_options)
             .await
             .map_err(|e| AppError::MongoError { msg: e.to_string() })?

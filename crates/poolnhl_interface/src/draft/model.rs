@@ -361,7 +361,7 @@ impl DraftServerInfo {
         user_name: &str,
         socket_id: &str,
     ) -> Result<HashMap<String, RoomUser>, AppError> {
-        if let Some(user) = self.get_authenticated_user_with_socket(socket_id)? {
+        if let Some(_user) = self.get_authenticated_user_with_socket(socket_id)? {
             if self.is_room_created(pool_name)? {
                 let mut rooms = self
                     .rooms
@@ -392,7 +392,7 @@ impl DraftServerInfo {
         user_id: &str,
         socket_id: &str,
     ) -> Result<HashMap<String, RoomUser>, AppError> {
-        if let Some(user) = self.get_authenticated_user_with_socket(socket_id)? {
+        if let Some(_user) = self.get_authenticated_user_with_socket(socket_id)? {
             if self.is_room_created(pool_name)? {
                 let mut rooms = self
                     .rooms
