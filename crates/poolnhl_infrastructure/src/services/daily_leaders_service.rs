@@ -18,9 +18,7 @@ pub struct MongoDailyLeadersService {
 impl MongoDailyLeadersService {
     pub fn new(db: DatabaseConnection) -> Self {
         let collection = db.collection::<DailyLeaders>("day_leaders");
-        Self {
-            collection: collection,
-        }
+        Self { collection }
     }
 }
 #[async_trait]
