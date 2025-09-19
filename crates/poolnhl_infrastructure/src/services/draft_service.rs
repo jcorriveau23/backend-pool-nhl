@@ -4,6 +4,7 @@ use mongodb::bson::to_bson;
 use mongodb::Collection;
 use poolnhl_interface::draft::service::DraftService;
 use poolnhl_interface::errors::AppError;
+use poolnhl_interface::players::model::PlayerInfo;
 use poolnhl_interface::users::model::UserEmailJwtPayload;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -12,15 +13,18 @@ use tokio::sync::broadcast;
 
 use poolnhl_interface::draft::model::{CommandResponse, DraftServerInfo, RoomUser};
 use poolnhl_interface::errors::Result;
-use poolnhl_interface::pool::model::{Pool, PoolPlayerInfo, PoolSettings};
+use poolnhl_interface::pool::model::{Pool, PoolSettings};
 
 use crate::database_connection::DatabaseConnection;
 use crate::jwt::{hanko_token_decode, CachedJwks};
 
+use crate::services::players_service::get_player_with_id;
 use crate::services::pool_service::{get_short_pool_by_name, update_pool};
 
 pub struct MongoDraftService {
-    collection: Collection<Pool>,
+    // Need both collections during Draft session.
+    pool_collection: Collection<Pool>,
+    players_collection: Collection<PlayerInfo>,
 
     draft_server_info: DraftServerInfo,
     cached_jwks: Arc<CachedJwks>,
@@ -49,9 +53,11 @@ pub fn send_users_info(
 
 impl MongoDraftService {
     pub fn new(db: DatabaseConnection, cached_jwks: Arc<CachedJwks>) -> Self {
-        let collection = db.collection::<Pool>("pools");
+        let pool_collection = db.collection::<Pool>("pools");
+        let players_collection = db.collection::<PlayerInfo>("players");
         Self {
-            collection,
+            pool_collection,
+            players_collection,
             cached_jwks: cached_jwks,
             draft_server_info: DraftServerInfo::new(),
         }
@@ -69,7 +75,7 @@ impl DraftService for MongoDraftService {
         // Commands that initiate the draft. This command update the pool state from CREATED -> DRAFT
         // This update the pool in the database.
 
-        let mut pool = get_short_pool_by_name(&self.collection, pool_name).await?;
+        let mut pool = get_short_pool_by_name(&self.pool_collection, pool_name).await?;
         // List all users that participate in the pool.
         // These will be added as official pool participants.
         let room_users = self.draft_server_info.get_room_users(pool_name)?;
@@ -85,20 +91,16 @@ impl DraftService for MongoDraftService {
         // TODO Add the new pool to the list so that we know in which pool each users participated in.
         // add_pool_to_users(&collection_users, &_pool_info.name, participants).await?;
 
-        let updated_pool = update_pool(updated_fields, &self.collection, pool_name).await?;
+        let updated_pool = update_pool(updated_fields, &self.pool_collection, pool_name).await?;
         send_pool_info(self.draft_server_info.get_room_tx(pool_name)?, updated_pool)
     }
 
-    async fn draft_player(
-        &self,
-        pool_name: &str,
-        user_id: &str,
-        player: PoolPlayerInfo,
-    ) -> Result<()> {
+    async fn draft_player(&self, pool_name: &str, user_id: &str, player_id: i64) -> Result<()> {
         // This commands is being made when a user try to draft a player.
         // An error is returned if the command is not valid (i.e, not the user turn).
 
-        let mut pool = get_short_pool_by_name(&self.collection, pool_name).await?;
+        let mut pool = get_short_pool_by_name(&self.pool_collection, pool_name).await?;
+        let player = get_player_with_id(&self.players_collection, player_id).await?;
 
         // Draft the player.
         pool.draft_player(user_id, &player)?;
@@ -115,7 +117,7 @@ impl DraftService for MongoDraftService {
         };
         // Update the fields in the mongoDB pool document.
 
-        let updated_pool = update_pool(updated_fields, &self.collection, pool_name).await?;
+        let updated_pool = update_pool(updated_fields, &self.pool_collection, pool_name).await?;
 
         // Get a copy of the pool tx than send the pool information.
         send_pool_info(self.draft_server_info.get_room_tx(pool_name)?, updated_pool)
@@ -123,7 +125,7 @@ impl DraftService for MongoDraftService {
 
     // Undo the last DraftPlayer command. This command can only be made by the pool owner.
     async fn undo_draft_player(&self, pool_name: &str, user_id: &str) -> Result<()> {
-        let mut pool = get_short_pool_by_name(&self.collection, pool_name).await?;
+        let mut pool = get_short_pool_by_name(&self.pool_collection, pool_name).await?;
 
         // Undo the last draft selection.
         pool.undo_draft_player(user_id)?;
@@ -139,7 +141,7 @@ impl DraftService for MongoDraftService {
             }
         };
         // Update the fields in the mongoDB pool document.
-        let updated_pool = update_pool(updated_fields, &self.collection, &pool.name).await?;
+        let updated_pool = update_pool(updated_fields, &self.pool_collection, &pool.name).await?;
         send_pool_info(self.draft_server_info.get_room_tx(pool_name)?, updated_pool)
     }
 
@@ -151,7 +153,7 @@ impl DraftService for MongoDraftService {
         pool_name: &str,
         pool_settings: &PoolSettings,
     ) -> Result<()> {
-        let pool = get_short_pool_by_name(&self.collection, pool_name).await?;
+        let pool = get_short_pool_by_name(&self.pool_collection, pool_name).await?;
 
         pool.can_update_pool_settings(use_id)?;
 
@@ -162,7 +164,7 @@ impl DraftService for MongoDraftService {
             }
         };
 
-        let updated_pool = update_pool(updated_fields, &self.collection, pool_name).await?;
+        let updated_pool = update_pool(updated_fields, &self.pool_collection, pool_name).await?;
         send_pool_info(self.draft_server_info.get_room_tx(pool_name)?, updated_pool)
     }
 

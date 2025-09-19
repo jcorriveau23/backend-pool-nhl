@@ -25,6 +25,26 @@ impl MongoPlayersService {
         Self { collection }
     }
 }
+
+pub async fn get_player_with_id(
+    collection: &Collection<PlayerInfo>,
+    player_id: i64,
+) -> Result<PlayerInfo> {
+    // Moved this part of the function here cause it is being reused in draft-service,
+    // not only in player-services.
+    let filter = doc! {"id": player_id};
+
+    let player = collection
+        .find_one(filter, None)
+        .await
+        .map_err(|e| AppError::MongoError { msg: e.to_string() })?
+        .ok_or_else(|| AppError::CustomError {
+            msg: format!("Player with id {} not found", player_id),
+        })?;
+
+    Ok(player)
+}
+
 #[async_trait]
 impl PlayersService for MongoPlayersService {
     async fn get_players(&self, params: GetPlayerQuery) -> Result<Vec<PlayerInfo>> {
@@ -84,5 +104,9 @@ impl PlayersService for MongoPlayersService {
             .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
 
         Ok(players)
+    }
+
+    async fn get_player_with_id(&self, player_id: i64) -> Result<PlayerInfo> {
+        get_player_with_id(&self.collection, player_id).await
     }
 }

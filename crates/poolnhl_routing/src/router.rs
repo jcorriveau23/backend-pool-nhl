@@ -16,7 +16,7 @@ pub struct ApplicationController;
 impl ApplicationController {
     pub async fn run(settings: Settings, service_registry: ServiceRegistry) {
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::WARN)
+            .with_max_level(tracing::Level::TRACE)
             .init();
 
         let router: Router = Router::new()

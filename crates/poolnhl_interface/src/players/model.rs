@@ -27,7 +27,7 @@ pub struct PlayerInfo {
     pub id: u32, // ID from the NHL API.
     pub name: String,
     pub team: Option<u32>,
-    pub position: String,
+    pub position: Position,
     pub age: Option<u8>,
     pub salary_cap: Option<f64>,
     pub contract_expiration_season: Option<u32>,
@@ -42,4 +42,20 @@ pub struct PlayerInfo {
     pub shots: Option<u32>,
     pub wins: Option<u32>,
     pub ot: Option<u32>,
+}
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub enum Position {
+    F,
+    D,
+    G,
+}
+
+impl Position {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Position::F => "F",
+            Position::D => "D",
+            Position::G => "G",
+        }
+    }
 }
