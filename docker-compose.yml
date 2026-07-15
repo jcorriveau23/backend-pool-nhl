@@ -31,7 +31,9 @@ services:
     environment:
       # Override the release.json localhost default so the server reaches the
       # mongo service over the compose network. Separator is __ (see settings.rs).
-      APP_DATABASE__URI: "mongodb://mongo:27017"
+      # Defaults to the compose mongo service; override from the shell/.env, e.g.
+      #   APP_DATABASE__URI=mongodb+srv://... docker compose up -d
+      APP_DATABASE__URI: "${APP_DATABASE__URI:-mongodb://mongo:27017}"
 
 volumes:
   mongo-data:
