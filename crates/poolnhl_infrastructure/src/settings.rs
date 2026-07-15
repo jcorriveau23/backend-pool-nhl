@@ -1,4 +1,4 @@
-use config::{Config, ConfigError, File};
+use config::{Config, ConfigError, Environment, File};
 use serde::Deserialize;
 use std::fmt;
 
@@ -44,7 +44,15 @@ impl Settings {
             "release"
         };
 
-        let builder = Config::builder().add_source(File::with_name(&format!("config/{config}")));
+        let builder = Config::builder()
+            .add_source(File::with_name(&format!("config/{config}")))
+            // Env vars override file values, e.g. APP_DATABASE__URI, APP_AUTH__JWKS_URL.
+            // Lets secrets be injected at deploy time instead of living in the config file.
+            .add_source(
+                Environment::with_prefix("APP")
+                    .prefix_separator("_")
+                    .separator("__"),
+            );
 
         builder
             .build()?
