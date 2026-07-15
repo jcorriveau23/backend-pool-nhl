@@ -4,7 +4,16 @@ use std::fmt;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Server {
+    // Interface to bind to. Defaults to 0.0.0.0 so the server is reachable when
+    // running inside a container (127.0.0.1 would only bind the container's own
+    // loopback, which published-port forwarding can't reach).
+    #[serde(default = "default_host")]
+    pub host: String,
     pub port: u16,
+}
+
+fn default_host() -> String {
+    "0.0.0.0".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]

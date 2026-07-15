@@ -1,0 +1,37 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+      # Snapshot of the host hockeypool DB + a one-shot restore script that runs
+      # only on first init of an empty mongo-data volume. To re-seed from a fresh
+      # dump: `docker compose down -v && docker compose up -d`.
+      - ./mongo-seed:/seed:ro
+      - ./mongo-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  server:
+    build: .
+    image: ghcr.io/jcorriveau23/backend-pool-nhl:latest
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      # config/release.json is read from the working dir at startup, not baked in.
+      - ./config:/app/config:ro
+    environment:
+      # Override the release.json localhost default so the server reaches the
+      # mongo service over the compose network. Separator is __ (see settings.rs).
+      APP_DATABASE__URI: "mongodb://mongo:27017"
+
+volumes:
+  mongo-data:
