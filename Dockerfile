@@ -1,5 +1,5 @@
 # ---- Build stage ----
-FROM rust:latest-slim-bookworm AS builder
+FROM rust:slim-bookworm AS builder
 WORKDIR /app
 
 RUN apt-get update \
