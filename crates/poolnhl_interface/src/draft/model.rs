@@ -297,9 +297,10 @@ impl DraftServerInfo {
             {
                 Some(room) => (room.tx.clone(), room.users.clone()),
                 None => {
+                    println!("no room found");
                     return Err(AppError::RwLockError {
                         msg: "The room could not be found.".to_string(),
-                    })
+                    });
                 }
             }
         };

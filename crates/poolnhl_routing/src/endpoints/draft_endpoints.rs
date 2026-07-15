@@ -89,6 +89,7 @@ impl DraftRouter {
                             let rx = draft_service
                                 .join_room(&pool_name, number_poolers, *addr)
                                 .await?;
+                            println!("room joined sucessfully.");
 
                             return Ok((rx, pool_name));
                         }
@@ -122,7 +123,7 @@ impl DraftRouter {
         }
 
         match DraftRouter::waiting_join_room_command(&mut socket, &addr, &draft_service).await {
-            Err(_) => (), // An error occured during the initial waiting to join room function. Close the socket connection.
+            Err(e) => print!("{}", e.to_string()), // An error occured during the initial waiting to join room function. Close the socket connection.
             Ok((mut rx, current_pool_name)) => {
                 // Actual websocket statemachine (one will be spawned per connection)
                 let (mut sender, mut receiver) = socket.split();

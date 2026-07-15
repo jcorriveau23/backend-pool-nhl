@@ -1006,29 +1006,23 @@ impl Pool {
                 msg: "draft order does not exist.".to_string(),
             })?;
 
-        let mut is_done = false;
-
-        if self.settings.dynasty_settings.is_some() && context.past_tradable_picks.is_some() {
+        let is_done = if self.settings.dynasty_settings.is_some()
+            && context.past_tradable_picks.is_some()
+        {
             // This is a dynasty draft context.
             // The final rank is being used as draft order.
-            is_done = context.draft_player_dynasty(
+            context.draft_player_dynasty(
                 user_id,
                 player,
                 draft_order,
                 &self.settings,
                 has_privileges,
-            )?;
+            )?
         } else {
             // This is a dynasty draft context.
             // The participant order is being used as draft order.
-            is_done = context.draft_player(
-                user_id,
-                player,
-                draft_order,
-                &self.settings,
-                has_privileges,
-            )?;
-        }
+            context.draft_player(user_id, player, draft_order, &self.settings, has_privileges)?
+        };
 
         if is_done {
             // The draft is done.
