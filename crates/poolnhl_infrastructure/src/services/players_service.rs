@@ -30,8 +30,6 @@ pub async fn get_player_with_id(
     collection: &Collection<PlayerInfo>,
     player_id: i64,
 ) -> Result<PlayerInfo> {
-    // Moved this part of the function here cause it is being reused in draft-service,
-    // not only in player-services.
     let filter = doc! {"id": player_id};
 
 return  collection
