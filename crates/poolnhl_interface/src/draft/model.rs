@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::{
+    errors::AppError,
     pool::model::{Pool, PoolSettings},
     users::model::UserEmailJwtPayload,
 };
