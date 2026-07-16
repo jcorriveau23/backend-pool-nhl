@@ -32,7 +32,7 @@ async fn main() {
         .pool_service
         .init_indexes()
         .await
-        .expect("could not initiate indexes for pool service.");
+        .expect("could not initialize indexes for pool service.");
 
     // Run the application.
     ApplicationController::run(settings, services).await;
