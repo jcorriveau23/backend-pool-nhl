@@ -68,7 +68,7 @@ pub async fn update_pool(
         )
         .await
         .map_err(|e| AppError::MongoError { msg: e.to_string() })?
-        .ok_or(AppError::CustomError {
+        .ok_or(AppError::NotFound {
             msg: format!("no pool found with name '{}'", pool_name),
         })
 }
@@ -80,7 +80,7 @@ pub async fn get_short_pool_by_name(
     // Return the pool information without the score_by_day member
     get_optional_short_pool_by_name(collection, pool_name)
         .await?
-        .ok_or(AppError::CustomError {
+        .ok_or(AppError::NotFound {
             msg: format!("no pool found with name '{}'", pool_name),
         })
 }
@@ -113,7 +113,7 @@ impl PoolService for MongoPoolService {
             .await
             .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
 
-        pool.ok_or(AppError::CustomError {
+        pool.ok_or(AppError::NotFound {
             msg: format!("no pool found with name '{}'", name),
         })
     }
@@ -153,7 +153,7 @@ impl PoolService for MongoPoolService {
             .await
             .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
 
-        pool.ok_or(AppError::CustomError {
+        pool.ok_or(AppError::NotFound {
             msg: format!("no pool found with name '{}'", name),
         })
     }

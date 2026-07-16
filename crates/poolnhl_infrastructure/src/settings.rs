@@ -1,10 +1,19 @@
-use config::{Config, ConfigError, File};
+use config::{Config, ConfigError, Environment, File};
 use serde::Deserialize;
 use std::fmt;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Server {
+    // Interface to bind to. Defaults to 0.0.0.0 so the server is reachable when
+    // running inside a container (127.0.0.1 would only bind the container's own
+    // loopback, which published-port forwarding can't reach).
+    #[serde(default = "default_host")]
+    pub host: String,
     pub port: u16,
+}
+
+fn default_host() -> String {
+    "0.0.0.0".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -44,7 +53,15 @@ impl Settings {
             "release"
         };
 
-        let builder = Config::builder().add_source(File::with_name(&format!("config/{config}")));
+        let builder = Config::builder()
+            .add_source(File::with_name(&format!("config/{config}")))
+            // Env vars override file values, e.g. APP_DATABASE__URI, APP_AUTH__JWKS_URL.
+            // Lets secrets be injected at deploy time instead of living in the config file.
+            .add_source(
+                Environment::with_prefix("APP")
+                    .prefix_separator("_")
+                    .separator("__"),
+            );
 
         builder
             .build()?

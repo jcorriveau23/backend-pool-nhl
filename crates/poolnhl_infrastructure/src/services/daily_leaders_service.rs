@@ -45,7 +45,7 @@ impl DailyLeadersService for MongoDailyLeadersService {
             .await
             .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
 
-        daily_leaders.ok_or_else(move || AppError::CustomError {
+        daily_leaders.ok_or_else(move || AppError::NotFound {
             msg: format!("no daily leaders found for the date: {}", date),
         })
     }

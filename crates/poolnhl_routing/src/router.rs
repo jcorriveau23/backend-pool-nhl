@@ -31,10 +31,12 @@ impl ApplicationController {
             // logging so we can see whats going on
             .layer(TraceLayer::new_for_http());
 
-        let listener =
-            tokio::net::TcpListener::bind(&format!("127.0.0.1:{}", settings.server.port))
-                .await
-                .expect("Could not start the TCP listener");
+        let listener = tokio::net::TcpListener::bind(&format!(
+            "{}:{}",
+            settings.server.host, settings.server.port
+        ))
+        .await
+        .expect("Could not start the TCP listener");
 
         axum::serve(
             listener,
