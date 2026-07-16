@@ -28,11 +28,16 @@ pub struct Database {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct Redis {
+    pub uri: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Auth {
     // The endpoint hosted by hanko where is stored the JWKS to validate the jwt token.
     pub jwks_url: String,
 
-    // The token audience to be able to validate the token (i.g., hockeypool.live).
+    // The token audience to be able to validate the token (i.g., slapshot.xyz).
     pub token_audience: String,
 }
 
@@ -42,6 +47,7 @@ pub struct Settings {
     pub server: Server,
     pub logger: Logger,
     pub database: Database,
+    pub redis: Redis,
     pub auth: Auth,
 }
 

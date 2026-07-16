@@ -16,12 +16,28 @@ services:
       retries: 5
       start_period: 20s
 
+  redis:
+    # 8-alpine: the draft rooms rely on hash field TTLs (HEXPIRE), redis >= 7.4.
+    image: redis:8-alpine
+    restart: unless-stopped
+    ports:
+      # Published so a server run from source (cargo run, redis://localhost:6379)
+      # reaches it; the in-compose server uses redis://redis:6379 directly.
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   server:
     build: .
     image: ghcr.io/jcorriveau23/backend-pool-nhl:latest
     restart: unless-stopped
     depends_on:
       mongo:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     ports:
       - "8000:8000"
@@ -34,6 +50,7 @@ services:
       # Defaults to the compose mongo service; override from the shell/.env, e.g.
       #   APP_DATABASE__URI=mongodb+srv://... docker compose up -d
       APP_DATABASE__URI: "${APP_DATABASE__URI:-mongodb://mongo:27017}"
+      APP_REDIS__URI: "${APP_REDIS__URI:-redis://redis:6379}"
 
 volumes:
   mongo-data:

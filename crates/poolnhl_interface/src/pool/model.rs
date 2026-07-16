@@ -1,4 +1,8 @@
-use crate::{draft::model::RoomUser, errors::AppError};
+use crate::{
+    draft::model::RoomUser,
+    errors::AppError,
+    players::model::{PlayerInfo, Position},
+};
 use chrono::{Duration, Local, NaiveDate, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -8,11 +12,11 @@ use std::{
 // Date for season
 //
 
-pub const START_SEASON_DATE: &str = "2024-10-8";
-pub const END_SEASON_DATE: &str = "2025-04-17";
-pub const POOL_CREATION_SEASON: u32 = 20242025;
+pub const START_SEASON_DATE: &str = "2025-10-7";
+pub const END_SEASON_DATE: &str = "2026-04-16";
+pub const POOL_CREATION_SEASON: u32 = 20252026;
 
-pub const TRADE_DEADLINE_DATE: &str = "2025-03-07";
+pub const TRADE_DEADLINE_DATE: &str = "2026-03-07";
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ProjectedPoolShort {
@@ -475,7 +479,7 @@ impl Pool {
         &mut self,
         user_id: &str,
         added_to_user_id: &str,
-        player: &PoolPlayerInfo,
+        player: &PlayerInfo,
     ) -> Result<(), AppError> {
         self.validate_pool_status(&PoolState::InProgress)?;
         // Add a player new player into the reservists of a participant.
@@ -964,6 +968,12 @@ impl Pool {
 
         let user_ids: Vec<String> = room_users.iter().map(|user| user.id.clone()).collect();
 
+        if user_ids.len() as u8 != self.settings.number_poolers {
+            return Err(AppError::CustomError {
+                msg: "The number of pooler should match the expected in the settings.".to_string(),
+            });
+        }
+
         // Set the draft order with the shuffle list.
         if !draft_order.iter().all(|user_id| user_ids.contains(user_id)) {
             return Err(AppError::CustomError {
@@ -980,7 +990,7 @@ impl Pool {
         Ok(())
     }
 
-    pub fn draft_player(&mut self, user_id: &str, player: &PoolPlayerInfo) -> Result<(), AppError> {
+    pub fn draft_player(&mut self, user_id: &str, player: &PlayerInfo) -> Result<(), AppError> {
         // Match against
 
         let has_privileges = self.has_owner_rights(user_id);
@@ -1129,7 +1139,7 @@ pub struct PoolContext {
     pub tradable_picks: Option<Vec<HashMap<String, String>>>,
     pub past_tradable_picks: Option<Vec<HashMap<String, String>>>,
     pub protected_players: Option<HashMap<String, Vec<u32>>>,
-    pub players: HashMap<String, PoolPlayerInfo>,
+    pub players: HashMap<String, PlayerInfo>,
 }
 
 impl PoolContext {
@@ -1307,7 +1317,7 @@ impl PoolContext {
     pub fn calculate_cumulated_salary_cap(
         &self,
         pooler_roster: &PoolerRoster,
-        players: &HashMap<String, PoolPlayerInfo>,
+        players: &HashMap<String, PlayerInfo>,
     ) -> Result<f64, AppError> {
         let cumulated_salary_cap = pooler_roster
             .chosen_forwards
@@ -1333,7 +1343,7 @@ impl PoolContext {
 
     pub fn can_add_player_to_roster(
         &self,
-        player: &PoolPlayerInfo,
+        player: &PlayerInfo,
         pool_user_id: &str,
         settings: &PoolSettings,
     ) -> Result<bool, AppError> {
@@ -1362,7 +1372,7 @@ impl PoolContext {
 
     pub fn add_drafted_player(
         &mut self,
-        player: &PoolPlayerInfo,
+        player: &PlayerInfo,
         next_drafter: &str,
         settings: &PoolSettings,
     ) -> Result<(), AppError> {
@@ -1456,7 +1466,7 @@ impl PoolContext {
     pub fn draft_player_dynasty(
         &mut self,
         user_id: &str,
-        player: &PoolPlayerInfo,
+        player: &PlayerInfo,
         draft_order: &Vec<String>, // being used as draft order.
         settings: &PoolSettings,
         has_privileges: bool,
@@ -1549,7 +1559,7 @@ impl PoolContext {
     pub fn draft_player(
         &mut self,
         user_id: &str,
-        player: &PoolPlayerInfo,
+        player: &PlayerInfo,
         draft_order: &Vec<String>, // being used as draft order.
         settings: &PoolSettings,
         has_privileges: bool,
@@ -2072,37 +2082,9 @@ pub struct GoalyPoolPoints {
     pub OT: u8,
 }
 
-impl PartialEq<PoolPlayerInfo> for PoolPlayerInfo {
-    fn eq(&self, other: &PoolPlayerInfo) -> bool {
+impl PartialEq<PlayerInfo> for PlayerInfo {
+    fn eq(&self, other: &PlayerInfo) -> bool {
         self.id == other.id
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct PoolPlayerInfo {
-    pub id: u32, // ID from the NHL API.
-    pub name: String,
-    pub team: Option<u32>,
-    pub position: Position,
-    pub age: Option<u8>,
-    pub salary_cap: Option<f64>,
-    pub contract_expiration_season: Option<u32>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub enum Position {
-    F,
-    D,
-    G,
-}
-
-impl Position {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Position::F => "F",
-            Position::D => "D",
-            Position::G => "G",
-        }
     }
 }
 
@@ -2162,7 +2144,7 @@ pub struct PoolDeletionRequest {
 pub struct AddPlayerRequest {
     pub pool_name: String,
     pub added_player_user_id: String,
-    pub player: PoolPlayerInfo,
+    pub player: PlayerInfo,
 }
 
 // payload to sent when removing player by the owner of the pool.
@@ -2232,7 +2214,7 @@ pub struct CompleteProtectionRequest {
 #[derive(Debug, Deserialize, Clone)]
 pub struct UpdatePoolSettingsRequest {
     pub pool_name: String,
-    pub pool_settings: PoolSettings,
+    pub settings: PoolSettings,
 }
 
 // payload to sent when marking a pool as final
