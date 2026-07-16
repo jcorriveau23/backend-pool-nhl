@@ -34,15 +34,13 @@ pub async fn get_player_with_id(
     // not only in player-services.
     let filter = doc! {"id": player_id};
 
-    let player = collection
+return  collection
         .find_one(filter, None)
         .await
         .map_err(|e| AppError::MongoError { msg: e.to_string() })?
         .ok_or_else(|| AppError::CustomError {
             msg: format!("Player with id {} not found", player_id),
-        })?;
-
-    Ok(player)
+        });
 }
 
 #[async_trait]
