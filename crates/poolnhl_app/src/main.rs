@@ -27,7 +27,9 @@ async fn main() {
             .await
             .expect("Was not able to query the JWKS from hanko server."),
     );
-    let services = ServiceRegistry::new(db, cached_jwks);
+    let services = ServiceRegistry::new(db, cached_jwks, settings.redis.uri.as_str())
+        .await
+        .expect("Could not initialize the services");
     services
         .pool_service
         .init_indexes()

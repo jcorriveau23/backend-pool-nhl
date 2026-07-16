@@ -281,8 +281,10 @@ impl DraftRouter {
                 };
 
                 // Make sure that if we lose the socket communication we force the user to leave the room and unauthenticate.
+                // leave_room is called for every socket (authenticated or not) so the
+                // instance can release its local room bookkeeping.
+                let _ = draft_service.leave_room(&current_pool_name, addr).await;
                 if is_authenticated_users {
-                    let _ = draft_service.leave_room(&current_pool_name, addr).await;
                     let _ = draft_service.unauthenticate_web_socket(addr).await;
                 }
             }

@@ -22,6 +22,7 @@ pub enum AppError {
     ReqwestError { msg: String },
     NonMatchingKid { msg: String },
     RwLockError { msg: String },
+    RedisError { msg: String },
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;
@@ -45,6 +46,7 @@ impl fmt::Display for AppError {
             AppError::ReqwestError { msg } => write!(f, "Reqwest Error: '{}'", msg),
             AppError::NonMatchingKid { msg } => write!(f, "Non matching kid Error: '{}'", msg),
             AppError::RwLockError { msg } => write!(f, "Mutex locking error '{}'", msg),
+            AppError::RedisError { msg } => write!(f, "Redis Error: '{}'", msg),
         }
     }
 }
