@@ -9,6 +9,7 @@ use crate::players::model::{GetPlayerQuery, PlayerInfo};
 pub trait PlayersService {
     async fn get_players(&self, date: GetPlayerQuery) -> Result<Vec<PlayerInfo>>;
     async fn get_players_with_name(&self, name: &str) -> Result<Vec<PlayerInfo>>;
+    async fn get_player_with_id(&self, id: i64) -> Result<PlayerInfo>;
 }
 
 pub type PlayersServiceHandle = Arc<dyn PlayersService + Send + Sync>;

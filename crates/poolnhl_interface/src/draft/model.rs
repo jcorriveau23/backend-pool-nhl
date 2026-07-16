@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     errors::AppError,
-    pool::model::{Pool, PoolPlayerInfo, PoolSettings},
+    pool::model::{Pool, PoolSettings},
     users::model::UserEmailJwtPayload,
 };
 
@@ -452,7 +452,7 @@ pub enum Command {
     },
     UndoDraftPlayer,
     DraftPlayer {
-        player: PoolPlayerInfo,
+        player_id: i64,
     },
 }
 

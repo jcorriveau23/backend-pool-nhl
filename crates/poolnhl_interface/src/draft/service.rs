@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::errors::Result;
-use crate::pool::model::{PoolPlayerInfo, PoolSettings};
+use crate::pool::model::PoolSettings;
 use crate::users::model::UserEmailJwtPayload;
 use std::net::SocketAddr;
 use tokio::sync::broadcast;
@@ -20,12 +20,7 @@ pub trait DraftService {
         user_id: &str,
         draft_order: &Vec<String>,
     ) -> Result<()>;
-    async fn draft_player(
-        &self,
-        pool_name: &str,
-        user_id: &str,
-        player: PoolPlayerInfo,
-    ) -> Result<()>;
+    async fn draft_player(&self, pool_name: &str, user_id: &str, player_id: i64) -> Result<()>;
     async fn undo_draft_player(&self, pool_name: &str, user_id: &str) -> Result<()>;
     async fn update_pool_settings(
         &self,

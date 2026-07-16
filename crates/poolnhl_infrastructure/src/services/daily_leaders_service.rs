@@ -2,6 +2,7 @@ use async_trait::async_trait;
 
 use chrono::{Duration, Local, Timelike};
 use mongodb::bson::doc;
+use mongodb::Collection;
 use poolnhl_interface::errors::AppError;
 
 use poolnhl_interface::daily_leaders::{model::DailyLeaders, service::DailyLeadersService};
@@ -11,19 +12,18 @@ use crate::database_connection::DatabaseConnection;
 
 #[derive(Clone)]
 pub struct MongoDailyLeadersService {
-    db: DatabaseConnection,
+    collection: Collection<DailyLeaders>,
 }
 
 impl MongoDailyLeadersService {
     pub fn new(db: DatabaseConnection) -> Self {
-        Self { db }
+        let collection = db.collection::<DailyLeaders>("day_leaders");
+        Self { collection }
     }
 }
 #[async_trait]
 impl DailyLeadersService for MongoDailyLeadersService {
     async fn get_daily_leaders(&self, date: &str) -> Result<DailyLeaders> {
-        let collection = self.db.collection::<DailyLeaders>("day_leaders");
-
         let mut formatted_date = date.to_string();
 
         if date == "now" {
@@ -39,7 +39,8 @@ impl DailyLeadersService for MongoDailyLeadersService {
             formatted_date = today.format("%Y-%m-%d").to_string();
         }
 
-        let daily_leaders = collection
+        let daily_leaders = self
+            .collection
             .find_one(doc! {"date": &formatted_date}, None)
             .await
             .map_err(|e| AppError::MongoError { msg: e.to_string() })?;

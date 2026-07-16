@@ -58,7 +58,6 @@ impl DraftRouter {
         ConnectInfo(addr): ConnectInfo<SocketAddr>,
         State(draft_service): State<DraftServiceHandle>,
     ) -> impl IntoResponse {
-        println!("{} is trying to log in", jwt);
         if jwt != "unauthenticated" {
             let user = draft_service.authenticate_web_socket(&jwt, addr).await;
             return ws
@@ -78,15 +77,14 @@ impl DraftRouter {
         println!("waiting to join room");
         while let Some(Ok(msg)) = socket.recv().await {
             if let Message::Text(command) = msg {
-                println!("{}", command);
+                println!("Command received: {}", command);
                 if let Ok(command) = serde_json::from_str::<Command>(&command) {
                     match command {
                         Command::JoinRoom {
                             pool_name,
                             number_poolers,
                         } => {
-                            println!("try to join room.");
-
+                            println!("room joined.");
                             // join the requested room.
                             let rx = draft_service
                                 .join_room(&pool_name, number_poolers, *addr)
@@ -98,6 +96,9 @@ impl DraftRouter {
                         _ => continue,
                     }
                 }
+                println!("could not deserialize the command");
+            } else {
+                println!("message not received.");
             }
         }
         Err(AppError::CustomError {
@@ -113,8 +114,13 @@ impl DraftRouter {
     ) {
         // At the beginning there is a state where the user needs to join a room
         // before leaving the initial socket state.
-        println!("handle socket");
-        let is_authenticated_users = user.is_some();
+        let mut is_authenticated_users = false;
+        if let Some(u) = &user {
+            print!("{} is trying to setup a socket connection", u.email.address);
+            is_authenticated_users = true;
+        } else {
+            print!("An unauthenticated user is trying to setup a socket connection");
+        }
 
         match DraftRouter::waiting_join_room_command(&mut socket, &addr, &draft_service).await {
             Err(e) => print!("{}", e.to_string()), // An error occured during the initial waiting to join room function. Close the socket connection.
@@ -144,7 +150,7 @@ impl DraftRouter {
                         while let Some(Ok(msg)) = receiver.next().await {
                             // Handle the message received.
                             if let Message::Text(command) = msg {
-                                println!("{}", command);
+                                println!("command received: {}", command);
                                 if let Ok(command) = serde_json::from_str::<Command>(&command) {
                                     match command {
                                         Command::LeaveRoom => {
@@ -207,13 +213,13 @@ impl DraftRouter {
                                                 }
                                             }
                                         }
-                                        Command::DraftPlayer { player } => {
+                                        Command::DraftPlayer { player_id } => {
                                             if let Some(user) = &user {
                                                 if let Err(e) = draft_service
                                                     .draft_player(
                                                         &current_pool_name,
                                                         &user.sub,
-                                                        player,
+                                                        player_id,
                                                     )
                                                     .await
                                                 {
@@ -242,6 +248,7 @@ impl DraftRouter {
                                         } => {}
                                     }
                                 } else {
+                                    println!("could not deserialize the command received.");
                                     let _ = send_task_sender
                                         .send(
                                             "could not deserialize the command received."

@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use futures::TryStreamExt;
 use mongodb::bson::doc;
 use mongodb::options::FindOptions;
+use mongodb::Collection;
 use poolnhl_interface::errors::AppError;
 
 use poolnhl_interface::errors::Result;
@@ -15,14 +16,31 @@ use crate::database_connection::DatabaseConnection;
 
 #[derive(Clone)]
 pub struct MongoPlayersService {
-    db: DatabaseConnection,
+    collection: Collection<PlayerInfo>,
 }
 
 impl MongoPlayersService {
     pub fn new(db: DatabaseConnection) -> Self {
-        Self { db }
+        let collection = db.collection::<PlayerInfo>("players");
+        Self { collection }
     }
 }
+
+pub async fn get_player_with_id(
+    collection: &Collection<PlayerInfo>,
+    player_id: i64,
+) -> Result<PlayerInfo> {
+    let filter = doc! {"id": player_id};
+
+return  collection
+        .find_one(filter, None)
+        .await
+        .map_err(|e| AppError::MongoError { msg: e.to_string() })?
+        .ok_or_else(|| AppError::CustomError {
+            msg: format!("Player with id {} not found", player_id),
+        });
+}
+
 #[async_trait]
 impl PlayersService for MongoPlayersService {
     async fn get_players(&self, params: GetPlayerQuery) -> Result<Vec<PlayerInfo>> {
@@ -53,8 +71,8 @@ impl PlayersService for MongoPlayersService {
             .limit(limit)
             .build();
 
-        let collection = self.db.collection::<PlayerInfo>("players");
-        let players = collection
+        let players = self
+            .collection
             .find(filter, find_options)
             .await
             .map_err(|e| AppError::MongoError { msg: e.to_string() })?
@@ -72,8 +90,8 @@ impl PlayersService for MongoPlayersService {
 
         let find_options = FindOptions::builder().limit(limit).build();
 
-        let collection = self.db.collection::<PlayerInfo>("players");
-        let players = collection
+        let players = self
+            .collection
             .find(filter, find_options)
             .await
             .map_err(|e| AppError::MongoError { msg: e.to_string() })?
@@ -82,5 +100,9 @@ impl PlayersService for MongoPlayersService {
             .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
 
         Ok(players)
+    }
+
+    async fn get_player_with_id(&self, player_id: i64) -> Result<PlayerInfo> {
+        get_player_with_id(&self.collection, player_id).await
     }
 }

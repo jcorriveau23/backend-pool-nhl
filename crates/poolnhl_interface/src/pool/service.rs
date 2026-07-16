@@ -15,6 +15,7 @@ use super::model::CompleteProtectionRequest;
 #[async_trait]
 pub trait PoolService {
     // Get pool info calls
+    async fn init_indexes(&self) -> Result<()>;
     async fn get_pool_by_name(&self, name: &str) -> Result<Pool>;
     async fn get_pool_by_name_with_range(
         &self,
