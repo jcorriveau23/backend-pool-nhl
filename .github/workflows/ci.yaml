@@ -10,21 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build
-        run: cargo build --workspace --verbose
-
-  test:
+  build-and-test:
     runs-on: ubuntu-latest
     services:
       # The draft room integration tests (marked #[ignore]) need a real redis
