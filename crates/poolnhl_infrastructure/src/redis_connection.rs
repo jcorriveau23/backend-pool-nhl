@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use redis::aio::ConnectionManager;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use poolnhl_interface::errors::{AppError, Result};
 
@@ -35,7 +35,9 @@ impl RedisManager {
 }
 
 enum SubscriberCmd {
-    Subscribe(String),
+    // The sender is acked once the SUBSCRIBE is confirmed by redis, so callers
+    // can publish right after subscribing without losing the message.
+    Subscribe(String, oneshot::Sender<()>),
     Unsubscribe(String),
 }
 
@@ -47,11 +49,17 @@ pub struct RoomSubscriberHandle {
 }
 
 impl RoomSubscriberHandle {
+    // Resolves once the subscription is active on the redis server: a message
+    // published after this returns is guaranteed to reach this instance.
     pub async fn subscribe(&self, pool_name: &str) -> Result<()> {
+        let (ack_tx, ack_rx) = oneshot::channel();
         self.control_tx
-            .send(SubscriberCmd::Subscribe(room_channel(pool_name)))
+            .send(SubscriberCmd::Subscribe(room_channel(pool_name), ack_tx))
             .await
-            .map_err(|e| AppError::RedisError { msg: e.to_string() })
+            .map_err(|e| AppError::RedisError { msg: e.to_string() })?;
+        ack_rx.await.map_err(|_| AppError::RedisError {
+            msg: format!("the subscription to room '{}' was not confirmed", pool_name),
+        })
     }
 
     pub async fn unsubscribe(&self, pool_name: &str) -> Result<()> {
@@ -96,14 +104,18 @@ pub fn spawn_room_subscriber(client: redis::Client, local_rooms: LocalRooms) -> 
             loop {
                 tokio::select! {
                     cmd = control_rx.recv() => match cmd {
-                        Some(SubscriberCmd::Subscribe(channel)) => {
+                        Some(SubscriberCmd::Subscribe(channel, ack)) => {
                             if channels.insert(channel.clone()) {
                                 if let Err(e) = sink.subscribe(&channel).await {
+                                    // Dropping `ack` reports the failure to the caller;
+                                    // the channel stays in `channels` and gets subscribed
+                                    // on reconnect.
                                     println!("redis subscribe to '{}' failed: {}", channel, e);
                                     tokio::time::sleep(Duration::from_secs(1)).await;
                                     continue 'reconnect;
                                 }
                             }
+                            let _ = ack.send(());
                         }
                         Some(SubscriberCmd::Unsubscribe(channel)) => {
                             if channels.remove(&channel) {
