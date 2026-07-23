@@ -2,6 +2,11 @@ services:
   mongo:
     image: mongo:7
     restart: unless-stopped
+    ports:
+      # Published so a server run from source (cargo run, mongodb://localhost:27017)
+      # and the integration tests (cargo test -- --ignored) reach it; the
+      # in-compose server uses mongodb://mongo:27017 directly.
+      - "27017:27017"
     volumes:
       - mongo-data:/data/db
       # Snapshot of the host hockeypool DB + a one-shot restore script that runs
