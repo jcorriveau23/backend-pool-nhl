@@ -73,6 +73,12 @@ impl LocalRoom {
 #[derive(Clone)]
 pub struct LocalRooms(Arc<RwLock<HashMap<String, LocalRoom>>>);
 
+impl Default for LocalRooms {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LocalRooms {
     pub fn new() -> Self {
         Self(Arc::new(RwLock::new(HashMap::new())))
@@ -425,11 +431,7 @@ impl DraftServerState {
     }
 
     pub async fn get_room_users(&self, pool_name: &str) -> Result<Vec<RoomUser>> {
-        Ok(self
-            .fetch_users(pool_name)
-            .await?
-            .into_values()
-            .collect())
+        Ok(self.fetch_users(pool_name).await?.into_values().collect())
     }
 
     pub async fn list_room_users(&self, pool_name: &str) -> Result<HashMap<String, RoomUser>> {
@@ -488,8 +490,13 @@ impl DraftServerState {
             // RoomUser equality is id-based, so this compares membership (which
             // is what expiration changes); is_ready changes always broadcast.
             if current != snapshot {
-                self.publish(&pool_name, &CommandResponse::Users { room_users: current })
-                    .await?;
+                self.publish(
+                    &pool_name,
+                    &CommandResponse::Users {
+                        room_users: current,
+                    },
+                )
+                .await?;
             }
         }
 

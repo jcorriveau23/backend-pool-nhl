@@ -32,7 +32,7 @@ pub async fn get_player_with_id(
 ) -> Result<PlayerInfo> {
     let filter = doc! {"id": player_id};
 
-return  collection
+    return collection
         .find_one(filter, None)
         .await
         .map_err(|e| AppError::MongoError { msg: e.to_string() })?

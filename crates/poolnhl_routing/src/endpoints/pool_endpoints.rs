@@ -16,7 +16,7 @@ use poolnhl_interface::users::model::UserEmailJwtPayload;
 pub struct PoolRouter;
 
 impl PoolRouter {
-    pub fn new(service_registry: ServiceRegistry) -> Router {
+    pub fn router(service_registry: ServiceRegistry) -> Router {
         Router::new()
             .route("/pool/:name", get(Self::get_pool_by_name))
             .route(

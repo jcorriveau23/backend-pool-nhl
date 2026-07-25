@@ -51,7 +51,12 @@ impl MongoDraftService {
     // Send the pool updated informations to the room (on every instance).
     async fn publish_pool_info(&self, pool_name: &str, pool: Pool) -> Result<()> {
         self.state
-            .publish(pool_name, &CommandResponse::Pool { pool })
+            .publish(
+                pool_name,
+                &CommandResponse::Pool {
+                    pool: Box::new(pool),
+                },
+            )
             .await
     }
 }
@@ -62,7 +67,7 @@ impl DraftService for MongoDraftService {
         &self,
         pool_name: &str,
         user_id: &str,
-        draft_order: &Vec<String>,
+        draft_order: &[String],
     ) -> Result<()> {
         // Commands that initiate the draft. This command update the pool state from CREATED -> DRAFT
         // This update the pool in the database.

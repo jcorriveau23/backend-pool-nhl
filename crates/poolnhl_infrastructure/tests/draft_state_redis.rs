@@ -98,7 +98,9 @@ async fn join_and_leave_room_lifecycle() {
     let pool = unique_pool("lifecycle");
     let instance = new_instance().await;
 
-    instance.add_socket("socket-1", jwt_payload("user-1")).unwrap();
+    instance
+        .add_socket("socket-1", jwt_payload("user-1"))
+        .unwrap();
     let mut rx = instance.join_room(&pool, 4, "socket-1").await.unwrap();
 
     // The join broadcast comes back through redis pub/sub with the member.
@@ -135,13 +137,17 @@ async fn broadcasts_and_membership_cross_instances() {
     let instance_a = new_instance().await;
     let instance_b = new_instance().await;
 
-    instance_a.add_socket("socket-a", jwt_payload("user-a")).unwrap();
+    instance_a
+        .add_socket("socket-a", jwt_payload("user-a"))
+        .unwrap();
     let mut rx_a = instance_a.join_room(&pool, 4, "socket-a").await.unwrap();
     wait_for_users(&mut rx_a, |users| users.contains_key("user-a")).await;
 
     // A second user joins through the other instance; the first instance's
     // socket must see it.
-    instance_b.add_socket("socket-b", jwt_payload("user-b")).unwrap();
+    instance_b
+        .add_socket("socket-b", jwt_payload("user-b"))
+        .unwrap();
     let _rx_b = instance_b.join_room(&pool, 4, "socket-b").await.unwrap();
     wait_for_users(&mut rx_a, |users| {
         users.contains_key("user-a") && users.contains_key("user-b")
@@ -151,7 +157,7 @@ async fn broadcasts_and_membership_cross_instances() {
     // A readiness toggle on instance B reaches instance A's socket.
     instance_b.on_ready(&pool, "socket-b").await.unwrap();
     let users = wait_for_users(&mut rx_a, |users| {
-        users.get("user-b").map_or(false, |user| user.is_ready)
+        users.get("user-b").is_some_and(|user| user.is_ready)
     })
     .await;
     assert!(!users["user-a"].is_ready);
@@ -173,7 +179,9 @@ async fn unmanaged_users_have_no_presence_ttl() {
     let pool = unique_pool("unmanaged");
     let instance = new_instance().await;
 
-    instance.add_socket("socket-1", jwt_payload("user-1")).unwrap();
+    instance
+        .add_socket("socket-1", jwt_payload("user-1"))
+        .unwrap();
     let mut rx = instance.join_room(&pool, 4, "socket-1").await.unwrap();
 
     instance.add_user(&pool, "Guest", "socket-1").await.unwrap();
@@ -193,7 +201,10 @@ async fn unmanaged_users_have_no_presence_ttl() {
 
     // RemoveUser drops the member for everyone.
     let guest_id = guest.id.clone();
-    instance.remove_user(&pool, &guest_id, "socket-1").await.unwrap();
+    instance
+        .remove_user(&pool, &guest_id, "socket-1")
+        .await
+        .unwrap();
     wait_for_users(&mut rx, |users| !users.contains_key(&guest_id)).await;
 
     instance.leave_room(&pool, "socket-1").await.unwrap();
@@ -208,7 +219,9 @@ async fn heartbeat_republishes_after_member_expiry() {
 
     // user-a joins through instance A; instance B serves an unauthenticated
     // spectator socket in the same room.
-    instance_a.add_socket("socket-a", jwt_payload("user-a")).unwrap();
+    instance_a
+        .add_socket("socket-a", jwt_payload("user-a"))
+        .unwrap();
     let _rx_a = instance_a.join_room(&pool, 4, "socket-a").await.unwrap();
     let mut rx_b = instance_b.join_room(&pool, 4, "socket-b").await.unwrap();
     wait_for_users(&mut rx_b, |users| users.contains_key("user-a")).await;

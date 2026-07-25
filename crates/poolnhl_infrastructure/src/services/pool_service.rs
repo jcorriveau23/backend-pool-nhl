@@ -455,10 +455,13 @@ impl PoolService for MongoPoolService {
         pool.validate_pool_status(&PoolState::Final)?;
 
         let mut new_settings = pool.settings.clone();
-        let new_dynasty_settings = new_settings
-            .dynasty_settings
-            .as_mut()
-            .expect("The pool should have dynasty object.");
+        let new_dynasty_settings =
+            new_settings
+                .dynasty_settings
+                .as_mut()
+                .ok_or_else(|| AppError::CustomError {
+                    msg: "The pool does not have dynasty settings.".to_string(),
+                })?;
 
         // Insert the past pool at the first element of the list.
         new_dynasty_settings
@@ -474,7 +477,9 @@ impl PoolService for MongoPoolService {
 
         // If the pool is dynasty type, we need to create a new pool in dynasty status.
         // With almost everying thing from the last pool save into it.
-        let pool_context = &pool.context.expect("The pool should have a pool context.");
+        let pool_context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
+            msg: "The pool does not have a pool context.".to_string(),
+        })?;
         let new_dynasty_pool = Pool {
             name: req.new_pool_name,
             owner: pool.owner,

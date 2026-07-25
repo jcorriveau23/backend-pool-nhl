@@ -4,6 +4,7 @@ use axum::Router;
 
 use poolnhl_infrastructure::services::ServiceRegistry;
 use poolnhl_infrastructure::settings::Settings;
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::endpoints::daily_leaders_endpoints::DailyLeadersRouter;
@@ -23,13 +24,16 @@ impl ApplicationController {
             .nest(
                 "/api-rust",
                 Router::new()
-                    .merge(PoolRouter::new(service_registry.clone()))
-                    .merge(DraftRouter::new(service_registry.clone()))
-                    .merge(DailyLeadersRouter::new(service_registry.clone()))
-                    .merge(PlayersRouter::new(service_registry.clone())),
+                    .merge(PoolRouter::router(service_registry.clone()))
+                    .merge(DraftRouter::router(service_registry.clone()))
+                    .merge(DailyLeadersRouter::router(service_registry.clone()))
+                    .merge(PlayersRouter::router(service_registry.clone())),
             )
             // logging so we can see whats going on
-            .layer(TraceLayer::new_for_http());
+            .layer(TraceLayer::new_for_http())
+            // A panic in a handler (e.g. an unexpected data shape) returns a
+            // 500 instead of silently dropping the connection.
+            .layer(CatchPanicLayer::new());
 
         let listener = tokio::net::TcpListener::bind(&format!(
             "{}:{}",

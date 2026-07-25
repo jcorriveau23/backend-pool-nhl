@@ -75,7 +75,7 @@ pub enum Command {
 #[derive(Deserialize, Serialize)]
 pub enum CommandResponse {
     Pool {
-        pool: Pool,
+        pool: Box<Pool>,
     },
     Users {
         room_users: HashMap<String, RoomUser>,

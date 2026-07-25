@@ -11,7 +11,7 @@ use poolnhl_interface::players::service::PlayersServiceHandle;
 pub struct PlayersRouter;
 
 impl PlayersRouter {
-    pub fn new(service_registry: ServiceRegistry) -> Router {
+    pub fn router(service_registry: ServiceRegistry) -> Router {
         Router::new()
             .route("/get-players", get(Self::get_players))
             .route("/get-players/:name", get(Self::get_players_with_name))
