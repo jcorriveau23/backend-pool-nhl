@@ -2803,6 +2803,8 @@ mod tests {
     #[test]
     fn modify_roster_is_rejected_outside_the_allowed_dates() {
         let mut pool = in_progress_pool();
+        // The season must have started for the allowed-dates check to apply.
+        pool.season_start = "2025-09-29".to_string();
         pool.settings.roster_modification_date = vec!["2025-12-01".to_string()];
 
         let result = pool.modify_roster_at(
