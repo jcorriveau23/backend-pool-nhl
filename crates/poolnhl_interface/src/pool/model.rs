@@ -12,11 +12,30 @@ use std::{
 // Date for season
 //
 
-pub const START_SEASON_DATE: &str = "2025-10-7";
-pub const END_SEASON_DATE: &str = "2026-04-16";
-pub const POOL_CREATION_SEASON: u32 = 20252026;
+pub const START_SEASON_DATE: &str = "2026-09-29";
+pub const END_SEASON_DATE: &str = "2027-04-10";
+pub const POOL_CREATION_SEASON: u32 = 20262027;
+pub const TRADE_DEADLINE_DATE: &str = "2027-03-01";
 
-pub const TRADE_DEADLINE_DATE: &str = "2026-03-07";
+/// Season date information exposed to the front end.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SeasonInfo {
+    pub start_season_date: String,
+    pub end_season_date: String,
+    pub season: u32,
+    pub trade_deadline_date: String,
+}
+
+impl SeasonInfo {
+    pub fn current() -> Self {
+        Self {
+            start_season_date: START_SEASON_DATE.to_string(),
+            end_season_date: END_SEASON_DATE.to_string(),
+            season: POOL_CREATION_SEASON,
+            trade_deadline_date: TRADE_DEADLINE_DATE.to_string(),
+        }
+    }
+}
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ProjectedPoolShort {
