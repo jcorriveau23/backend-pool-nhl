@@ -1,4 +1,5 @@
 use crate::{
+    daily_leaders::model::DailyLeaders,
     draft::model::RoomUser,
     errors::AppError,
     players::model::{PlayerInfo, Position},
@@ -2116,6 +2117,86 @@ impl GoalyPoints {
     }
 }
 
+/// Per-player scoring lines for a single date, derived from the shared
+/// `day_leaders` collection. This is the compact, scoring-only projection that
+/// replaces the per-player breakdown previously duplicated in every pool's
+/// `score_by_day`: points are computed on demand from here instead of being
+/// stored per pool. See the pool score redesign.
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct DayScores {
+    pub skaters: HashMap<u32, SkaterPoints>,
+    pub goalies: HashMap<u32, GoalyPoints>,
+}
+
+impl DayScores {
+    /// Project a raw `day_leaders` document into the compact scoring lines.
+    ///
+    /// The goalie bonuses are derived exactly as the rest of the stack does: a
+    /// win is `decision == "W"`, a shutout is a win with a perfect save
+    /// percentage, and an overtime/shootout loss is `decision == "O"`.
+    pub fn from_daily_leaders(daily_leaders: &DailyLeaders) -> Self {
+        let skaters = daily_leaders
+            .skaters
+            .iter()
+            .map(|s| {
+                (
+                    s.id,
+                    SkaterPoints {
+                        G: s.stats.goals,
+                        A: s.stats.assists,
+                        SOG: Some(s.stats.shootoutGoals),
+                    },
+                )
+            })
+            .collect();
+
+        let goalies = daily_leaders
+            .goalies
+            .iter()
+            .map(|g| {
+                let is_win = g.stats.decision.as_deref() == Some("W");
+                let is_shutout = is_win && matches!(g.stats.savePercentage, Some(sp) if sp >= 1.0);
+                let is_overtime = g.stats.decision.as_deref() == Some("O");
+                (
+                    g.id,
+                    GoalyPoints {
+                        G: g.stats.goals,
+                        A: g.stats.assists,
+                        W: is_win,
+                        SO: is_shutout,
+                        OT: is_overtime,
+                    },
+                )
+            })
+            .collect();
+
+        Self { skaters, goalies }
+    }
+
+    /// Build a participant's per-day [`Roster`] for the given lineup, sourcing
+    /// each player's points from these day scores. A rostered player with no
+    /// line that day (did not play) maps to `None`, matching the shape the
+    /// legacy `score_by_day` produced so the existing scoring and ranking logic
+    /// ([`DailyRosterPoints::get_total_points`], [`PoolContext::get_final_rank`])
+    /// can be reused verbatim.
+    pub fn roster_for(&self, forwards: &[u32], defense: &[u32], goalies: &[u32]) -> Roster {
+        Roster {
+            F: forwards
+                .iter()
+                .map(|id| (id.to_string(), self.skaters.get(id).cloned()))
+                .collect(),
+            D: defense
+                .iter()
+                .map(|id| (id.to_string(), self.skaters.get(id).cloned()))
+                .collect(),
+            G: goalies
+                .iter()
+                .map(|id| (id.to_string(), self.goalies.get(id).cloned()))
+                .collect(),
+        }
+    }
+}
+
 #[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SkaterPoolPoints {
@@ -3212,6 +3293,59 @@ mod tests {
             .is_cumulated = false;
 
         assert!(context.get_final_rank(&pool.settings).is_err());
+    }
+
+    #[test]
+    fn day_scores_derive_from_daily_leaders_and_reuse_scoring() {
+        use crate::daily_leaders::model::{
+            DailyGoaly, DailyLeaders, DailySkater, GoalyStats, SkaterStats,
+        };
+
+        let daily_leaders = DailyLeaders {
+            date: "2025-12-01".to_string(),
+            skaters: vec![DailySkater {
+                name: "Hat Trick".to_string(),
+                id: 101,
+                team: 1,
+                stats: SkaterStats {
+                    goals: 3,
+                    assists: 1,
+                    shootoutGoals: 1,
+                },
+            }],
+            goalies: vec![DailyGoaly {
+                name: "Perfect Night".to_string(),
+                id: 501,
+                team: 2,
+                stats: GoalyStats {
+                    goals: 0,
+                    assists: 0,
+                    decision: Some("W".to_string()),
+                    savePercentage: Some(1.0),
+                    OT: None,
+                },
+            }],
+            played: vec![101, 501],
+        };
+
+        let day = DayScores::from_daily_leaders(&daily_leaders);
+
+        // A shutout is derived from a win with a perfect save percentage.
+        let goalie = day.goalies.get(&501).unwrap();
+        assert!(goalie.W && goalie.SO && !goalie.OT);
+
+        // Building the lineup roster lets the existing scoring run untouched.
+        let daily = DailyRosterPoints {
+            roster: day.roster_for(&[101], &[], &[501]),
+            is_cumulated: true,
+        };
+
+        let (mut f, mut d, mut g) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let (points, games) = daily.get_total_points(&PoolSettings::new(), &mut f, &mut d, &mut g);
+
+        // Forward: 3*2 + 1*1 + 1 shootout + 3 hattrick = 11. Goalie: win 2 + shutout 3 = 5.
+        assert_eq!(points, 16);
+        assert_eq!(games, 2);
     }
 
     #[test]
