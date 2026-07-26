@@ -18,7 +18,7 @@ pub trait DraftService {
         &self,
         pool_name: &str,
         user_id: &str,
-        draft_order: &Vec<String>,
+        draft_order: &[String],
     ) -> Result<()>;
     async fn draft_player(&self, pool_name: &str, user_id: &str, player_id: i64) -> Result<()>;
     async fn undo_draft_player(&self, pool_name: &str, user_id: &str) -> Result<()>;

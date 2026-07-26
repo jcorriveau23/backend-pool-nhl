@@ -26,7 +26,6 @@ pub struct DailySkater {
     pub stats: SkaterStats,
 }
 
-
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DailyGoaly {
     pub name: String,

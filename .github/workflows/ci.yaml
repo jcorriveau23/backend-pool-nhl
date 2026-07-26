@@ -41,7 +41,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: llvm-tools-preview
+          components: llvm-tools-preview, rustfmt, clippy
 
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
@@ -49,8 +49,14 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      # Runs the whole test suite (unit + redis integration) instrumented for
-      # coverage, so tests only compile and run once.
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Runs the whole test suite (unit + redis + mongo integration) instrumented
+      # for coverage, so tests only compile and run once.
       - name: Test with coverage
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info -- --include-ignored
 
@@ -62,7 +68,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-lcov
           path: lcov.info

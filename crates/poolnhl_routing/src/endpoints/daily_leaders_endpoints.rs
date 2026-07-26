@@ -11,7 +11,7 @@ use poolnhl_interface::errors::Result;
 pub struct DailyLeadersRouter;
 
 impl DailyLeadersRouter {
-    pub fn new(service_registry: ServiceRegistry) -> Router {
+    pub fn router(service_registry: ServiceRegistry) -> Router {
         Router::new()
             .route("/daily_leaders/:date", get(Self::get_daily_leaders))
             .with_state(service_registry)

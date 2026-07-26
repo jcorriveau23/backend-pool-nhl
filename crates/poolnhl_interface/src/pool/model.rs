@@ -12,11 +12,30 @@ use std::{
 // Date for season
 //
 
-pub const START_SEASON_DATE: &str = "2025-10-7";
-pub const END_SEASON_DATE: &str = "2026-04-16";
-pub const POOL_CREATION_SEASON: u32 = 20252026;
+pub const START_SEASON_DATE: &str = "2026-09-29";
+pub const END_SEASON_DATE: &str = "2027-04-10";
+pub const POOL_CREATION_SEASON: u32 = 20262027;
+pub const TRADE_DEADLINE_DATE: &str = "2027-03-01";
 
-pub const TRADE_DEADLINE_DATE: &str = "2026-03-07";
+/// Season date information exposed to the front end.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SeasonInfo {
+    pub start_season_date: String,
+    pub end_season_date: String,
+    pub season: u32,
+    pub trade_deadline_date: String,
+}
+
+impl SeasonInfo {
+    pub fn current() -> Self {
+        Self {
+            start_season_date: START_SEASON_DATE.to_string(),
+            end_season_date: END_SEASON_DATE.to_string(),
+            season: POOL_CREATION_SEASON,
+            trade_deadline_date: TRADE_DEADLINE_DATE.to_string(),
+        }
+    }
+}
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ProjectedPoolShort {
@@ -97,6 +116,12 @@ pub struct PoolSettings {
 
     pub ignore_x_worst_players: Option<PlayerTypeSettings>,
     pub dynasty_settings: Option<DynastySettings>,
+}
+
+impl Default for PoolSettings {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PoolSettings {
@@ -556,10 +581,10 @@ impl Pool {
         &mut self,
         user_id: &str,
         roster_modified_user_id: &str,
-        forw_list: &Vec<u32>,
-        def_list: &Vec<u32>,
-        goal_list: &Vec<u32>,
-        reserv_list: &Vec<u32>,
+        forw_list: &[u32],
+        def_list: &[u32],
+        goal_list: &[u32],
+        reserv_list: &[u32],
     ) -> Result<(), AppError> {
         // Apply a roster modification. This action can only be done during the start and
         // end season on the days that the users are allowed to make roster modifications.
@@ -590,10 +615,10 @@ impl Pool {
         &mut self,
         user_id: &str,
         roster_modified_user_id: &str,
-        forw_list: &Vec<u32>,
-        def_list: &Vec<u32>,
-        goal_list: &Vec<u32>,
-        reserv_list: &Vec<u32>,
+        forw_list: &[u32],
+        def_list: &[u32],
+        goal_list: &[u32],
+        reserv_list: &[u32],
         today: NaiveDate,
     ) -> Result<(), AppError> {
         self.validate_pool_status(&PoolState::InProgress)?;
@@ -756,10 +781,10 @@ impl Pool {
         }
 
         // Finally update the roster of the player if everything went well.
-        roster.chosen_forwards = forw_list.clone();
-        roster.chosen_defenders = def_list.clone();
-        roster.chosen_goalies = goal_list.clone();
-        roster.chosen_reservists = reserv_list.clone();
+        roster.chosen_forwards = forw_list.to_vec();
+        roster.chosen_defenders = def_list.to_vec();
+        roster.chosen_goalies = goal_list.to_vec();
+        roster.chosen_reservists = reserv_list.to_vec();
         Ok(())
     }
 
@@ -767,7 +792,7 @@ impl Pool {
         &mut self,
         user_id: &str,
         protected_players_user_id: &str,
-        protected_players: &Vec<u32>,
+        protected_players: &[u32],
     ) -> Result<(), AppError> {
         // make sure the user making the resquest is a pool participants.
         self.validate_pool_status(&PoolState::Dynasty)?;
@@ -800,8 +825,7 @@ impl Pool {
             msg: "Pool context does not exist.".to_string(),
         })?;
 
-        let ref mut user_protected_players =
-            context.protected_players.get_or_insert_with(HashMap::new);
+        let user_protected_players = context.protected_players.get_or_insert_with(HashMap::new);
 
         for player_id in protected_players.iter() {
             let player =
@@ -822,7 +846,7 @@ impl Pool {
 
             user_protected_players.insert(
                 protected_players_user_id.to_string(),
-                protected_players.clone(),
+                protected_players.to_vec(),
             );
         }
 
@@ -991,14 +1015,14 @@ impl Pool {
     pub fn start_draft(
         &mut self,
         user_id: &str,
-        room_users: &Vec<RoomUser>,
-        draft_order: &Vec<String>,
+        room_users: &[RoomUser],
+        draft_order: &[String],
     ) -> Result<(), AppError> {
         self.validate_pool_status(&PoolState::Created)?;
         self.has_owner_privileges(user_id)?;
 
         // Shuffle the pool participants. so the draft order is
-        let room_users = room_users.clone();
+        let room_users = room_users.to_vec();
 
         let user_ids: Vec<String> = room_users.iter().map(|user| user.id.clone()).collect();
 
@@ -1019,7 +1043,7 @@ impl Pool {
         self.context = Some(PoolContext::new(&user_ids));
         self.settings.number_poolers = user_ids.len() as u8;
         self.participants = room_users.into_iter().map(PoolUser::from).collect();
-        self.draft_order = Some(draft_order.clone());
+        self.draft_order = Some(draft_order.to_vec());
 
         Ok(())
     }
@@ -1199,18 +1223,19 @@ impl PoolContext {
             });
         };
 
+        // Per-user season tally: (total points, total number of games, then for
+        // each player type a map of player id -> (total points, total games)).
+        type UserSeasonTally = (
+            u16,
+            u16,
+            HashMap<String, (u16, u16)>, // Forwards
+            HashMap<String, (u16, u16)>, // Defense
+            HashMap<String, (u16, u16)>, // Goalies
+        );
+
         // Map the user to its total points, total number of games
         // and for each player type, a hashmap of the player id with their corresponding total number of points, total number of games.
-        let mut user_total_points: HashMap<
-            String,
-            (
-                u16,                         // Total points.
-                u16,                         // Total number of games.
-                HashMap<String, (u16, u16)>, // Forwards
-                HashMap<String, (u16, u16)>, // Defense
-                HashMap<String, (u16, u16)>, // Goalies
-            ),
-        > = HashMap::new();
+        let mut user_total_points: HashMap<String, UserSeasonTally> = HashMap::new();
 
         for (date, daily_roster_points) in score_by_day {
             for (participant, roster_daily_points) in daily_roster_points {
@@ -1317,16 +1342,8 @@ impl PoolContext {
             }
         }
 
-        let mut user_points_vec: Vec<(
-            &String,
-            &(
-                u16,
-                u16,
-                HashMap<String, (u16, u16)>,
-                HashMap<String, (u16, u16)>,
-                HashMap<String, (u16, u16)>,
-            ),
-        )> = user_total_points.iter().collect();
+        let mut user_points_vec: Vec<(&String, &UserSeasonTally)> =
+            user_total_points.iter().collect();
 
         // Sort the total points vector. And fill the final_rank list with it.
         // Sort the vector by total points and then by total games in descending order
@@ -1497,7 +1514,7 @@ impl PoolContext {
         &mut self,
         user_id: &str,
         player: &PlayerInfo,
-        draft_order: &Vec<String>, // being used as draft order.
+        draft_order: &[String], // being used as draft order.
         settings: &PoolSettings,
         has_privileges: bool,
     ) -> Result<bool, AppError> {
@@ -1556,7 +1573,7 @@ impl PoolContext {
 
     pub fn find_dynasty_next_drafter(
         &mut self,
-        draft_order: &Vec<String>, // being used as draft order.
+        draft_order: &[String], // being used as draft order.
     ) -> Result<String, AppError> {
         // Draft the right player in dynasty mode.
         // This takes into account the trade that have been traded during last season (past_tradable_picks).
@@ -1590,7 +1607,7 @@ impl PoolContext {
         &mut self,
         user_id: &str,
         player: &PlayerInfo,
-        draft_order: &Vec<String>, // being used as draft order.
+        draft_order: &[String], // being used as draft order.
         settings: &PoolSettings,
         has_privileges: bool,
     ) -> Result<bool, AppError> {
@@ -1627,7 +1644,7 @@ impl PoolContext {
         }
 
         // Add the drafted player if everything goes right.
-        self.add_drafted_player(player, &next_drafter, settings)?;
+        self.add_drafted_player(player, next_drafter, settings)?;
 
         self.players.insert(player.id.to_string(), player.clone());
         self.players_name_drafted.push(player.id);
@@ -1636,7 +1653,7 @@ impl PoolContext {
 
     pub fn undo_draft_player(
         &mut self,
-        participants: &Vec<String>,
+        participants: &[String],
         settings: &PoolSettings,
     ) -> Result<(), AppError> {
         // validate there is something to undo.
@@ -1904,6 +1921,12 @@ pub struct PoolerRoster {
     pub chosen_goalies: Vec<u32>,
     pub chosen_reservists: Vec<u32>,
 }
+impl Default for PoolerRoster {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PoolerRoster {
     pub fn new() -> Self {
         Self {
@@ -2356,7 +2379,12 @@ mod tests {
         pool
     }
 
-    fn trade(proposed_by: &str, ask_to: &str, from_players: Vec<u32>, to_players: Vec<u32>) -> Trade {
+    fn trade(
+        proposed_by: &str,
+        ask_to: &str,
+        from_players: Vec<u32>,
+        to_players: Vec<u32>,
+    ) -> Trade {
         Trade {
             proposed_by: proposed_by.to_string(),
             ask_to: ask_to.to_string(),
@@ -2405,7 +2433,8 @@ mod tests {
         let mut pool = in_progress_pool();
         let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
 
-        pool.create_trade_at(&mut new_trade, OWNER, deadline()).unwrap();
+        pool.create_trade_at(&mut new_trade, OWNER, deadline())
+            .unwrap();
 
         let trades = pool.trades.as_ref().unwrap();
         assert_eq!(trades.len(), 1);
@@ -2430,17 +2459,26 @@ mod tests {
         pool.status = PoolState::Created;
         let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
 
-        assert!(pool.create_trade_at(&mut new_trade, OWNER, deadline()).is_err());
+        assert!(pool
+            .create_trade_at(&mut new_trade, OWNER, deadline())
+            .is_err());
     }
 
     #[test]
     fn a_proposer_cannot_have_two_pending_trades() {
         let mut pool = in_progress_pool();
-        pool.create_trade_at(&mut trade(OWNER, USER_2, vec![131], vec![231]), OWNER, deadline())
-            .unwrap();
+        pool.create_trade_at(
+            &mut trade(OWNER, USER_2, vec![131], vec![231]),
+            OWNER,
+            deadline(),
+        )
+        .unwrap();
 
-        let result =
-            pool.create_trade_at(&mut trade(OWNER, USER_3, vec![131], vec![331]), OWNER, deadline());
+        let result = pool.create_trade_at(
+            &mut trade(OWNER, USER_3, vec![131], vec![331]),
+            OWNER,
+            deadline(),
+        );
 
         assert!(result.unwrap_err().to_string().contains("one active trade"));
     }
@@ -2448,12 +2486,17 @@ mod tests {
     #[test]
     fn a_pending_trade_does_not_block_other_proposers() {
         let mut pool = in_progress_pool();
-        pool.create_trade_at(&mut trade(OWNER, USER_2, vec![131], vec![231]), OWNER, deadline())
-            .unwrap();
+        pool.create_trade_at(
+            &mut trade(OWNER, USER_2, vec![131], vec![231]),
+            OWNER,
+            deadline(),
+        )
+        .unwrap();
 
         // user-3 must still be able to propose his own trade.
         let mut other_trade = trade(USER_3, USER_2, vec![331], vec![231]);
-        pool.create_trade_at(&mut other_trade, USER_3, deadline()).unwrap();
+        pool.create_trade_at(&mut other_trade, USER_3, deadline())
+            .unwrap();
 
         assert_eq!(pool.trades.as_ref().unwrap().len(), 2);
         assert_eq!(other_trade.id, 1);
@@ -2472,8 +2515,12 @@ mod tests {
         assert!(result.is_err());
 
         // The owner can.
-        pool.create_trade_at(&mut trade(USER_3, OWNER, vec![331], vec![131]), OWNER, deadline())
-            .unwrap();
+        pool.create_trade_at(
+            &mut trade(USER_3, OWNER, vec![331], vec![131]),
+            OWNER,
+            deadline(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -2481,7 +2528,11 @@ mod tests {
         let mut pool = in_progress_pool();
 
         // One empty side.
-        let result = pool.create_trade_at(&mut trade(OWNER, USER_2, vec![131], vec![]), OWNER, deadline());
+        let result = pool.create_trade_at(
+            &mut trade(OWNER, USER_2, vec![131], vec![]),
+            OWNER,
+            deadline(),
+        );
         assert!(result.unwrap_err().to_string().contains("no items"));
 
         // More than 5 items on one side.
@@ -2493,7 +2544,11 @@ mod tests {
         assert!(result.is_err());
 
         // Proposing a player the proposer does not own.
-        let result = pool.create_trade_at(&mut trade(OWNER, USER_2, vec![231], vec![201]), OWNER, deadline());
+        let result = pool.create_trade_at(
+            &mut trade(OWNER, USER_2, vec![231], vec![201]),
+            OWNER,
+            deadline(),
+        );
         assert!(result.unwrap_err().to_string().contains("possess"));
     }
 
@@ -2501,7 +2556,8 @@ mod tests {
     fn delete_trade_is_limited_to_the_proposer_or_privileged_users() {
         let mut pool = in_progress_pool();
         let mut new_trade = trade(USER_2, USER_3, vec![231], vec![331]);
-        pool.create_trade_at(&mut new_trade, USER_2, deadline()).unwrap();
+        pool.create_trade_at(&mut new_trade, USER_2, deadline())
+            .unwrap();
 
         // Another participant cannot delete it.
         assert!(pool.delete_trade(USER_3, new_trade.id).is_err());
@@ -2512,7 +2568,8 @@ mod tests {
 
         // The owner can too.
         let mut second_trade = trade(USER_2, USER_3, vec![231], vec![331]);
-        pool.create_trade_at(&mut second_trade, USER_2, deadline()).unwrap();
+        pool.create_trade_at(&mut second_trade, USER_2, deadline())
+            .unwrap();
         pool.delete_trade(OWNER, second_trade.id).unwrap();
         assert!(pool.trades.as_ref().unwrap().is_empty());
     }
@@ -2521,7 +2578,8 @@ mod tests {
     fn responding_a_trade_requires_a_24h_delay_for_regular_users() {
         let mut pool = in_progress_pool();
         let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
-        pool.create_trade_at(&mut new_trade, OWNER, deadline()).unwrap();
+        pool.create_trade_at(&mut new_trade, OWNER, deadline())
+            .unwrap();
 
         // The trade was just created: the asked user has to wait 24h.
         let result = pool.respond_trade(USER_2, true, new_trade.id);
@@ -2545,7 +2603,8 @@ mod tests {
     fn the_owner_can_refuse_a_trade_immediately() {
         let mut pool = in_progress_pool();
         let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
-        pool.create_trade_at(&mut new_trade, OWNER, deadline()).unwrap();
+        pool.create_trade_at(&mut new_trade, OWNER, deadline())
+            .unwrap();
 
         pool.respond_trade(OWNER, false, new_trade.id).unwrap();
 
@@ -2562,7 +2621,8 @@ mod tests {
     fn only_the_asked_user_or_privileged_users_can_respond() {
         let mut pool = in_progress_pool();
         let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
-        pool.create_trade_at(&mut new_trade, OWNER, deadline()).unwrap();
+        pool.create_trade_at(&mut new_trade, OWNER, deadline())
+            .unwrap();
         pool.trades.as_mut().unwrap()[0].date_created = 0;
 
         assert!(pool.respond_trade(USER_3, true, new_trade.id).is_err());
@@ -2572,7 +2632,8 @@ mod tests {
     fn a_responded_trade_cannot_be_responded_again() {
         let mut pool = in_progress_pool();
         let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
-        pool.create_trade_at(&mut new_trade, OWNER, deadline()).unwrap();
+        pool.create_trade_at(&mut new_trade, OWNER, deadline())
+            .unwrap();
         pool.trades.as_mut().unwrap()[0].date_created = 0;
         pool.respond_trade(USER_2, true, new_trade.id).unwrap();
 
@@ -2594,7 +2655,8 @@ mod tests {
             round: 0,
             from: OWNER.to_string(),
         });
-        pool.create_trade_at(&mut new_trade, OWNER, deadline()).unwrap();
+        pool.create_trade_at(&mut new_trade, OWNER, deadline())
+            .unwrap();
         pool.trades.as_mut().unwrap()[0].date_created = 0;
 
         pool.respond_trade(USER_2, true, new_trade.id).unwrap();
@@ -2651,7 +2713,12 @@ mod tests {
         let mut pool = in_progress_pool();
         pool.settings.salary_cap = Some(4_000_000.0);
         let context = pool.context.as_mut().unwrap();
-        context.pooler_roster.get_mut(OWNER).unwrap().chosen_forwards.pop();
+        context
+            .pooler_roster
+            .get_mut(OWNER)
+            .unwrap()
+            .chosen_forwards
+            .pop();
         // The remaining alignment costs 3M$; a 2M$ reservist busts the 4M$ cap.
         context.players.get_mut("131").unwrap().salary_cap = Some(2_000_000.0);
 
@@ -2720,10 +2787,10 @@ mod tests {
         pool.modify_roster_at(
             OWNER,
             OWNER,
-            &vec![101, 131],
-            &vec![111],
-            &vec![121],
-            &vec![102],
+            &[101, 131],
+            &[111],
+            &[121],
+            &[102],
             modification_day(),
         )
         .unwrap();
@@ -2736,15 +2803,17 @@ mod tests {
     #[test]
     fn modify_roster_is_rejected_outside_the_allowed_dates() {
         let mut pool = in_progress_pool();
+        // The season must have started for the allowed-dates check to apply.
+        pool.season_start = "2025-09-29".to_string();
         pool.settings.roster_modification_date = vec!["2025-12-01".to_string()];
 
         let result = pool.modify_roster_at(
             OWNER,
             OWNER,
-            &vec![101, 131],
-            &vec![111],
-            &vec![121],
-            &vec![102],
+            &[101, 131],
+            &[111],
+            &[121],
+            &[102],
             modification_day() + Duration::days(1),
         );
 
@@ -2760,10 +2829,10 @@ mod tests {
         pool.modify_roster_at(
             OWNER,
             OWNER,
-            &vec![101, 131],
-            &vec![111],
-            &vec![121],
-            &vec![102],
+            &[101, 131],
+            &[111],
+            &[121],
+            &[102],
             before_season,
         )
         .unwrap();
@@ -2776,27 +2845,25 @@ mod tests {
         let today = modification_day();
 
         // Too many forwards.
-        let result = pool.modify_roster_at(
-            OWNER, OWNER, &vec![101, 102, 131], &vec![111], &vec![121], &vec![], today,
-        );
+        let result =
+            pool.modify_roster_at(OWNER, OWNER, &[101, 102, 131], &[111], &[121], &[], today);
         assert!(result.unwrap_err().to_string().contains("forwards"));
 
         // Not the same amount of players as before.
-        let result = pool.modify_roster_at(
-            OWNER, OWNER, &vec![101, 102], &vec![111], &vec![121], &vec![], today,
-        );
-        assert!(result.unwrap_err().to_string().contains("not the same as before"));
+        let result = pool.modify_roster_at(OWNER, OWNER, &[101, 102], &[111], &[121], &[], today);
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("not the same as before"));
 
         // A duplicated player.
-        let result = pool.modify_roster_at(
-            OWNER, OWNER, &vec![101, 101], &vec![111], &vec![121], &vec![131], today,
-        );
+        let result =
+            pool.modify_roster_at(OWNER, OWNER, &[101, 101], &[111], &[121], &[131], today);
         assert!(result.unwrap_err().to_string().contains("dupplicated"));
 
         // A player owned by someone else.
-        let result = pool.modify_roster_at(
-            OWNER, OWNER, &vec![101, 201], &vec![111], &vec![121], &vec![131], today,
-        );
+        let result =
+            pool.modify_roster_at(OWNER, OWNER, &[101, 201], &[111], &[121], &[131], today);
         assert!(result.unwrap_err().to_string().contains("possess"));
     }
 
@@ -2810,10 +2877,10 @@ mod tests {
         let result = pool.modify_roster_at(
             OWNER,
             OWNER,
-            &vec![101, 102],
-            &vec![111],
-            &vec![121],
-            &vec![131],
+            &[101, 102],
+            &[111],
+            &[121],
+            &[131],
             modification_day(),
         );
 
@@ -2854,7 +2921,11 @@ mod tests {
         // A draft order that references an unknown user.
         let mut pool = Pool::new("draft-pool", OWNER, &small_settings());
         let room_users: Vec<RoomUser> = PARTICIPANTS.iter().map(|id| room_user(id)).collect();
-        let bad_order = vec![OWNER.to_string(), USER_2.to_string(), "stranger".to_string()];
+        let bad_order = vec![
+            OWNER.to_string(),
+            USER_2.to_string(),
+            "stranger".to_string(),
+        ];
         assert!(pool.start_draft(OWNER, &room_users, &bad_order).is_err());
 
         // Only a pool in the Created state can start a draft.
@@ -2866,17 +2937,21 @@ mod tests {
     fn draft_player_follows_the_serpentine_order() {
         let mut pool = draft_pool();
 
-        pool.draft_player(OWNER, &player(1, Position::F, None)).unwrap();
+        pool.draft_player(OWNER, &player(1, Position::F, None))
+            .unwrap();
 
         // It is now user-2's turn; user-3 cannot draft.
         let result = pool.draft_player(USER_3, &player(2, Position::F, None));
         assert!(result.unwrap_err().to_string().contains(USER_2));
 
-        pool.draft_player(USER_2, &player(2, Position::F, None)).unwrap();
-        pool.draft_player(USER_3, &player(3, Position::F, None)).unwrap();
+        pool.draft_player(USER_2, &player(2, Position::F, None))
+            .unwrap();
+        pool.draft_player(USER_3, &player(3, Position::F, None))
+            .unwrap();
 
         // Second round is reversed: user-3 drafts first.
-        pool.draft_player(USER_3, &player(4, Position::F, None)).unwrap();
+        pool.draft_player(USER_3, &player(4, Position::F, None))
+            .unwrap();
 
         assert!(possesses(&pool, USER_3, 3));
         assert!(possesses(&pool, USER_3, 4));
@@ -2885,10 +2960,12 @@ mod tests {
     #[test]
     fn the_owner_can_draft_on_behalf_of_the_next_drafter() {
         let mut pool = draft_pool();
-        pool.draft_player(OWNER, &player(1, Position::F, None)).unwrap();
+        pool.draft_player(OWNER, &player(1, Position::F, None))
+            .unwrap();
 
         // It is user-2's turn, but the owner picks for him.
-        pool.draft_player(OWNER, &player(2, Position::F, None)).unwrap();
+        pool.draft_player(OWNER, &player(2, Position::F, None))
+            .unwrap();
 
         assert!(possesses(&pool, USER_2, 2));
     }
@@ -2896,7 +2973,8 @@ mod tests {
     #[test]
     fn draft_player_rejects_an_already_picked_player() {
         let mut pool = draft_pool();
-        pool.draft_player(OWNER, &player(1, Position::F, None)).unwrap();
+        pool.draft_player(OWNER, &player(1, Position::F, None))
+            .unwrap();
 
         let result = pool.draft_player(USER_2, &player(1, Position::F, None));
 
@@ -2908,7 +2986,13 @@ mod tests {
         let mut pool = draft_pool();
         // Each of the 5 rounds drafts one position; the last forward round
         // overflows into the reservist spot.
-        let positions = [Position::F, Position::F, Position::D, Position::G, Position::F];
+        let positions = [
+            Position::F,
+            Position::F,
+            Position::D,
+            Position::G,
+            Position::F,
+        ];
         let draft_order = pool.draft_order.as_ref().unwrap().clone();
 
         let mut player_id = 0;
@@ -2935,8 +3019,10 @@ mod tests {
     #[test]
     fn undo_draft_player_removes_the_last_pick() {
         let mut pool = draft_pool();
-        pool.draft_player(OWNER, &player(1, Position::F, None)).unwrap();
-        pool.draft_player(USER_2, &player(2, Position::F, None)).unwrap();
+        pool.draft_player(OWNER, &player(1, Position::F, None))
+            .unwrap();
+        pool.draft_player(USER_2, &player(2, Position::F, None))
+            .unwrap();
 
         // Only the owner can undo.
         assert!(pool.undo_draft_player(USER_2).is_err());
@@ -2969,7 +3055,7 @@ mod tests {
     fn protect_players_stores_the_protected_list() {
         let mut pool = dynasty_pool();
 
-        pool.protect_players(OWNER, OWNER, &vec![101, 111]).unwrap();
+        pool.protect_players(OWNER, OWNER, &[101, 111]).unwrap();
 
         let context = pool.context.as_ref().unwrap();
         assert_eq!(
@@ -2983,26 +3069,26 @@ mod tests {
         let mut pool = dynasty_pool();
 
         // Wrong amount of protected players.
-        assert!(pool.protect_players(OWNER, OWNER, &vec![101]).is_err());
+        assert!(pool.protect_players(OWNER, OWNER, &[101]).is_err());
 
         // A player the participant does not own.
-        assert!(pool.protect_players(OWNER, OWNER, &vec![101, 201]).is_err());
+        assert!(pool.protect_players(OWNER, OWNER, &[101, 201]).is_err());
 
         // Only a Dynasty pool accepts protections.
         let mut pool = in_progress_pool();
-        assert!(pool.protect_players(OWNER, OWNER, &vec![101, 111]).is_err());
+        assert!(pool.protect_players(OWNER, OWNER, &[101, 111]).is_err());
     }
 
     #[test]
     fn complete_protection_rebuilds_the_rosters_and_moves_to_draft() {
         let mut pool = dynasty_pool();
-        pool.protect_players(OWNER, OWNER, &vec![101, 111]).unwrap();
+        pool.protect_players(OWNER, OWNER, &[101, 111]).unwrap();
 
         // The protection phase is not complete yet.
         assert!(pool.complete_protection(OWNER).is_err());
 
-        pool.protect_players(USER_2, USER_2, &vec![201, 211]).unwrap();
-        pool.protect_players(USER_3, USER_3, &vec![301, 311]).unwrap();
+        pool.protect_players(USER_2, USER_2, &[201, 211]).unwrap();
+        pool.protect_players(USER_3, USER_3, &[301, 311]).unwrap();
 
         // Only the owner can complete the protection phase.
         assert!(pool.complete_protection(USER_2).is_err());
@@ -3142,7 +3228,7 @@ mod tests {
         assert_eq!(pool.status, PoolState::Final);
         assert_eq!(
             pool.final_rank.as_ref().unwrap(),
-            &vec![USER_2.to_string(), OWNER.to_string(), USER_3.to_string()]
+            &[USER_2.to_string(), OWNER.to_string(), USER_3.to_string()]
         );
     }
 }

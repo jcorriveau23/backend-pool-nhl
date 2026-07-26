@@ -177,11 +177,9 @@ pub async fn hanko_token_decode(
         let header = decode_header(token).map_err(|e| AppError::JwtError { msg: e.to_string() })?;
         match header.kid {
             Some(kid) => Ok(kid),
-            None => {
-                return Err(AppError::JwtError {
-                    msg: "Could not recover the kid of the header.".to_string(),
-                })
-            }
+            None => Err(AppError::JwtError {
+                msg: "Could not recover the kid of the header.".to_string(),
+            }),
         }
     }
 

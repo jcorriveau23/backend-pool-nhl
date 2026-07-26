@@ -8,7 +8,7 @@ use poolnhl_interface::pool::model::{
     AddPlayerRequest, CompleteProtectionRequest, CreateTradeRequest, DeleteTradeRequest,
     FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest, ModifyRosterRequest, Pool,
     PoolCreationRequest, PoolDeletionRequest, ProjectedPoolShort, ProtectPlayersRequest,
-    RemovePlayerRequest, RespondTradeRequest, UpdatePoolSettingsRequest,
+    RemovePlayerRequest, RespondTradeRequest, SeasonInfo, UpdatePoolSettingsRequest,
 };
 use poolnhl_interface::pool::service::PoolServiceHandle;
 use poolnhl_interface::users::model::UserEmailJwtPayload;
@@ -16,7 +16,7 @@ use poolnhl_interface::users::model::UserEmailJwtPayload;
 pub struct PoolRouter;
 
 impl PoolRouter {
-    pub fn new(service_registry: ServiceRegistry) -> Router {
+    pub fn router(service_registry: ServiceRegistry) -> Router {
         Router::new()
             .route("/pool/:name", get(Self::get_pool_by_name))
             .route(
@@ -24,6 +24,7 @@ impl PoolRouter {
                 get(Self::get_pool_by_name_with_range),
             )
             .route("/pools/:season", get(Self::get_pools))
+            .route("/season-info", get(Self::get_season_info))
             .route("/create-pool", post(Self::create_pool))
             .route("/delete-pool", post(Self::delete_pool))
             .route("/add-player", post(Self::add_player))
@@ -65,6 +66,12 @@ impl PoolRouter {
     ) -> Result<Json<Vec<ProjectedPoolShort>>> {
         print!("{}", season);
         pool_service.list_pools(season).await.map(Json)
+    }
+
+    /// Return the season date information (start/end dates, season number and
+    /// trade deadline) the front end needs to render the current season.
+    async fn get_season_info() -> Result<Json<SeasonInfo>> {
+        Ok(Json(SeasonInfo::current()))
     }
 
     async fn create_pool(

@@ -103,8 +103,16 @@ fn in_progress_pool(name: &str) -> Pool {
 
     let ids: Vec<String> = [OWNER, USER_2].iter().map(|id| id.to_string()).collect();
     let mut context = PoolContext::new(&ids);
-    context.pooler_roster.get_mut(OWNER).unwrap().chosen_reservists = vec![1];
-    context.pooler_roster.get_mut(USER_2).unwrap().chosen_reservists = vec![2];
+    context
+        .pooler_roster
+        .get_mut(OWNER)
+        .unwrap()
+        .chosen_reservists = vec![1];
+    context
+        .pooler_roster
+        .get_mut(USER_2)
+        .unwrap()
+        .chosen_reservists = vec![2];
     context.players.insert("1".to_string(), player(1));
     context.players.insert("2".to_string(), player(2));
 

@@ -21,7 +21,7 @@ use tokio::sync::{broadcast, mpsc};
 pub struct DraftRouter;
 
 impl DraftRouter {
-    pub fn new(service_registry: ServiceRegistry) -> Router {
+    pub fn router(service_registry: ServiceRegistry) -> Router {
         Router::new()
             .route("/ws/:jwt", get(Self::ws_handler))
             .route("/rooms", get(Self::list_rooms))
@@ -123,7 +123,7 @@ impl DraftRouter {
         }
 
         match DraftRouter::waiting_join_room_command(&mut socket, &addr, &draft_service).await {
-            Err(e) => print!("{}", e.to_string()), // An error occured during the initial waiting to join room function. Close the socket connection.
+            Err(e) => print!("{}", e), // An error occured during the initial waiting to join room function. Close the socket connection.
             Ok((mut rx, current_pool_name)) => {
                 // Actual websocket statemachine (one will be spawned per connection)
                 let (mut sender, mut receiver) = socket.split();

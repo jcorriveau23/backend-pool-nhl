@@ -72,7 +72,10 @@ impl RoomSubscriberHandle {
 
 // Spawn the single pub/sub connection of this instance. Every message received
 // on a room channel is forwarded to the room's local broadcast channel.
-pub fn spawn_room_subscriber(client: redis::Client, local_rooms: LocalRooms) -> RoomSubscriberHandle {
+pub fn spawn_room_subscriber(
+    client: redis::Client,
+    local_rooms: LocalRooms,
+) -> RoomSubscriberHandle {
     let (control_tx, mut control_rx) = mpsc::channel::<SubscriberCmd>(64);
 
     tokio::spawn(async move {
