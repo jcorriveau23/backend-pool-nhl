@@ -2059,7 +2059,7 @@ pub struct Roster {
 }
 
 #[allow(non_snake_case)]
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct SkaterPoints {
     pub G: u8,
     pub A: u8,
@@ -2086,7 +2086,7 @@ impl SkaterPoints {
 }
 
 #[allow(non_snake_case)]
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct GoalyPoints {
     pub G: u8,
     pub A: u8,

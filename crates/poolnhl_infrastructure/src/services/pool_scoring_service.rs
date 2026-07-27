@@ -1,143 +1,102 @@
-//! Derives pool scores on demand from the shared `day_leaders` instead of the
-//! per-pool `score_by_day` blob.
+//! Derives pool scores on demand from the shared `day_leaders` and sparse
+//! lineup events, instead of the per-pool `score_by_day` blob.
 //!
-//! The lineup a participant iced on a given day is pool-specific and must be
-//! stored; the *points* those players scored are shared and are recomputed here
-//! from [`DayLeadersCache`]. By rebuilding the same `score_by_day` shape from
-//! derived data, the existing scoring and ranking logic
-//! ([`PoolContext::get_final_rank`]) is reused verbatim.
+//! The lineup a participant iced on a given day comes from [`LineupStore`]
+//! (reconstructed with [`lineup_as_of`]); the points those players scored come
+//! from [`DayLeadersCache`]. Building the familiar `DailyRosterPoints` shape
+//! lets the frontend consume the same structure it did from `score_by_day`.
 
 use std::collections::HashMap;
 
+use chrono::{Duration, NaiveDate};
+
 use poolnhl_interface::errors::{AppError, Result};
-use poolnhl_interface::pool::model::{DailyRosterPoints, Pool};
+use poolnhl_interface::pool::lineup::{lineup_as_of, LineupEvent};
+use poolnhl_interface::pool::model::{DailyRosterPoints, DayScores, Pool, PoolUser};
 
 use crate::services::day_leaders_cache::DayLeadersCache;
+use crate::services::lineup_store::LineupStore;
+
+const DATE_FMT: &str = "%Y-%m-%d";
 
 #[derive(Clone)]
 pub struct PoolScoringService {
     cache: DayLeadersCache,
+    lineup_store: LineupStore,
 }
 
 impl PoolScoringService {
-    pub fn new(cache: DayLeadersCache) -> Self {
-        Self { cache }
-    }
-
-    /// Rebuild a pool's full per-day score map by deriving each participant's
-    /// daily points from the shared `day_leaders` (via the cache), keeping the
-    /// lineups recorded in the pool context. This is the derive-side twin of
-    /// the stored `score_by_day`.
-    ///
-    /// The lineup source here is the pool's own `score_by_day` keys, which lets
-    /// this be shadow-compared against the stored points before sparse lineup
-    /// events replace that source.
-    pub async fn derive_score_by_day(
-        &self,
-        pool: &Pool,
-    ) -> Result<HashMap<String, HashMap<String, DailyRosterPoints>>> {
-        let stored = stored_score_by_day(pool)?;
-        let mut derived = HashMap::with_capacity(stored.len());
-        for (date, day) in stored {
-            derived.insert(date.clone(), self.derive_day(date, day).await?);
+    pub fn new(cache: DayLeadersCache, lineup_store: LineupStore) -> Self {
+        Self {
+            cache,
+            lineup_store,
         }
-        Ok(derived)
     }
 
-    /// Derived scores for a single date: participant -> per-player breakdown.
-    /// Empty when the pool has no lineup recorded for that date.
+    /// Per-participant scoring breakdown for a single date, derived from the
+    /// shared `day_leaders` and each participant's lineup on that date.
     pub async fn derive_daily(
         &self,
         pool: &Pool,
         date: &str,
     ) -> Result<HashMap<String, DailyRosterPoints>> {
-        match stored_score_by_day(pool)?.get(date) {
-            Some(day) => self.derive_day(date, day).await,
-            None => Ok(HashMap::new()),
-        }
+        let events = self.lineup_store.events_for_pool(&pool.name).await?;
+        let day_scores = self.cache.day_scores(date).await?;
+        Ok(build_day(&pool.participants, &events, &day_scores, date))
     }
 
-    /// Derived scores for every recorded date within `[from, to]` (inclusive).
-    /// ISO dates order lexically, so string comparison bounds the range.
+    /// Per-participant breakdown for every date in `[from, to]` (inclusive),
+    /// keyed by date. Feeds the cumulative/history views and graphs.
     pub async fn derive_range(
         &self,
         pool: &Pool,
         from: &str,
         to: &str,
     ) -> Result<HashMap<String, HashMap<String, DailyRosterPoints>>> {
-        let stored = stored_score_by_day(pool)?;
+        let events = self.lineup_store.events_for_pool(&pool.name).await?;
+        let start = parse_date(from)?;
+        let end = parse_date(to)?;
+
         let mut derived = HashMap::new();
-        for (date, day) in stored {
-            if date.as_str() < from || date.as_str() > to {
-                continue;
-            }
-            derived.insert(date.clone(), self.derive_day(date, day).await?);
+        let mut current = start;
+        while current <= end {
+            let date = current.format(DATE_FMT).to_string();
+            let day_scores = self.cache.day_scores(&date).await?;
+            derived.insert(
+                date.clone(),
+                build_day(&pool.participants, &events, &day_scores, &date),
+            );
+            current += Duration::days(1);
         }
         Ok(derived)
     }
+}
 
-    /// A pool's final ranking, computed entirely from the shared `day_leaders`.
-    pub async fn derive_final_rank(&self, pool: &Pool) -> Result<Vec<String>> {
-        let score_by_day = self.derive_score_by_day(pool).await?;
-        let mut context = pool.context.clone().ok_or_else(|| AppError::CustomError {
-            msg: "pool context does not exist.".to_string(),
-        })?;
-        context.score_by_day = Some(score_by_day);
-        context.get_final_rank(&pool.settings)
+// Score every participant's lineup for one day: reconstruct the lineup as of the
+// date from its events, then source the points from the shared day scores.
+fn build_day(
+    participants: &[PoolUser],
+    events: &HashMap<String, Vec<LineupEvent>>,
+    day_scores: &DayScores,
+    date: &str,
+) -> HashMap<String, DailyRosterPoints> {
+    let empty: Vec<LineupEvent> = Vec::new();
+    let mut day = HashMap::with_capacity(participants.len());
+    for participant in participants {
+        let participant_events = events.get(&participant.id).unwrap_or(&empty);
+        let (forwards, defense, goalies) = lineup_as_of(participant_events, date);
+        day.insert(
+            participant.id.clone(),
+            DailyRosterPoints {
+                roster: day_scores.roster_for(forwards, defense, goalies),
+                is_cumulated: true,
+            },
+        );
     }
-
-    /// Derive one day: each participant's lineup scored from the shared day.
-    async fn derive_day(
-        &self,
-        date: &str,
-        day: &HashMap<String, DailyRosterPoints>,
-    ) -> Result<HashMap<String, DailyRosterPoints>> {
-        let scores = self.cache.day_scores(date).await?;
-        let mut derived_day = HashMap::with_capacity(day.len());
-        for (participant, roster_points) in day {
-            let (forwards, defense, goalies) = lineup_ids(roster_points);
-            derived_day.insert(
-                participant.clone(),
-                DailyRosterPoints {
-                    roster: scores.roster_for(&forwards, &defense, &goalies),
-                    is_cumulated: true,
-                },
-            );
-        }
-        Ok(derived_day)
-    }
+    day
 }
 
-// A pool's stored per-day map, the source of both lineups and (for now) the
-// dates in range. Errors mirror the rest of the pool service.
-fn stored_score_by_day(
-    pool: &Pool,
-) -> Result<&HashMap<String, HashMap<String, DailyRosterPoints>>> {
-    pool.context
-        .as_ref()
-        .ok_or_else(|| AppError::CustomError {
-            msg: "pool context does not exist.".to_string(),
-        })?
-        .score_by_day
-        .as_ref()
-        .ok_or_else(|| AppError::CustomError {
-            msg: "pool has no score_by_day to derive lineups from.".to_string(),
-        })
-}
-
-// The lineup for a participant on a day is the set of players recorded in each
-// position of the stored roster (the map values are the points being re-derived).
-fn lineup_ids(roster_points: &DailyRosterPoints) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
-    (
-        keys_as_ids(&roster_points.roster.F),
-        keys_as_ids(&roster_points.roster.D),
-        keys_as_ids(&roster_points.roster.G),
-    )
-}
-
-fn keys_as_ids<V>(roster: &HashMap<String, V>) -> Vec<u32> {
-    roster
-        .keys()
-        .filter_map(|id| id.parse::<u32>().ok())
-        .collect()
+fn parse_date(date: &str) -> Result<NaiveDate> {
+    NaiveDate::parse_from_str(date, DATE_FMT)
+        .map_err(|e| AppError::ParseError { msg: e.to_string() })
 }

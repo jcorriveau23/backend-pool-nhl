@@ -23,6 +23,7 @@ use daily_leaders_service::MongoDailyLeadersService;
 use day_leaders_cache::DayLeadersCache;
 use draft_service::MongoDraftService;
 use draft_state::{spawn_heartbeat, DraftServerState, LocalRooms};
+use lineup_store::LineupStore;
 use players_service::MongoPlayersService;
 use pool_scoring_service::PoolScoringService;
 use pool_service::MongoPoolService;
@@ -47,10 +48,11 @@ impl ServiceRegistry {
         // for the room broadcasts, hashes for the room membership/presence.
         let (redis_client, redis_conn) = RedisManager::connect(redis_uri).await?;
 
-        // Shared, read-through cache of the compact day_leaders projection, used
-        // to derive pool scores on demand from the shared daily stats.
+        // Shared, read-through cache of the compact day_leaders projection plus
+        // the sparse lineup events, used to derive pool scores on demand.
         let day_leaders_cache = DayLeadersCache::new(db.clone(), redis_conn.clone());
-        let pool_scoring_service = PoolScoringService::new(day_leaders_cache);
+        let lineup_store = LineupStore::new(db.clone());
+        let pool_scoring_service = PoolScoringService::new(day_leaders_cache, lineup_store);
 
         let local_rooms = LocalRooms::new();
         let subscriber = spawn_room_subscriber(redis_client, local_rooms.clone());
