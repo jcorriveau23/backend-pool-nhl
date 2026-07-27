@@ -1,14 +1,18 @@
+use std::collections::HashMap;
+
 use axum::extract::{Json, Path, State};
 use axum::routing::{get, post};
 use axum::Router;
 
+use poolnhl_infrastructure::services::pool_scoring_service::PoolScoringService;
 use poolnhl_infrastructure::services::ServiceRegistry;
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::pool::model::{
-    AddPlayerRequest, CompleteProtectionRequest, CreateTradeRequest, DeleteTradeRequest,
-    FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest, ModifyRosterRequest, Pool,
-    PoolCreationRequest, PoolDeletionRequest, ProjectedPoolShort, ProtectPlayersRequest,
-    RemovePlayerRequest, RespondTradeRequest, SeasonInfo, UpdatePoolSettingsRequest,
+    AddPlayerRequest, CompleteProtectionRequest, CreateTradeRequest, DailyRosterPoints,
+    DeleteTradeRequest, FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest,
+    ModifyRosterRequest, Pool, PoolCreationRequest, PoolDeletionRequest, ProjectedPoolShort,
+    ProtectPlayersRequest, RemovePlayerRequest, RespondTradeRequest, SeasonInfo,
+    UpdatePoolSettingsRequest,
 };
 use poolnhl_interface::pool::service::PoolServiceHandle;
 use poolnhl_interface::users::model::UserEmailJwtPayload;
@@ -22,6 +26,17 @@ impl PoolRouter {
             .route(
                 "/pool/:name/:start_date/:from",
                 get(Self::get_pool_by_name_with_range),
+            )
+            // Scores derived on demand from the shared day_leaders. A distinct
+            // prefix avoids a matchit 0.7 static-vs-param conflict with the
+            // `/pool/:name/:start_date/:from` route above.
+            .route(
+                "/pool-scores/:name/daily/:date",
+                get(Self::get_pool_daily_scores),
+            )
+            .route(
+                "/pool-scores/:name/cumulative/:from/:to",
+                get(Self::get_pool_cumulative_scores),
             )
             .route("/pools/:season", get(Self::get_pools))
             .route("/season-info", get(Self::get_season_info))
@@ -57,6 +72,28 @@ impl PoolRouter {
             .get_pool_by_name_with_range(&name, &start_date, &from)
             .await
             .map(Json)
+    }
+
+    /// Per-participant scoring breakdown for a single day, derived from the
+    /// shared day_leaders. Same shape as one day of `score_by_day`.
+    async fn get_pool_daily_scores(
+        Path((name, date)): Path<(String, String)>,
+        State(pool_service): State<PoolServiceHandle>,
+        State(scoring): State<PoolScoringService>,
+    ) -> Result<Json<HashMap<String, DailyRosterPoints>>> {
+        let pool = pool_service.get_pool_by_name(&name).await?;
+        scoring.derive_daily(&pool, &date).await.map(Json)
+    }
+
+    /// Per-participant scoring breakdown for every day in `[from, to]`, derived
+    /// from the shared day_leaders. Feeds the cumulative/history views and graphs.
+    async fn get_pool_cumulative_scores(
+        Path((name, from, to)): Path<(String, String, String)>,
+        State(pool_service): State<PoolServiceHandle>,
+        State(scoring): State<PoolScoringService>,
+    ) -> Result<Json<HashMap<String, HashMap<String, DailyRosterPoints>>>> {
+        let pool = pool_service.get_pool_by_name(&name).await?;
+        scoring.derive_range(&pool, &from, &to).await.map(Json)
     }
 
     /// get all Pool documents but only part of the information.

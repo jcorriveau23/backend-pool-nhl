@@ -24,8 +24,8 @@ impl PoolScoringService {
         Self { cache }
     }
 
-    /// Rebuild a pool's per-day score map by deriving each participant's daily
-    /// points from the shared `day_leaders` (via the cache), keeping the
+    /// Rebuild a pool's full per-day score map by deriving each participant's
+    /// daily points from the shared `day_leaders` (via the cache), keeping the
     /// lineups recorded in the pool context. This is the derive-side twin of
     /// the stored `score_by_day`.
     ///
@@ -36,31 +36,42 @@ impl PoolScoringService {
         &self,
         pool: &Pool,
     ) -> Result<HashMap<String, HashMap<String, DailyRosterPoints>>> {
-        let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
-            msg: "pool context does not exist.".to_string(),
-        })?;
-        let stored = context
-            .score_by_day
-            .as_ref()
-            .ok_or_else(|| AppError::CustomError {
-                msg: "pool has no score_by_day to derive lineups from.".to_string(),
-            })?;
-
+        let stored = stored_score_by_day(pool)?;
         let mut derived = HashMap::with_capacity(stored.len());
         for (date, day) in stored {
-            let scores = self.cache.day_scores(date).await?;
-            let mut derived_day = HashMap::with_capacity(day.len());
-            for (participant, roster_points) in day {
-                let (forwards, defense, goalies) = lineup_ids(roster_points);
-                derived_day.insert(
-                    participant.clone(),
-                    DailyRosterPoints {
-                        roster: scores.roster_for(&forwards, &defense, &goalies),
-                        is_cumulated: true,
-                    },
-                );
+            derived.insert(date.clone(), self.derive_day(date, day).await?);
+        }
+        Ok(derived)
+    }
+
+    /// Derived scores for a single date: participant -> per-player breakdown.
+    /// Empty when the pool has no lineup recorded for that date.
+    pub async fn derive_daily(
+        &self,
+        pool: &Pool,
+        date: &str,
+    ) -> Result<HashMap<String, DailyRosterPoints>> {
+        match stored_score_by_day(pool)?.get(date) {
+            Some(day) => self.derive_day(date, day).await,
+            None => Ok(HashMap::new()),
+        }
+    }
+
+    /// Derived scores for every recorded date within `[from, to]` (inclusive).
+    /// ISO dates order lexically, so string comparison bounds the range.
+    pub async fn derive_range(
+        &self,
+        pool: &Pool,
+        from: &str,
+        to: &str,
+    ) -> Result<HashMap<String, HashMap<String, DailyRosterPoints>>> {
+        let stored = stored_score_by_day(pool)?;
+        let mut derived = HashMap::new();
+        for (date, day) in stored {
+            if date.as_str() < from || date.as_str() > to {
+                continue;
             }
-            derived.insert(date.clone(), derived_day);
+            derived.insert(date.clone(), self.derive_day(date, day).await?);
         }
         Ok(derived)
     }
@@ -74,6 +85,44 @@ impl PoolScoringService {
         context.score_by_day = Some(score_by_day);
         context.get_final_rank(&pool.settings)
     }
+
+    /// Derive one day: each participant's lineup scored from the shared day.
+    async fn derive_day(
+        &self,
+        date: &str,
+        day: &HashMap<String, DailyRosterPoints>,
+    ) -> Result<HashMap<String, DailyRosterPoints>> {
+        let scores = self.cache.day_scores(date).await?;
+        let mut derived_day = HashMap::with_capacity(day.len());
+        for (participant, roster_points) in day {
+            let (forwards, defense, goalies) = lineup_ids(roster_points);
+            derived_day.insert(
+                participant.clone(),
+                DailyRosterPoints {
+                    roster: scores.roster_for(&forwards, &defense, &goalies),
+                    is_cumulated: true,
+                },
+            );
+        }
+        Ok(derived_day)
+    }
+}
+
+// A pool's stored per-day map, the source of both lineups and (for now) the
+// dates in range. Errors mirror the rest of the pool service.
+fn stored_score_by_day(
+    pool: &Pool,
+) -> Result<&HashMap<String, HashMap<String, DailyRosterPoints>>> {
+    pool.context
+        .as_ref()
+        .ok_or_else(|| AppError::CustomError {
+            msg: "pool context does not exist.".to_string(),
+        })?
+        .score_by_day
+        .as_ref()
+        .ok_or_else(|| AppError::CustomError {
+            msg: "pool has no score_by_day to derive lineups from.".to_string(),
+        })
 }
 
 // The lineup for a participant on a day is the set of players recorded in each
