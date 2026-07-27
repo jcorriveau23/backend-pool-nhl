@@ -15,6 +15,7 @@ pub mod day_leaders_cache;
 pub mod draft_service;
 pub mod draft_state;
 pub mod players_service;
+pub mod pool_scoring_service;
 pub mod pool_service;
 
 use daily_leaders_service::MongoDailyLeadersService;
