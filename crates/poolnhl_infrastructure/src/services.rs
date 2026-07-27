@@ -14,6 +14,7 @@ pub mod daily_leaders_service;
 pub mod day_leaders_cache;
 pub mod draft_service;
 pub mod draft_state;
+pub mod lineup_store;
 pub mod players_service;
 pub mod pool_scoring_service;
 pub mod pool_service;
