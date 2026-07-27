@@ -11,6 +11,7 @@ use poolnhl_interface::players::service::PlayersServiceHandle;
 use poolnhl_interface::pool::service::PoolServiceHandle;
 
 pub mod daily_leaders_service;
+pub mod day_leaders_cache;
 pub mod draft_service;
 pub mod draft_state;
 pub mod players_service;
