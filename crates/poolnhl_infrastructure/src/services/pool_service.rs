@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use chrono::{Duration, NaiveDate};
+use chrono::{Duration, Local, NaiveDate};
 use futures::stream::TryStreamExt;
 use mongodb::bson::doc;
 use mongodb::bson::{to_bson, Document};
@@ -27,10 +27,12 @@ use poolnhl_interface::pool::{
 };
 
 use crate::database_connection::DatabaseConnection;
+use crate::services::lineup_store::LineupStore;
 
 #[derive(Clone)]
 pub struct MongoPoolService {
     collection: Collection<Pool>,
+    lineup_store: LineupStore,
 }
 
 pub async fn get_optional_short_pool_by_name(
@@ -88,7 +90,46 @@ pub async fn get_short_pool_by_name(
 impl MongoPoolService {
     pub fn new(db: DatabaseConnection) -> Self {
         let collection = db.collection::<Pool>("pools");
-        Self { collection }
+        let lineup_store = LineupStore::new(db);
+        Self {
+            collection,
+            lineup_store,
+        }
+    }
+
+    /// Record a participant's current starting lineup (chosen forwards/defense/
+    /// goalies) as a sparse lineup event effective today, if it changed. This is
+    /// the write-side counterpart of deriving scores from lineup events.
+    async fn record_lineup(&self, pool: &Pool, participant: &str) -> Result<()> {
+        let roster = match pool
+            .context
+            .as_ref()
+            .and_then(|context| context.pooler_roster.get(participant))
+        {
+            Some(roster) => roster,
+            None => return Ok(()),
+        };
+        let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
+        self.lineup_store
+            .record_if_changed(
+                &pool.name,
+                participant,
+                &today,
+                roster.chosen_forwards.clone(),
+                roster.chosen_defenders.clone(),
+                roster.chosen_goalies.clone(),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Record every participant's lineup (used after a trade, which can move
+    /// players between two rosters).
+    async fn record_all_lineups(&self, pool: &Pool) -> Result<()> {
+        for participant in &pool.participants {
+            self.record_lineup(pool, &participant.id).await?;
+        }
+        Ok(())
     }
 }
 
@@ -264,7 +305,10 @@ impl PoolService for MongoPoolService {
             }
         };
 
-        update_pool(updated_fields, &self.collection, &req.pool_name).await
+        // A trade can move players between the two rosters, so record both.
+        let updated = update_pool(updated_fields, &self.collection, &req.pool_name).await?;
+        self.record_all_lineups(&updated).await?;
+        Ok(updated)
     }
 
     async fn fill_spot(&self, user_id: &str, req: FillSpotRequest) -> Result<Pool> {
@@ -286,7 +330,10 @@ impl PoolService for MongoPoolService {
             }
         };
 
-        update_pool(updated_fields, &self.collection, &req.pool_name).await
+        let updated = update_pool(updated_fields, &self.collection, &req.pool_name).await?;
+        self.record_lineup(&updated, &req.filled_spot_user_id)
+            .await?;
+        Ok(updated)
     }
 
     async fn add_player(&self, user_id: &str, req: AddPlayerRequest) -> Result<Pool> {
@@ -330,7 +377,10 @@ impl PoolService for MongoPoolService {
 
         // Update the fields in the mongoDB pool document.
 
-        update_pool(updated_fields, &self.collection, &req.pool_name).await
+        let updated = update_pool(updated_fields, &self.collection, &req.pool_name).await?;
+        self.record_lineup(&updated, &req.removed_player_user_id)
+            .await?;
+        Ok(updated)
     }
 
     async fn update_pool_settings(
@@ -377,7 +427,10 @@ impl PoolService for MongoPoolService {
 
         // Update the fields in the mongoDB pool document.
 
-        update_pool(updated_fields, &self.collection, &req.pool_name).await
+        let updated = update_pool(updated_fields, &self.collection, &req.pool_name).await?;
+        self.record_lineup(&updated, &req.roster_modified_user_id)
+            .await?;
+        Ok(updated)
     }
 
     async fn protect_players(&self, user_id: &str, req: ProtectPlayersRequest) -> Result<Pool> {

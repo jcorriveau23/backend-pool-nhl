@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use futures::stream::TryStreamExt;
 use mongodb::bson::doc;
+use mongodb::options::FindOneOptions;
 use mongodb::Collection;
 
 use poolnhl_interface::errors::{AppError, Result};
@@ -52,6 +53,71 @@ impl LineupStore {
             participant_events.sort_by(|a, b| a.effective_date.cmp(&b.effective_date));
         }
         Ok(by_participant)
+    }
+
+    /// Record a lineup change: write an event effective `effective_date` only if
+    /// the lineup differs from the participant's most recent event, keeping
+    /// `pool_lineups` sparse. Re-emitting the same day replaces that day's event.
+    /// Returns whether an event was written.
+    pub async fn record_if_changed(
+        &self,
+        pool_name: &str,
+        participant: &str,
+        effective_date: &str,
+        mut forwards: Vec<u32>,
+        mut defense: Vec<u32>,
+        mut goalies: Vec<u32>,
+    ) -> Result<bool> {
+        forwards.sort_unstable();
+        defense.sort_unstable();
+        goalies.sort_unstable();
+
+        let latest = self
+            .collection
+            .find_one(
+                doc! { "pool_name": pool_name, "participant": participant },
+                FindOneOptions::builder()
+                    .sort(doc! { "effective_date": -1 })
+                    .build(),
+            )
+            .await
+            .map_err(mongo_err)?;
+
+        if let Some(latest) = latest {
+            let sorted = |mut ids: Vec<u32>| {
+                ids.sort_unstable();
+                ids
+            };
+            if sorted(latest.forwards) == forwards
+                && sorted(latest.defense) == defense
+                && sorted(latest.goalies) == goalies
+            {
+                return Ok(false);
+            }
+        }
+
+        let event = LineupEvent {
+            pool_name: pool_name.to_string(),
+            participant: participant.to_string(),
+            effective_date: effective_date.to_string(),
+            forwards,
+            defense,
+            goalies,
+        };
+        // Replace any existing event for this exact day so a same-day re-edit is
+        // not duplicated.
+        self.collection
+            .delete_many(
+                doc! { "pool_name": pool_name, "participant": participant, "effective_date": effective_date },
+                None,
+            )
+            .await
+            .map_err(mongo_err)?;
+        self.collection
+            .insert_one(&event, None)
+            .await
+            .map_err(mongo_err)?;
+        Ok(true)
     }
 
     /// Replace all of a pool's lineup events with `events` (idempotent, so the

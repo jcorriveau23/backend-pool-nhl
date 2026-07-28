@@ -75,3 +75,35 @@ async fn events_round_trip_grouped_sorted_and_idempotent() {
     store.replace_pool_events(&pool, &[]).await.unwrap();
     assert!(store.events_for_pool(&pool).await.unwrap().is_empty());
 }
+
+#[tokio::test]
+#[ignore]
+async fn record_if_changed_writes_only_on_change() {
+    let store = LineupStore::new(database().await);
+    let pool = unique_pool();
+
+    // First lineup is recorded.
+    assert!(store
+        .record_if_changed(&pool, "u1", "2025-10-01", vec![10, 11], vec![], vec![30])
+        .await
+        .unwrap());
+    // Same lineup (even reordered) is not recorded again.
+    assert!(!store
+        .record_if_changed(&pool, "u1", "2025-10-05", vec![11, 10], vec![], vec![30])
+        .await
+        .unwrap());
+    // A real change is recorded.
+    assert!(store
+        .record_if_changed(&pool, "u1", "2025-10-08", vec![10, 12], vec![], vec![30])
+        .await
+        .unwrap());
+
+    let by_participant = store.events_for_pool(&pool).await.unwrap();
+    let u1 = &by_participant["u1"];
+    assert_eq!(u1.len(), 2);
+    assert_eq!(u1[0].effective_date, "2025-10-01");
+    assert_eq!(u1[1].effective_date, "2025-10-08");
+    assert_eq!(u1[1].forwards, vec![10, 12]);
+
+    store.replace_pool_events(&pool, &[]).await.unwrap();
+}
