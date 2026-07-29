@@ -27,12 +27,10 @@ use poolnhl_interface::pool::{
 };
 
 use crate::database_connection::DatabaseConnection;
-use crate::services::lineup_store::LineupStore;
 
 #[derive(Clone)]
 pub struct MongoPoolService {
     collection: Collection<Pool>,
-    lineup_store: LineupStore,
 }
 
 pub async fn get_optional_short_pool_by_name(
@@ -90,47 +88,15 @@ pub async fn get_short_pool_by_name(
 impl MongoPoolService {
     pub fn new(db: DatabaseConnection) -> Self {
         let collection = db.collection::<Pool>("pools");
-        let lineup_store = LineupStore::new(db);
-        Self {
-            collection,
-            lineup_store,
-        }
+        Self { collection }
     }
+}
 
-    /// Record a participant's current starting lineup (chosen forwards/defense/
-    /// goalies) as a sparse lineup event effective today, if it changed. This is
-    /// the write-side counterpart of deriving scores from lineup events.
-    async fn record_lineup(&self, pool: &Pool, participant: &str) -> Result<()> {
-        let roster = match pool
-            .context
-            .as_ref()
-            .and_then(|context| context.pooler_roster.get(participant))
-        {
-            Some(roster) => roster,
-            None => return Ok(()),
-        };
-        let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
-        self.lineup_store
-            .record_if_changed(
-                &pool.name,
-                participant,
-                &today,
-                roster.chosen_forwards.clone(),
-                roster.chosen_defenders.clone(),
-                roster.chosen_goalies.clone(),
-            )
-            .await?;
-        Ok(())
-    }
-
-    /// Record every participant's lineup (used after a trade, which can move
-    /// players between two rosters).
-    async fn record_all_lineups(&self, pool: &Pool) -> Result<()> {
-        for participant in &pool.participants {
-            self.record_lineup(pool, &participant.id).await?;
-        }
-        Ok(())
-    }
+// Today's date, used as the effective date of a lineup change. There is no
+// noon-lock / 12PM rule anymore: a change takes effect the day it is made, and
+// `roster_modification_date` still governs when changes are permitted.
+fn today() -> String {
+    Local::now().date_naive().format("%Y-%m-%d").to_string()
 }
 
 #[async_trait]
@@ -292,6 +258,15 @@ impl PoolService for MongoPoolService {
         // repond the trade
         pool.respond_trade(user_id, req.is_accepted, req.trade_id)?;
 
+        // A trade can move players between the two rosters, so record both.
+        let effective = today();
+        if let Some(context) = pool.context.as_mut() {
+            let participants: Vec<String> = context.pooler_roster.keys().cloned().collect();
+            for participant in participants {
+                context.record_lineup_change(&participant, &effective);
+            }
+        }
+
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),
         })?;
@@ -301,14 +276,12 @@ impl PoolService for MongoPoolService {
             "$set": doc!{
                 "trades": to_bson(&pool.trades).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
                 "context.pooler_roster": to_bson(&context.pooler_roster ).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "context.tradable_picks": to_bson(&context.tradable_picks ).map_err(|e| AppError::MongoError { msg: e.to_string() })?
+                "context.tradable_picks": to_bson(&context.tradable_picks ).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.lineup_events": to_bson(&context.lineup_events).map_err(|e| AppError::MongoError { msg: e.to_string() })?
             }
         };
 
-        // A trade can move players between the two rosters, so record both.
-        let updated = update_pool(updated_fields, &self.collection, &req.pool_name).await?;
-        self.record_all_lineups(&updated).await?;
-        Ok(updated)
+        update_pool(updated_fields, &self.collection, &req.pool_name).await
     }
 
     async fn fill_spot(&self, user_id: &str, req: FillSpotRequest) -> Result<Pool> {
@@ -319,6 +292,10 @@ impl PoolService for MongoPoolService {
 
         // Update fields with the filled spot
 
+        if let Some(context) = pool.context.as_mut() {
+            context.record_lineup_change(&req.filled_spot_user_id, &today());
+        }
+
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),
         })?;
@@ -326,14 +303,12 @@ impl PoolService for MongoPoolService {
         // Update the field in the pool
         let updated_fields = doc! {
             "$set": doc!{
-                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.lineup_events": to_bson(&context.lineup_events).map_err(|e| AppError::MongoError { msg: e.to_string() })?
             }
         };
 
-        let updated = update_pool(updated_fields, &self.collection, &req.pool_name).await?;
-        self.record_lineup(&updated, &req.filled_spot_user_id)
-            .await?;
-        Ok(updated)
+        update_pool(updated_fields, &self.collection, &req.pool_name).await
     }
 
     async fn add_player(&self, user_id: &str, req: AddPlayerRequest) -> Result<Pool> {
@@ -365,6 +340,10 @@ impl PoolService for MongoPoolService {
         pool.remove_player(user_id, &req.removed_player_user_id, req.player_id)?;
 
         // updated fields.
+        if let Some(context) = pool.context.as_mut() {
+            context.record_lineup_change(&req.removed_player_user_id, &today());
+        }
+
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),
         })?;
@@ -372,15 +351,13 @@ impl PoolService for MongoPoolService {
         let updated_fields = doc! {
             "$set": doc!{
                 "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.lineup_events": to_bson(&context.lineup_events).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
             }
         };
 
         // Update the fields in the mongoDB pool document.
 
-        let updated = update_pool(updated_fields, &self.collection, &req.pool_name).await?;
-        self.record_lineup(&updated, &req.removed_player_user_id)
-            .await?;
-        Ok(updated)
+        update_pool(updated_fields, &self.collection, &req.pool_name).await
     }
 
     async fn update_pool_settings(
@@ -415,6 +392,10 @@ impl PoolService for MongoPoolService {
         )?;
         // Modify the all the pooler_roster (we could update only the pooler_roster[userId] if necessary)
 
+        if let Some(context) = pool.context.as_mut() {
+            context.record_lineup_change(&req.roster_modified_user_id, &today());
+        }
+
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),
         })?;
@@ -422,15 +403,13 @@ impl PoolService for MongoPoolService {
         let updated_fields = doc! {
             "$set": doc!{
                 "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.lineup_events": to_bson(&context.lineup_events).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
             }
         };
 
         // Update the fields in the mongoDB pool document.
 
-        let updated = update_pool(updated_fields, &self.collection, &req.pool_name).await?;
-        self.record_lineup(&updated, &req.roster_modified_user_id)
-            .await?;
-        Ok(updated)
+        update_pool(updated_fields, &self.collection, &req.pool_name).await
     }
 
     async fn protect_players(&self, user_id: &str, req: ProtectPlayersRequest) -> Result<Pool> {
@@ -553,6 +532,7 @@ impl PoolService for MongoPoolService {
                 past_tradable_picks: pool_context.tradable_picks.clone(),
                 protected_players: Some(protected_players),
                 players: pool_context.players.clone(),
+                lineup_events: Some(Vec::new()),
             }),
             date_updated: 0,
             season_start: START_SEASON_DATE.to_string(),

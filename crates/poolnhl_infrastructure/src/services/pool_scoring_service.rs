@@ -1,10 +1,10 @@
-//! Derives pool scores on demand from the shared `day_leaders` and sparse
-//! lineup events, instead of the per-pool `score_by_day` blob.
+//! Derives pool scores on demand from the shared `day_leaders` and the pool's
+//! embedded sparse lineup events, instead of the per-pool `score_by_day` blob.
 //!
-//! The lineup a participant iced on a given day comes from [`LineupStore`]
-//! (reconstructed with [`lineup_as_of`]); the points those players scored come
-//! from [`DayLeadersCache`]. Building the familiar `DailyRosterPoints` shape
-//! lets the frontend consume the same structure it did from `score_by_day`.
+//! The lineup a participant iced on a given day is reconstructed from the pool's
+//! `lineup_events` ([`lineup_as_of`]); the points those players scored come from
+//! [`DayLeadersCache`]. Building the familiar `DailyRosterPoints` shape lets the
+//! frontend consume the same structure it did from `score_by_day`.
 
 use std::collections::HashMap;
 
@@ -15,22 +15,17 @@ use poolnhl_interface::pool::lineup::{lineup_as_of, LineupEvent};
 use poolnhl_interface::pool::model::{DailyRosterPoints, DayScores, Pool, PoolUser};
 
 use crate::services::day_leaders_cache::DayLeadersCache;
-use crate::services::lineup_store::LineupStore;
 
 const DATE_FMT: &str = "%Y-%m-%d";
 
 #[derive(Clone)]
 pub struct PoolScoringService {
     cache: DayLeadersCache,
-    lineup_store: LineupStore,
 }
 
 impl PoolScoringService {
-    pub fn new(cache: DayLeadersCache, lineup_store: LineupStore) -> Self {
-        Self {
-            cache,
-            lineup_store,
-        }
+    pub fn new(cache: DayLeadersCache) -> Self {
+        Self { cache }
     }
 
     /// Per-participant scoring breakdown for a single date, derived from the
@@ -40,9 +35,13 @@ impl PoolScoringService {
         pool: &Pool,
         date: &str,
     ) -> Result<HashMap<String, DailyRosterPoints>> {
-        let events = self.lineup_store.events_for_pool(&pool.name).await?;
         let day_scores = self.cache.day_scores(date).await?;
-        Ok(build_day(&pool.participants, &events, &day_scores, date))
+        Ok(build_day(
+            &pool.participants,
+            pool_events(pool),
+            &day_scores,
+            date,
+        ))
     }
 
     /// Per-participant breakdown for every date in `[from, to]` (inclusive),
@@ -53,7 +52,7 @@ impl PoolScoringService {
         from: &str,
         to: &str,
     ) -> Result<HashMap<String, HashMap<String, DailyRosterPoints>>> {
-        let events = self.lineup_store.events_for_pool(&pool.name).await?;
+        let events = pool_events(pool);
         let start = parse_date(from)?;
         let end = parse_date(to)?;
 
@@ -64,7 +63,7 @@ impl PoolScoringService {
             let day_scores = self.cache.day_scores(&date).await?;
             derived.insert(
                 date.clone(),
-                build_day(&pool.participants, &events, &day_scores, &date),
+                build_day(&pool.participants, events, &day_scores, &date),
             );
             current += Duration::days(1);
         }
@@ -72,19 +71,25 @@ impl PoolScoringService {
     }
 }
 
+// The pool's embedded lineup events (empty if none recorded yet).
+fn pool_events(pool: &Pool) -> &[LineupEvent] {
+    pool.context
+        .as_ref()
+        .and_then(|context| context.lineup_events.as_deref())
+        .unwrap_or(&[])
+}
+
 // Score every participant's lineup for one day: reconstruct the lineup as of the
-// date from its events, then source the points from the shared day scores.
+// date from the events, then source the points from the shared day scores.
 fn build_day(
     participants: &[PoolUser],
-    events: &HashMap<String, Vec<LineupEvent>>,
+    events: &[LineupEvent],
     day_scores: &DayScores,
     date: &str,
 ) -> HashMap<String, DailyRosterPoints> {
-    let empty: Vec<LineupEvent> = Vec::new();
     let mut day = HashMap::with_capacity(participants.len());
     for participant in participants {
-        let participant_events = events.get(&participant.id).unwrap_or(&empty);
-        let (forwards, defense, goalies) = lineup_as_of(participant_events, date);
+        let (forwards, defense, goalies) = lineup_as_of(events, &participant.id, date);
         day.insert(
             participant.id.clone(),
             DailyRosterPoints {

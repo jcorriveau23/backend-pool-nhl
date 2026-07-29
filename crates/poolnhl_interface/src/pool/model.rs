@@ -3,6 +3,7 @@ use crate::{
     draft::model::RoomUser,
     errors::AppError,
     players::model::{PlayerInfo, Position},
+    pool::lineup::LineupEvent,
 };
 use chrono::{Duration, Local, NaiveDate, Timelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -1195,6 +1196,12 @@ pub struct PoolContext {
     pub past_tradable_picks: Option<Vec<HashMap<String, String>>>,
     pub protected_players: Option<HashMap<String, Vec<u32>>>,
     pub players: HashMap<String, PlayerInfo>,
+    // Sparse lineup events: one entry per starting-lineup change per
+    // participant. The lineup on any date is the latest event on or before it;
+    // daily points are derived from the shared day_leaders. Replaces the per-day
+    // roster snapshots that lived in `score_by_day`.
+    #[serde(default)]
+    pub lineup_events: Option<Vec<LineupEvent>>,
 }
 
 impl PoolContext {
@@ -1214,7 +1221,53 @@ impl PoolContext {
             players_name_drafted: Vec::new(),
             protected_players: None,
             players: HashMap::new(),
+            lineup_events: Some(Vec::new()),
         }
+    }
+
+    /// Append a lineup event for `participant` effective `date` if their current
+    /// starting roster (chosen forwards/defense/goalies) differs from their
+    /// latest recorded lineup. Keeps `lineup_events` sparse; a same-day re-edit
+    /// replaces that day's entry. Returns whether an event was appended.
+    pub fn record_lineup_change(&mut self, participant: &str, date: &str) -> bool {
+        let Some(roster) = self.pooler_roster.get(participant) else {
+            return false;
+        };
+        let mut forwards = roster.chosen_forwards.clone();
+        let mut defense = roster.chosen_defenders.clone();
+        let mut goalies = roster.chosen_goalies.clone();
+        forwards.sort_unstable();
+        defense.sort_unstable();
+        goalies.sort_unstable();
+
+        let events = self.lineup_events.get_or_insert_with(Vec::new);
+
+        let unchanged = events
+            .iter()
+            .filter(|event| event.participant == participant)
+            .max_by(|a, b| a.effective_date.cmp(&b.effective_date))
+            .is_some_and(|latest| {
+                let sorted = |mut ids: Vec<u32>| {
+                    ids.sort_unstable();
+                    ids
+                };
+                sorted(latest.forwards.clone()) == forwards
+                    && sorted(latest.defense.clone()) == defense
+                    && sorted(latest.goalies.clone()) == goalies
+            });
+        if unchanged {
+            return false;
+        }
+
+        events.retain(|event| !(event.participant == participant && event.effective_date == date));
+        events.push(LineupEvent {
+            participant: participant.to_string(),
+            effective_date: date.to_string(),
+            forwards,
+            defense,
+            goalies,
+        });
+        true
     }
 
     pub fn get_final_rank(&self, pool_settings: &PoolSettings) -> Result<Vec<String>, AppError> {
@@ -3346,6 +3399,30 @@ mod tests {
         // Forward: 3*2 + 1*1 + 1 shootout + 3 hattrick = 11. Goalie: win 2 + shutout 3 = 5.
         assert_eq!(points, 16);
         assert_eq!(games, 2);
+    }
+
+    #[test]
+    fn record_lineup_change_appends_only_on_change() {
+        let mut context = PoolContext::new(&["u1".to_string()]);
+        {
+            let roster = context.pooler_roster.get_mut("u1").unwrap();
+            roster.chosen_forwards = vec![10, 11];
+            roster.chosen_goalies = vec![30];
+        }
+
+        assert!(context.record_lineup_change("u1", "2025-10-01"));
+        // Same lineup on a later day: nothing appended.
+        assert!(!context.record_lineup_change("u1", "2025-10-05"));
+        // A real change is appended.
+        context.pooler_roster.get_mut("u1").unwrap().chosen_forwards = vec![10, 12];
+        assert!(context.record_lineup_change("u1", "2025-10-08"));
+
+        let events = context.lineup_events.unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].effective_date, "2025-10-01");
+        assert_eq!(events[0].forwards, vec![10, 11]);
+        assert_eq!(events[1].effective_date, "2025-10-08");
+        assert_eq!(events[1].forwards, vec![10, 12]);
     }
 
     #[test]

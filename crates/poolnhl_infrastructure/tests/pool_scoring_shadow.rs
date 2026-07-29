@@ -1,12 +1,13 @@
-//! End-to-end test of the derive path: lineup events (pool_lineups) + shared
-//! day_leaders -> per-participant scoring, matching what `score_by_day` stored.
+//! End-to-end test of the derive path: the pool's embedded lineup events +
+//! shared day_leaders -> per-participant scoring, matching what `score_by_day`
+//! stored.
 //!
 //! Needs mongo + redis:
 //!   docker compose up -d mongo redis
 //!   cargo test -p poolnhl_infrastructure -- --ignored
 //!
-//! Seeds uniquely-named data in the dedicated `hockeypooltest` database and
-//! cleans up after itself.
+//! Seeds uniquely-named day_leaders in the dedicated `hockeypooltest` database
+//! and cleans up after itself. The pool itself is built in memory.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,13 +18,14 @@ use redis::AsyncCommands;
 use poolnhl_infrastructure::database_connection::{DatabaseConnection, DatabaseManager};
 use poolnhl_infrastructure::redis_connection::RedisManager;
 use poolnhl_infrastructure::services::day_leaders_cache::DayLeadersCache;
-use poolnhl_infrastructure::services::lineup_store::LineupStore;
 use poolnhl_infrastructure::services::pool_scoring_service::PoolScoringService;
 use poolnhl_interface::daily_leaders::model::{
     DailyGoaly, DailyLeaders, DailySkater, GoalyStats, SkaterStats,
 };
 use poolnhl_interface::pool::lineup::LineupEvent;
-use poolnhl_interface::pool::model::{Pool, PoolSettings, PoolState, PoolUser, SkaterPoints};
+use poolnhl_interface::pool::model::{
+    Pool, PoolContext, PoolSettings, PoolState, PoolUser, SkaterPoints,
+};
 
 const TEST_DATABASE: &str = "hockeypooltest";
 const OWNER: &str = "shadow-u1";
@@ -47,14 +49,6 @@ async fn database() -> DatabaseConnection {
         .expect("mongo is not reachable; start it with `docker compose up -d mongo`")
 }
 
-fn unique_pool() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("shadow-pool-{nanos}")
-}
-
 fn skater(id: u32, goals: u8, assists: u8) -> DailySkater {
     DailySkater {
         name: format!("s{id}"),
@@ -68,17 +62,44 @@ fn skater(id: u32, goals: u8, assists: u8) -> DailySkater {
     }
 }
 
-fn pool(name: &str) -> Pool {
-    let mut pool = Pool::new(name, OWNER, &PoolSettings::new());
+// A pool whose owner ices skater 101 + goalie 301, user-2 ices skater 201, with
+// the lineups recorded as embedded events effective on DAY1 (never changed).
+fn pool_with_lineups() -> Pool {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let mut pool = Pool::new(&format!("shadow-pool-{nanos}"), OWNER, &PoolSettings::new());
     pool.status = PoolState::InProgress;
-    pool.participants = [OWNER, USER_2]
+
+    let ids: Vec<String> = [OWNER, USER_2].iter().map(|id| id.to_string()).collect();
+    pool.participants = ids
         .iter()
         .map(|id| PoolUser {
-            id: id.to_string(),
-            name: id.to_string(),
+            id: id.clone(),
+            name: id.clone(),
             is_owned: true,
         })
         .collect();
+
+    let mut context = PoolContext::new(&ids);
+    context.lineup_events = Some(vec![
+        LineupEvent {
+            participant: OWNER.to_string(),
+            effective_date: DAY1.to_string(),
+            forwards: vec![101],
+            defense: vec![],
+            goalies: vec![301],
+        },
+        LineupEvent {
+            participant: USER_2.to_string(),
+            effective_date: DAY1.to_string(),
+            forwards: vec![201],
+            defense: vec![],
+            goalies: vec![],
+        },
+    ]);
+    pool.context = Some(context);
     pool
 }
 
@@ -90,11 +111,9 @@ async fn derive_daily_and_range_from_lineup_events() {
         .await
         .expect("redis is not reachable; start it with `docker compose up -d redis`");
     let leaders: Collection<DailyLeaders> = db.collection("day_leaders");
-    let store = LineupStore::new(db.clone());
-    let pool_name = unique_pool();
 
-    // Shared day stats: owner ices skater 101 + goalie 301 (shutout win); user-2
-    // ices skater 201. Skater 101 scores more on DAY2 than DAY1.
+    // Shared day stats: skater 101 scores more on DAY2 than DAY1; goalie 301 is
+    // a shutout win both days.
     for (date, g101) in [(DAY1, 1u8), (DAY2, 2u8)] {
         leaders
             .insert_one(
@@ -121,37 +140,10 @@ async fn derive_daily_and_range_from_lineup_events() {
             .unwrap();
     }
 
-    // One lineup event per participant, effective on DAY1 (never changed).
-    let events = vec![
-        LineupEvent {
-            pool_name: pool_name.clone(),
-            participant: OWNER.to_string(),
-            effective_date: DAY1.to_string(),
-            forwards: vec![101],
-            defense: vec![],
-            goalies: vec![301],
-        },
-        LineupEvent {
-            pool_name: pool_name.clone(),
-            participant: USER_2.to_string(),
-            effective_date: DAY1.to_string(),
-            forwards: vec![201],
-            defense: vec![],
-            goalies: vec![],
-        },
-    ];
-    store
-        .replace_pool_events(&pool_name, &events)
-        .await
-        .unwrap();
+    let scoring = PoolScoringService::new(DayLeadersCache::new(db.clone(), redis.clone()));
+    let pool = pool_with_lineups();
 
-    let scoring = PoolScoringService::new(
-        DayLeadersCache::new(db.clone(), redis.clone()),
-        store.clone(),
-    );
-    let pool = pool(&pool_name);
-
-    // Single day: lineups reconstruct from events, points come from day_leaders.
+    // Single day: lineups reconstruct from the embedded events, points from day_leaders.
     let day1 = scoring.derive_daily(&pool, DAY1).await.unwrap();
     assert_eq!(
         day1[OWNER].roster.F["101"],
@@ -172,18 +164,17 @@ async fn derive_daily_and_range_from_lineup_events() {
         })
     );
 
-    // Range: both days present, and the DAY1 lineup carries to DAY2 (no event
-    // on DAY2) while its points track that day's stats (101 scores 2 on DAY2).
+    // Range: both days present; the DAY1 lineup carries to DAY2 (no event on
+    // DAY2) while its points track that day's stats (101 scores 2 on DAY2).
     let range = scoring.derive_range(&pool, DAY1, DAY2).await.unwrap();
     assert_eq!(range.len(), 2);
     assert_eq!(range[DAY1][OWNER].roster.F["101"].as_ref().unwrap().G, 1);
     assert_eq!(range[DAY2][OWNER].roster.F["101"].as_ref().unwrap().G, 2);
 
-    // Cleanup mongo + cache keys + events.
+    // Cleanup mongo + cache keys.
     for date in [DAY1, DAY2] {
         leaders.delete_one(doc! {"date": date}, None).await.unwrap();
         let mut conn = redis.clone();
         let _: () = conn.del(format!("dl:v1:{date}")).await.unwrap();
     }
-    store.replace_pool_events(&pool_name, &[]).await.unwrap();
 }

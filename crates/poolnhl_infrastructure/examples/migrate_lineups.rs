@@ -1,5 +1,5 @@
 //! One-off migration: extract sparse lineup events from each pool's stored
-//! `score_by_day` into the `pool_lineups` collection. Idempotent.
+//! `score_by_day` into the pool's embedded `context.lineup_events`. Idempotent.
 //!
 //!   cargo run -p poolnhl_infrastructure --example migrate_lineups
 //!
@@ -7,10 +7,9 @@
 //!      MONGO_DB  (default hockeypool).
 
 use futures::stream::TryStreamExt;
-use mongodb::bson::doc;
+use mongodb::bson::{doc, to_bson};
 
 use poolnhl_infrastructure::database_connection::DatabaseManager;
-use poolnhl_infrastructure::services::lineup_store::LineupStore;
 use poolnhl_interface::pool::lineup::extract_lineup_events;
 use poolnhl_interface::pool::model::Pool;
 
@@ -23,7 +22,6 @@ async fn main() {
         .await
         .expect("could not connect to mongo");
     let pools = db.collection::<Pool>("pools");
-    let store = LineupStore::new(db.clone());
 
     let mut cursor = pools
         .find(doc! {}, None)
@@ -32,16 +30,27 @@ async fn main() {
     let (mut total_pools, mut total_events) = (0usize, 0usize);
 
     while let Some(pool) = cursor.try_next().await.expect("cursor error") {
+        // A pool with no context has no roster/lineups yet (e.g. never drafted);
+        // there is nothing to embed and `$set` cannot target a null subdocument.
+        if pool.context.is_none() {
+            println!("{}: no context, skipped", pool.name);
+            continue;
+        }
         let days = pool
             .context
             .as_ref()
             .and_then(|context| context.score_by_day.as_ref());
         let events = match days {
-            Some(score_by_day) => extract_lineup_events(&pool.name, score_by_day),
+            Some(score_by_day) => extract_lineup_events(score_by_day),
             None => Vec::new(),
         };
-        store
-            .replace_pool_events(&pool.name, &events)
+
+        pools
+            .update_one(
+                doc! { "name": &pool.name },
+                doc! { "$set": { "context.lineup_events": to_bson(&events).expect("bson") } },
+                None,
+            )
             .await
             .expect("could not write lineup events");
 
