@@ -6,13 +6,15 @@
 //!   docker compose up -d mongo redis
 //!   cargo test -p poolnhl_infrastructure -- --ignored
 //!
-//! Seeds uniquely-named day_leaders in the dedicated `hockeypooltest` database
-//! and cleans up after itself. The pool itself is built in memory.
+//! Seeds day_leaders in the dedicated `hockeypooltest` database, clearing them
+//! both before and after so the run is repeatable even if a previous one died
+//! partway. The pool itself is built in memory.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mongodb::bson::doc;
 use mongodb::Collection;
+use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 
 use poolnhl_infrastructure::database_connection::{DatabaseConnection, DatabaseManager};
@@ -47,6 +49,20 @@ async fn database() -> DatabaseConnection {
     DatabaseManager::new_pool(&mongo_uri(), TEST_DATABASE)
         .await
         .expect("mongo is not reachable; start it with `docker compose up -d mongo`")
+}
+
+// Drop the seeded days from both stores. Run before seeding as well as after,
+// so a run that died before its cleanup does not leave a duplicate `date`
+// (rejected by the unique index) or a stale cache entry for the next run.
+async fn clear_seeded_days(leaders: &Collection<DailyLeaders>, redis: &ConnectionManager) {
+    for date in [DAY1, DAY2] {
+        leaders
+            .delete_many(doc! {"date": date}, None)
+            .await
+            .unwrap();
+        let mut conn = redis.clone();
+        let _: () = conn.del(format!("dl:v1:{date}")).await.unwrap();
+    }
 }
 
 fn skater(id: u32, goals: u8, assists: u8) -> DailySkater {
@@ -111,6 +127,7 @@ async fn derive_daily_and_range_from_lineup_events() {
         .await
         .expect("redis is not reachable; start it with `docker compose up -d redis`");
     let leaders: Collection<DailyLeaders> = db.collection("day_leaders");
+    clear_seeded_days(&leaders, &redis).await;
 
     // Shared day stats: skater 101 scores more on DAY2 than DAY1; goalie 301 is
     // a shutout win both days.
@@ -172,9 +189,5 @@ async fn derive_daily_and_range_from_lineup_events() {
     assert_eq!(range[DAY2][OWNER].roster.F["101"].as_ref().unwrap().G, 2);
 
     // Cleanup mongo + cache keys.
-    for date in [DAY1, DAY2] {
-        leaders.delete_one(doc! {"date": date}, None).await.unwrap();
-        let mut conn = redis.clone();
-        let _: () = conn.del(format!("dl:v1:{date}")).await.unwrap();
-    }
+    clear_seeded_days(&leaders, &redis).await;
 }
