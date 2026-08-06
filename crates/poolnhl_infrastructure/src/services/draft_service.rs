@@ -13,7 +13,7 @@ use tokio::sync::broadcast;
 
 use poolnhl_interface::draft::model::{CommandResponse, RoomUser};
 use poolnhl_interface::errors::Result;
-use poolnhl_interface::pool::model::{Pool, PoolSettings};
+use poolnhl_interface::pool::model::{Pool, PoolSettings, PoolState};
 
 use crate::database_connection::DatabaseConnection;
 use crate::jwt::{hanko_token_decode, CachedJwks};
@@ -101,6 +101,19 @@ impl DraftService for MongoDraftService {
 
         // Draft the player.
         pool.draft_player(user_id, &player)?;
+
+        // The final pick flips the pool to InProgress: record each participant's
+        // initial lineup, effective from the season start, so scores derive from
+        // the first game day (later roster changes append their own events).
+        if matches!(pool.status, PoolState::InProgress) {
+            let season_start = pool.season_start.clone();
+            if let Some(context) = pool.context.as_mut() {
+                let participants: Vec<String> = context.pooler_roster.keys().cloned().collect();
+                for participant in participants {
+                    context.record_lineup_change(&participant, &season_start);
+                }
+            }
+        }
 
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),

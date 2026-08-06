@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use chrono::{Duration, NaiveDate};
+use chrono::{Duration, Local, NaiveDate};
 use futures::stream::TryStreamExt;
 use mongodb::bson::doc;
 use mongodb::bson::{to_bson, Document};
@@ -90,6 +90,13 @@ impl MongoPoolService {
         let collection = db.collection::<Pool>("pools");
         Self { collection }
     }
+}
+
+// Today's date, used as the effective date of a lineup change. There is no
+// noon-lock / 12PM rule anymore: a change takes effect the day it is made, and
+// `roster_modification_date` still governs when changes are permitted.
+fn today() -> String {
+    Local::now().date_naive().format("%Y-%m-%d").to_string()
 }
 
 #[async_trait]
@@ -251,6 +258,15 @@ impl PoolService for MongoPoolService {
         // repond the trade
         pool.respond_trade(user_id, req.is_accepted, req.trade_id)?;
 
+        // A trade can move players between the two rosters, so record both.
+        let effective = today();
+        if let Some(context) = pool.context.as_mut() {
+            let participants: Vec<String> = context.pooler_roster.keys().cloned().collect();
+            for participant in participants {
+                context.record_lineup_change(&participant, &effective);
+            }
+        }
+
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),
         })?;
@@ -260,7 +276,8 @@ impl PoolService for MongoPoolService {
             "$set": doc!{
                 "trades": to_bson(&pool.trades).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
                 "context.pooler_roster": to_bson(&context.pooler_roster ).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "context.tradable_picks": to_bson(&context.tradable_picks ).map_err(|e| AppError::MongoError { msg: e.to_string() })?
+                "context.tradable_picks": to_bson(&context.tradable_picks ).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.lineup_events": to_bson(&context.lineup_events).map_err(|e| AppError::MongoError { msg: e.to_string() })?
             }
         };
 
@@ -275,6 +292,10 @@ impl PoolService for MongoPoolService {
 
         // Update fields with the filled spot
 
+        if let Some(context) = pool.context.as_mut() {
+            context.record_lineup_change(&req.filled_spot_user_id, &today());
+        }
+
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),
         })?;
@@ -282,7 +303,8 @@ impl PoolService for MongoPoolService {
         // Update the field in the pool
         let updated_fields = doc! {
             "$set": doc!{
-                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.lineup_events": to_bson(&context.lineup_events).map_err(|e| AppError::MongoError { msg: e.to_string() })?
             }
         };
 
@@ -318,6 +340,10 @@ impl PoolService for MongoPoolService {
         pool.remove_player(user_id, &req.removed_player_user_id, req.player_id)?;
 
         // updated fields.
+        if let Some(context) = pool.context.as_mut() {
+            context.record_lineup_change(&req.removed_player_user_id, &today());
+        }
+
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),
         })?;
@@ -325,6 +351,7 @@ impl PoolService for MongoPoolService {
         let updated_fields = doc! {
             "$set": doc!{
                 "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.lineup_events": to_bson(&context.lineup_events).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
             }
         };
 
@@ -365,6 +392,10 @@ impl PoolService for MongoPoolService {
         )?;
         // Modify the all the pooler_roster (we could update only the pooler_roster[userId] if necessary)
 
+        if let Some(context) = pool.context.as_mut() {
+            context.record_lineup_change(&req.roster_modified_user_id, &today());
+        }
+
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),
         })?;
@@ -372,6 +403,7 @@ impl PoolService for MongoPoolService {
         let updated_fields = doc! {
             "$set": doc!{
                 "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.lineup_events": to_bson(&context.lineup_events).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
             }
         };
 
@@ -500,6 +532,7 @@ impl PoolService for MongoPoolService {
                 past_tradable_picks: pool_context.tradable_picks.clone(),
                 protected_players: Some(protected_players),
                 players: pool_context.players.clone(),
+                lineup_events: Some(Vec::new()),
             }),
             date_updated: 0,
             season_start: START_SEASON_DATE.to_string(),

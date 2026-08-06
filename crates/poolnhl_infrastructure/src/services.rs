@@ -11,15 +11,19 @@ use poolnhl_interface::players::service::PlayersServiceHandle;
 use poolnhl_interface::pool::service::PoolServiceHandle;
 
 pub mod daily_leaders_service;
+pub mod day_leaders_cache;
 pub mod draft_service;
 pub mod draft_state;
 pub mod players_service;
+pub mod pool_scoring_service;
 pub mod pool_service;
 
 use daily_leaders_service::MongoDailyLeadersService;
+use day_leaders_cache::DayLeadersCache;
 use draft_service::MongoDraftService;
 use draft_state::{spawn_heartbeat, DraftServerState, LocalRooms};
 use players_service::MongoPlayersService;
+use pool_scoring_service::PoolScoringService;
 use pool_service::MongoPoolService;
 #[derive(FromRef, Clone)]
 pub struct ServiceRegistry {
@@ -27,6 +31,7 @@ pub struct ServiceRegistry {
     pub players_service: PlayersServiceHandle,
     pub draft_service: DraftServiceHandle,
     pub daily_leaders_service: DailyLeadersServiceHandle,
+    pub pool_scoring_service: PoolScoringService,
 
     pub cached_keys: Arc<CachedJwks>,
 }
@@ -40,6 +45,12 @@ impl ServiceRegistry {
         // Draft rooms state is shared across instances through redis: pub/sub
         // for the room broadcasts, hashes for the room membership/presence.
         let (redis_client, redis_conn) = RedisManager::connect(redis_uri).await?;
+
+        // Shared, read-through cache of the compact day_leaders projection, used
+        // to derive pool scores on demand from lineup events + daily stats.
+        let day_leaders_cache = DayLeadersCache::new(db.clone(), redis_conn.clone());
+        let pool_scoring_service = PoolScoringService::new(day_leaders_cache);
+
         let local_rooms = LocalRooms::new();
         let subscriber = spawn_room_subscriber(redis_client, local_rooms.clone());
         let draft_state = Arc::new(DraftServerState::new(local_rooms, redis_conn, subscriber));
@@ -59,6 +70,7 @@ impl ServiceRegistry {
             players_service,
             draft_service,
             daily_leaders_service,
+            pool_scoring_service,
             cached_keys: cached_jwks.clone(),
         })
     }
