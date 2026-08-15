@@ -1,6 +1,6 @@
+use axum::Router;
 use axum::extract::{Json, Path, State};
 use axum::routing::get;
-use axum::Router;
 
 use poolnhl_infrastructure::services::ServiceRegistry;
 use poolnhl_interface::daily_leaders::service::DailyLeadersServiceHandle;

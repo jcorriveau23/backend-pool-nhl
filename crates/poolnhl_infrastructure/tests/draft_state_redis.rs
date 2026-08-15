@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use redis::AsyncCommands;
 use tokio::sync::broadcast;
 
-use poolnhl_infrastructure::redis_connection::{spawn_room_subscriber, RedisManager};
+use poolnhl_infrastructure::redis_connection::{RedisManager, spawn_room_subscriber};
 use poolnhl_infrastructure::services::draft_state::{DraftServerState, LocalRooms};
 use poolnhl_interface::draft::model::{CommandResponse, RoomUser};
 use poolnhl_interface::users::model::{EmailInfo, UserEmailJwtPayload};
@@ -70,10 +70,10 @@ async fn wait_for_users(
             .await
             .expect("timed out waiting for a room broadcast")
             .expect("the room broadcast channel closed");
-        if let Ok(CommandResponse::Users { room_users }) = serde_json::from_str(&message) {
-            if predicate(&room_users) {
-                return room_users;
-            }
+        if let Ok(CommandResponse::Users { room_users }) = serde_json::from_str(&message)
+            && predicate(&room_users)
+        {
+            return room_users;
         }
     }
 }

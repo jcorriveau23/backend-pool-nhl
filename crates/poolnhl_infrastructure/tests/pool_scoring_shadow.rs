@@ -12,10 +12,10 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mongodb::bson::doc;
 use mongodb::Collection;
-use redis::aio::ConnectionManager;
+use mongodb::bson::doc;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 
 use poolnhl_infrastructure::database_connection::{DatabaseConnection, DatabaseManager};
 use poolnhl_infrastructure::redis_connection::RedisManager;
@@ -25,9 +25,8 @@ use poolnhl_interface::daily_leaders::model::{
     DailyGoaly, DailyLeaders, DailySkater, GoalyStats, SkaterStats,
 };
 use poolnhl_interface::pool::lineup::LineupEvent;
-use poolnhl_interface::pool::model::{
-    Pool, PoolContext, PoolSettings, PoolState, PoolUser, SkaterPoints,
-};
+use poolnhl_interface::pool::model::{Pool, PoolContext, PoolSettings, PoolState, PoolUser};
+use poolnhl_interface::pool::scoring::SkaterPoints;
 
 const TEST_DATABASE: &str = "hockeypooltest";
 const OWNER: &str = "shadow-u1";
@@ -61,7 +60,7 @@ async fn clear_seeded_days(leaders: &Collection<DailyLeaders>, redis: &Connectio
             .await
             .unwrap();
         let mut conn = redis.clone();
-        let _: () = conn.del(format!("dl:v1:{date}")).await.unwrap();
+        let _: () = conn.del(format!("dl:v2:{date}")).await.unwrap();
     }
 }
 

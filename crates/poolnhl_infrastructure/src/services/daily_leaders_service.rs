@@ -10,6 +10,7 @@ use poolnhl_interface::daily_leaders::{model::DailyLeaders, service::DailyLeader
 use poolnhl_interface::errors::Result;
 
 use crate::database_connection::DatabaseConnection;
+use crate::database_connection::mongo_err;
 
 #[derive(Clone)]
 pub struct MongoDailyLeadersService {
@@ -33,7 +34,7 @@ impl DailyLeadersService for MongoDailyLeadersService {
         self.collection
             .create_index(index_model, None)
             .await
-            .map_err(|e| AppError::ParseError { msg: e.to_string() })?;
+            .map_err(mongo_err)?;
         Ok(())
     }
 
@@ -57,7 +58,7 @@ impl DailyLeadersService for MongoDailyLeadersService {
             .collection
             .find_one(doc! {"date": &formatted_date}, None)
             .await
-            .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
+            .map_err(mongo_err)?;
 
         daily_leaders.ok_or_else(move || AppError::NotFound {
             msg: format!("no daily leaders found for the date: {}", date),

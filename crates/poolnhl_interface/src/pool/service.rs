@@ -3,14 +3,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::errors::Result;
-use crate::pool::model::{
-    AddPlayerRequest, CreateTradeRequest, DeleteTradeRequest, FillSpotRequest,
-    GenerateDynastyRequest, MarkAsFinalRequest, ModifyRosterRequest, Pool, PoolCreationRequest,
-    PoolDeletionRequest, ProjectedPoolShort, ProtectPlayersRequest, RemovePlayerRequest,
+use crate::pool::model::{Pool, ProjectedPoolShort};
+use crate::pool::requests::{
+    AddPlayerRequest, CompleteProtectionRequest, CreateTradeRequest, DeleteTradeRequest,
+    FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest, ModifyRosterRequest,
+    PoolCreationRequest, PoolDeletionRequest, ProtectPlayersRequest, RemovePlayerRequest,
     RespondTradeRequest, UpdatePoolSettingsRequest,
 };
-
-use super::model::CompleteProtectionRequest;
 
 #[async_trait]
 pub trait PoolService {

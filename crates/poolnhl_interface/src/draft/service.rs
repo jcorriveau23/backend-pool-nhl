@@ -62,7 +62,6 @@ pub trait DraftService {
     // end point that list the active rooms.
     async fn list_rooms(&self) -> Result<Vec<String>>;
     async fn list_room_users(&self, pool_name: &str) -> Result<HashMap<String, RoomUser>>;
-    async fn list_authenticated_sockets(&self) -> Result<HashMap<String, UserEmailJwtPayload>>;
 }
 
 pub type DraftServiceHandle = Arc<dyn DraftService + Send + Sync>;

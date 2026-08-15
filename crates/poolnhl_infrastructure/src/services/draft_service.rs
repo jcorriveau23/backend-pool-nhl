@@ -1,7 +1,7 @@
 use async_trait::async_trait;
+use mongodb::Collection;
 use mongodb::bson::doc;
 use mongodb::bson::to_bson;
-use mongodb::Collection;
 use poolnhl_interface::draft::service::DraftService;
 use poolnhl_interface::errors::AppError;
 use poolnhl_interface::players::model::PlayerInfo;
@@ -16,7 +16,8 @@ use poolnhl_interface::errors::Result;
 use poolnhl_interface::pool::model::{Pool, PoolSettings, PoolState};
 
 use crate::database_connection::DatabaseConnection;
-use crate::jwt::{hanko_token_decode, CachedJwks};
+use crate::database_connection::bson_err;
+use crate::jwt::{CachedJwks, hanko_token_decode};
 
 use crate::services::draft_state::DraftServerState;
 use crate::services::players_service::get_player_with_id;
@@ -82,13 +83,19 @@ impl DraftService for MongoDraftService {
         // Update the fields in the mongoDB pool document.
 
         let updated_fields = doc! {
-            "$set": to_bson(&pool).map_err(|e| AppError::MongoError { msg: e.to_string() })?
+            "$set": to_bson(&pool).map_err(bson_err)?
         };
 
         // TODO Add the new pool to the list so that we know in which pool each users participated in.
         // add_pool_to_users(&collection_users, &_pool_info.name, participants).await?;
 
-        let updated_pool = update_pool(updated_fields, &self.pool_collection, pool_name).await?;
+        let updated_pool = update_pool(
+            updated_fields,
+            &self.pool_collection,
+            pool_name,
+            pool.date_updated,
+        )
+        .await?;
         self.publish_pool_info(pool_name, updated_pool).await
     }
 
@@ -121,13 +128,19 @@ impl DraftService for MongoDraftService {
 
         let updated_fields = doc! {
             "$set": doc!{
-                "context": to_bson(context).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "status": to_bson(&pool.status).map_err(|e| AppError::MongoError { msg: e.to_string() })?
+                "context": to_bson(context).map_err(bson_err)?,
+                "status": to_bson(&pool.status).map_err(bson_err)?
             }
         };
         // Update the fields in the mongoDB pool document.
 
-        let updated_pool = update_pool(updated_fields, &self.pool_collection, pool_name).await?;
+        let updated_pool = update_pool(
+            updated_fields,
+            &self.pool_collection,
+            pool_name,
+            pool.date_updated,
+        )
+        .await?;
 
         self.publish_pool_info(pool_name, updated_pool).await
     }
@@ -145,12 +158,18 @@ impl DraftService for MongoDraftService {
 
         let updated_fields = doc! {
             "$set": doc!{
-                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "context.players_name_drafted": to_bson(&context.players_name_drafted).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(bson_err)?,
+                "context.players_name_drafted": to_bson(&context.players_name_drafted).map_err(bson_err)?,
             }
         };
         // Update the fields in the mongoDB pool document.
-        let updated_pool = update_pool(updated_fields, &self.pool_collection, &pool.name).await?;
+        let updated_pool = update_pool(
+            updated_fields,
+            &self.pool_collection,
+            &pool.name,
+            pool.date_updated,
+        )
+        .await?;
         self.publish_pool_info(pool_name, updated_pool).await
     }
 
@@ -168,12 +187,18 @@ impl DraftService for MongoDraftService {
 
         let updated_fields = doc! {
             "$set": doc!{
-                "settings": to_bson(&pool_settings).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "settings": to_bson(&pool_settings).map_err(bson_err)?,
 
             }
         };
 
-        let updated_pool = update_pool(updated_fields, &self.pool_collection, pool_name).await?;
+        let updated_pool = update_pool(
+            updated_fields,
+            &self.pool_collection,
+            pool_name,
+            pool.date_updated,
+        )
+        .await?;
         self.publish_pool_info(pool_name, updated_pool).await
     }
 
@@ -184,12 +209,6 @@ impl DraftService for MongoDraftService {
 
     async fn list_room_users(&self, pool_name: &str) -> Result<HashMap<String, RoomUser>> {
         self.state.list_room_users(pool_name).await
-    }
-
-    // Note: sockets are owned by a single instance, so this only lists the
-    // sockets authenticated against the instance serving the request.
-    async fn list_authenticated_sockets(&self) -> Result<HashMap<String, UserEmailJwtPayload>> {
-        self.state.list_authenticated_sockets()
     }
 
     // Authenticate the token received as inputs.
@@ -210,7 +229,7 @@ impl DraftService for MongoDraftService {
                 }
             }
             Err(e) => {
-                println!("{}", e);
+                tracing::warn!(error = %e, "web socket authentication failed");
                 None
             }
         }

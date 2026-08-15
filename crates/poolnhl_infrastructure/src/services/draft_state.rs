@@ -2,15 +2,16 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use tokio::sync::broadcast;
 
 use poolnhl_interface::draft::model::{CommandResponse, RoomUser};
 use poolnhl_interface::errors::{AppError, Result};
 use poolnhl_interface::users::model::UserEmailJwtPayload;
 
-use crate::redis_connection::{RoomSubscriberHandle, ROOM_CHANNEL_PREFIX};
+use crate::redis_connection::redis_err;
+use crate::redis_connection::{ROOM_CHANNEL_PREFIX, RoomSubscriberHandle};
 
 // How long a socket-owned room member survives in redis without a heartbeat
 // refresh. Covers instance crashes where leave_room never runs.
@@ -33,10 +34,6 @@ fn meta_key(pool_name: &str) -> String {
 
 fn room_channel(pool_name: &str) -> String {
     format!("{}{}", ROOM_CHANNEL_PREFIX, pool_name)
-}
-
-fn redis_err(e: redis::RedisError) -> AppError {
-    AppError::RedisError { msg: e.to_string() }
 }
 
 fn lock_err<T: std::fmt::Display>(e: T) -> AppError {
@@ -131,13 +128,13 @@ impl LocalRooms {
             _ => None,
         };
 
-        if let Ok(mut rooms) = self.0.write() {
-            if let Some(room) = rooms.get_mut(pool_name) {
-                if let Some(users) = users {
-                    room.last_users_snapshot = users;
-                }
-                let _ = room.tx.send(message);
+        if let Ok(mut rooms) = self.0.write()
+            && let Some(room) = rooms.get_mut(pool_name)
+        {
+            if let Some(users) = users {
+                room.last_users_snapshot = users;
             }
+            let _ = room.tx.send(message);
         }
     }
 }
@@ -195,10 +192,6 @@ impl DraftServerState {
             .map_err(lock_err)?
             .get(socket_id)
             .cloned())
-    }
-
-    pub fn list_authenticated_sockets(&self) -> Result<HashMap<String, UserEmailJwtPayload>> {
-        Ok(self.authenticated_sockets.read().map_err(lock_err)?.clone())
     }
 
     // Room membership/presence (redis-backed).
@@ -510,7 +503,7 @@ pub fn spawn_heartbeat(state: Arc<DraftServerState>) {
         loop {
             interval.tick().await;
             if let Err(e) = state.heartbeat_tick().await {
-                println!("draft room heartbeat error: {}", e);
+                tracing::error!(error = %e, "draft room heartbeat failed");
             }
         }
     });

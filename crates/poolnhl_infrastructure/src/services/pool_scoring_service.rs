@@ -9,14 +9,24 @@
 use std::collections::HashMap;
 
 use chrono::{Duration, NaiveDate};
+use futures::stream::{self, StreamExt, TryStreamExt};
 
 use poolnhl_interface::errors::{AppError, Result};
-use poolnhl_interface::pool::lineup::{lineup_as_of, LineupEvent};
-use poolnhl_interface::pool::model::{DailyRosterPoints, DayScores, Pool, PoolUser};
+use poolnhl_interface::pool::lineup::{LineupEvent, lineup_as_of};
+use poolnhl_interface::pool::model::{Pool, PoolUser};
+use poolnhl_interface::pool::scoring::{DailyRosterPoints, DayScores};
 
 use crate::services::day_leaders_cache::DayLeadersCache;
 
 const DATE_FMT: &str = "%Y-%m-%d";
+
+// A pool season runs ~200 days; this leaves room for a full season plus slack
+// while keeping a single request bounded.
+const MAX_RANGE_DAYS: i64 = 400;
+
+// How many days are fetched from the cache at once. High enough to collapse a
+// season into a handful of waves, low enough not to burst the redis pool.
+const RANGE_CONCURRENCY: usize = 16;
 
 #[derive(Clone)]
 pub struct PoolScoringService {
@@ -53,22 +63,54 @@ impl PoolScoringService {
         to: &str,
     ) -> Result<HashMap<String, HashMap<String, DailyRosterPoints>>> {
         let events = pool_events(pool);
-        let start = parse_date(from)?;
-        let end = parse_date(to)?;
+        let dates = range_dates(from, to)?;
 
-        let mut derived = HashMap::new();
-        let mut current = start;
-        while current <= end {
-            let date = current.format(DATE_FMT).to_string();
+        // A season is ~200 days; fetching them one after another would be as
+        // many sequential round-trips. Run a bounded number in flight instead.
+        let derived = stream::iter(dates.into_iter().map(|date| async move {
             let day_scores = self.cache.day_scores(&date).await?;
-            derived.insert(
-                date.clone(),
-                build_day(&pool.participants, events, &day_scores, &date),
-            );
-            current += Duration::days(1);
-        }
+            let day = build_day(&pool.participants, events, &day_scores, &date);
+            Ok::<_, AppError>((date, day))
+        }))
+        .buffer_unordered(RANGE_CONCURRENCY)
+        .try_collect()
+        .await?;
+
         Ok(derived)
     }
+}
+
+/// Every date in `[from, to]` inclusive.
+///
+/// The span comes straight from the URL and each day costs at least a redis
+/// round-trip, so it is validated and capped here: an unbounded range would let
+/// one request tie up a worker for as long as it likes.
+fn range_dates(from: &str, to: &str) -> Result<Vec<String>> {
+    let start = parse_date(from)?;
+    let end = parse_date(to)?;
+
+    if end < start {
+        return Err(AppError::ParseError {
+            msg: format!("'{from}' is after '{to}'."),
+        });
+    }
+
+    let days = (end - start).num_days() + 1;
+    if days > MAX_RANGE_DAYS {
+        return Err(AppError::ParseError {
+            msg: format!(
+                "A scoring range is limited to {MAX_RANGE_DAYS} days, '{from}'..'{to}' spans {days}."
+            ),
+        });
+    }
+
+    Ok((0..days)
+        .map(|offset| {
+            (start + Duration::days(offset))
+                .format(DATE_FMT)
+                .to_string()
+        })
+        .collect())
 }
 
 // The pool's embedded lineup events (empty if none recorded yet).
@@ -104,4 +146,41 @@ fn build_day(
 fn parse_date(date: &str) -> Result<NaiveDate> {
     NaiveDate::parse_from_str(date, DATE_FMT)
         .map_err(|e| AppError::ParseError { msg: e.to_string() })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_range_expands_to_every_day_inclusive() {
+        let dates = range_dates("2026-10-01", "2026-10-04").unwrap();
+        assert_eq!(
+            dates,
+            ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04"]
+        );
+    }
+
+    #[test]
+    fn a_single_day_range_is_valid() {
+        assert_eq!(range_dates("2026-10-01", "2026-10-01").unwrap().len(), 1);
+    }
+
+    // An unbounded span would mean one redis round-trip per day, forever.
+    #[test]
+    fn an_oversized_range_is_rejected() {
+        let result = range_dates("1900-01-01", "2100-01-01");
+        assert!(matches!(result, Err(AppError::ParseError { .. })));
+    }
+
+    #[test]
+    fn an_inverted_range_is_rejected() {
+        let result = range_dates("2026-10-04", "2026-10-01");
+        assert!(matches!(result, Err(AppError::ParseError { .. })));
+    }
+
+    #[test]
+    fn a_malformed_date_is_rejected() {
+        assert!(range_dates("not-a-date", "2026-10-01").is_err());
+    }
 }

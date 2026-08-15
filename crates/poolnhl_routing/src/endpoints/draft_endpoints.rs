@@ -1,12 +1,12 @@
 use axum::{
+    Router,
     extract::{
+        Json, Path, State,
         connect_info::ConnectInfo,
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Json, Path, State,
     },
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use futures::{SinkExt, StreamExt};
 use poolnhl_infrastructure::services::ServiceRegistry;
@@ -26,10 +26,6 @@ impl DraftRouter {
             .route("/ws/:jwt", get(Self::ws_handler))
             .route("/rooms", get(Self::list_rooms))
             .route("/room-users/:room", get(Self::list_room_users))
-            .route(
-                "/authenticated-sockets",
-                get(Self::list_authenticated_sockets),
-            )
             .with_state(service_registry)
     }
 
@@ -44,12 +40,6 @@ impl DraftRouter {
         Path(pool_name): Path<String>,
     ) -> Result<Json<HashMap<String, RoomUser>>> {
         draft_service.list_room_users(&pool_name).await.map(Json)
-    }
-
-    async fn list_authenticated_sockets(
-        State(draft_service): State<DraftServiceHandle>,
-    ) -> Result<Json<HashMap<String, UserEmailJwtPayload>>> {
-        draft_service.list_authenticated_sockets().await.map(Json)
     }
 
     async fn ws_handler(
@@ -74,31 +64,29 @@ impl DraftRouter {
         addr: &SocketAddr,
         draft_service: &DraftServiceHandle,
     ) -> Result<(broadcast::Receiver<String>, String)> {
-        println!("waiting to join room");
         while let Some(Ok(msg)) = socket.recv().await {
             if let Message::Text(command) = msg {
-                println!("Command received: {}", command);
+                tracing::debug!(%command, "draft socket command received");
                 if let Ok(command) = serde_json::from_str::<Command>(&command) {
                     match command {
                         Command::JoinRoom {
                             pool_name,
                             number_poolers,
                         } => {
-                            println!("room joined.");
                             // join the requested room.
                             let rx = draft_service
                                 .join_room(&pool_name, number_poolers, *addr)
                                 .await?;
-                            println!("room joined sucessfully.");
+                            tracing::debug!(%pool_name, "draft room joined");
 
                             return Ok((rx, pool_name));
                         }
                         _ => continue,
                     }
                 }
-                println!("could not deserialize the command");
+                tracing::debug!("could not deserialize the draft socket command");
             } else {
-                println!("message not received.");
+                tracing::debug!("non-text frame on the draft socket, ignored");
             }
         }
         Err(AppError::CustomError {
@@ -116,14 +104,15 @@ impl DraftRouter {
         // before leaving the initial socket state.
         let mut is_authenticated_users = false;
         if let Some(u) = &user {
-            print!("{} is trying to setup a socket connection", u.email.address);
+            tracing::debug!(user = %u.sub, "authenticated socket connecting");
             is_authenticated_users = true;
         } else {
-            print!("An unauthenticated user is trying to setup a socket connection");
+            tracing::debug!("unauthenticated socket connecting");
         }
 
         match DraftRouter::waiting_join_room_command(&mut socket, &addr, &draft_service).await {
-            Err(e) => print!("{}", e), // An error occured during the initial waiting to join room function. Close the socket connection.
+            // The socket never joined a room; nothing to clean up, just close it.
+            Err(e) => tracing::debug!(error = %e, "draft socket closed before joining a room"),
             Ok((mut rx, current_pool_name)) => {
                 // Actual websocket statemachine (one will be spawned per connection)
                 let (mut sender, mut receiver) = socket.split();
@@ -150,7 +139,7 @@ impl DraftRouter {
                         while let Some(Ok(msg)) = receiver.next().await {
                             // Handle the message received.
                             if let Message::Text(command) = msg {
-                                println!("command received: {}", command);
+                                tracing::debug!(%command, "draft socket command received");
                                 if let Ok(command) = serde_json::from_str::<Command>(&command) {
                                     match command {
                                         Command::LeaveRoom => {
@@ -199,47 +188,41 @@ impl DraftRouter {
                                             }
                                         }
                                         Command::StartDraft { draft_order } => {
-                                            if let Some(user) = &user {
-                                                if let Err(e) = draft_service
+                                            if let Some(user) = &user
+                                                && let Err(e) = draft_service
                                                     .start_draft(
                                                         &current_pool_name,
                                                         &user.sub,
                                                         &draft_order,
                                                     )
                                                     .await
-                                                {
-                                                    let _ =
-                                                        send_task_sender.send(e.to_string()).await;
-                                                }
+                                            {
+                                                let _ = send_task_sender.send(e.to_string()).await;
                                             }
                                         }
                                         Command::DraftPlayer { player_id } => {
-                                            if let Some(user) = &user {
-                                                if let Err(e) = draft_service
+                                            if let Some(user) = &user
+                                                && let Err(e) = draft_service
                                                     .draft_player(
                                                         &current_pool_name,
                                                         &user.sub,
                                                         player_id,
                                                     )
                                                     .await
-                                                {
-                                                    let _ =
-                                                        send_task_sender.send(e.to_string()).await;
-                                                }
+                                            {
+                                                let _ = send_task_sender.send(e.to_string()).await;
                                             }
                                         }
                                         Command::UndoDraftPlayer => {
-                                            if let Some(user) = &user {
-                                                if let Err(e) = draft_service
+                                            if let Some(user) = &user
+                                                && let Err(e) = draft_service
                                                     .undo_draft_player(
                                                         &current_pool_name,
                                                         &user.sub,
                                                     )
                                                     .await
-                                                {
-                                                    let _ =
-                                                        send_task_sender.send(e.to_string()).await;
-                                                }
+                                            {
+                                                let _ = send_task_sender.send(e.to_string()).await;
                                             }
                                         }
                                         Command::JoinRoom {
@@ -248,7 +231,6 @@ impl DraftRouter {
                                         } => {}
                                     }
                                 } else {
-                                    println!("could not deserialize the command received.");
                                     let _ = send_task_sender
                                         .send(
                                             "could not deserialize the command received."

@@ -14,13 +14,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use mongodb::Collection;
 
 use poolnhl_infrastructure::database_connection::{DatabaseConnection, DatabaseManager};
-use poolnhl_infrastructure::services::pool_service::MongoPoolService;
+use poolnhl_infrastructure::services::pool_service::{MongoPoolService, update_pool};
 use poolnhl_interface::errors::AppError;
 use poolnhl_interface::players::model::{PlayerInfo, Position};
 use poolnhl_interface::pool::model::{
-    DailyRosterPoints, Pool, PoolContext, PoolCreationRequest, PoolDeletionRequest, PoolSettings,
-    PoolState, PoolUser, RespondTradeRequest, Roster, Trade, TradeItems, TradeStatus,
+    Pool, PoolContext, PoolSettings, PoolState, PoolUser, Trade, TradeItems, TradeStatus,
 };
+use poolnhl_interface::pool::requests::{
+    AddPlayerRequest, PoolCreationRequest, PoolDeletionRequest, RespondTradeRequest,
+};
+use poolnhl_interface::pool::scoring::{DailyRosterPoints, Roster};
 use poolnhl_interface::pool::service::PoolService;
 
 const TEST_DATABASE: &str = "hockeypooltest";
@@ -241,6 +244,91 @@ async fn respond_trade_persists_the_roster_swap() {
     assert_eq!(roster[USER_2].chosen_reservists, vec![1]);
 
     cleanup(&collection, &pool_name).await;
+}
+
+// Two clients read the same pool, then both write. Without optimistic locking
+// the second write would silently overwrite the first (a lost update); it must
+// be rejected with a conflict instead.
+#[tokio::test]
+#[ignore = "requires a running mongo (docker compose up -d mongo)"]
+async fn a_concurrent_write_is_rejected_instead_of_overwriting() {
+    let (service, collection) = service_and_collection().await;
+    let pool_name = unique_pool_name("conflict");
+    collection
+        .insert_one(&in_progress_pool(&pool_name), None)
+        .await
+        .unwrap();
+
+    // Both clients start from the same version of the document.
+    let stale = service.get_pool_by_name(&pool_name).await.unwrap();
+    assert_eq!(stale.date_updated, 0);
+
+    // Client A adds a player; the write bumps the version.
+    let after_first = service
+        .add_player(
+            OWNER,
+            AddPlayerRequest {
+                pool_name: pool_name.clone(),
+                added_player_user_id: OWNER.to_string(),
+                player: player(3),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(after_first.date_updated > stale.date_updated);
+
+    // Client B writes from the version it read before A's update. Reproducing
+    // that means calling update_pool with the now-stale version directly.
+    let conflict = update_pool(
+        mongodb::bson::doc! { "$set": { "settings.number_reservists": 9 } },
+        &collection,
+        &pool_name,
+        stale.date_updated,
+    )
+    .await;
+    assert!(
+        matches!(conflict, Err(AppError::ConflictError { .. })),
+        "expected a conflict, got {conflict:?}"
+    );
+
+    // A's update survived and B's was not applied.
+    let fetched = service.get_pool_by_name(&pool_name).await.unwrap();
+    assert!(
+        fetched.context.as_ref().unwrap().players.contains_key("3"),
+        "the first write must survive the rejected one"
+    );
+    assert_eq!(fetched.settings.number_reservists, 2);
+
+    // Retrying from the fresh version succeeds.
+    update_pool(
+        mongodb::bson::doc! { "$set": { "settings.number_reservists": 9 } },
+        &collection,
+        &pool_name,
+        fetched.date_updated,
+    )
+    .await
+    .unwrap();
+    let fetched = service.get_pool_by_name(&pool_name).await.unwrap();
+    assert_eq!(fetched.settings.number_reservists, 9);
+
+    cleanup(&collection, &pool_name).await;
+}
+
+// An update aimed at a pool that does not exist is a 404, not a conflict.
+#[tokio::test]
+#[ignore = "requires a running mongo (docker compose up -d mongo)"]
+async fn updating_a_missing_pool_is_not_a_conflict() {
+    let (_, collection) = service_and_collection().await;
+
+    let result = update_pool(
+        mongodb::bson::doc! { "$set": { "settings.number_reservists": 9 } },
+        &collection,
+        &unique_pool_name("ghost"),
+        0,
+    )
+    .await;
+
+    assert!(matches!(result, Err(AppError::NotFound { .. })));
 }
 
 #[tokio::test]

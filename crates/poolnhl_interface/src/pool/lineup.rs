@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::pool::model::DailyRosterPoints;
+use crate::pool::scoring::DailyRosterPoints;
 
 /// A participant's lineup taking effect on `effective_date`, stored sparsely
 /// (one entry per change) inside the pool's context.
@@ -103,7 +103,7 @@ pub fn lineup_as_of<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pool::model::Roster;
+    use crate::pool::scoring::Roster;
 
     fn day(forwards: &[u32], goalies: &[u32]) -> DailyRosterPoints {
         DailyRosterPoints {

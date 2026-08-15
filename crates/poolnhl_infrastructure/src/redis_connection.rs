@@ -9,6 +9,10 @@ use poolnhl_interface::errors::{AppError, Result};
 
 use crate::services::draft_state::LocalRooms;
 
+pub fn redis_err(e: redis::RedisError) -> AppError {
+    AppError::RedisError { msg: e.to_string() }
+}
+
 // Prefix of the per-room pub/sub channels (`draft:room:{pool_name}`) and of the
 // room state keys (`draft:room:{pool_name}:users` / `:meta`).
 pub const ROOM_CHANNEL_PREFIX: &str = "draft:room:";
@@ -21,14 +25,13 @@ pub struct RedisManager;
 
 impl RedisManager {
     pub async fn connect(redis_uri: &str) -> Result<(redis::Client, ConnectionManager)> {
-        let client = redis::Client::open(redis_uri)
-            .map_err(|e| AppError::RedisError { msg: e.to_string() })?;
+        let client = redis::Client::open(redis_uri).map_err(redis_err)?;
 
         // ConnectionManager is cheaply cloneable and reconnects on its own. It is
         // used for all regular commands; pub/sub needs its own connection (below).
         let manager = ConnectionManager::new(client.clone())
             .await
-            .map_err(|e| AppError::RedisError { msg: e.to_string() })?;
+            .map_err(redis_err)?;
 
         Ok((client, manager))
     }
@@ -56,7 +59,7 @@ impl RoomSubscriberHandle {
         self.control_tx
             .send(SubscriberCmd::Subscribe(room_channel(pool_name), ack_tx))
             .await
-            .map_err(|e| AppError::RedisError { msg: e.to_string() })?;
+            .map_err(subscriber_gone)?;
         ack_rx.await.map_err(|_| AppError::RedisError {
             msg: format!("the subscription to room '{}' was not confirmed", pool_name),
         })
@@ -66,7 +69,16 @@ impl RoomSubscriberHandle {
         self.control_tx
             .send(SubscriberCmd::Unsubscribe(room_channel(pool_name)))
             .await
-            .map_err(|e| AppError::RedisError { msg: e.to_string() })
+            .map_err(subscriber_gone)
+    }
+}
+
+// The subscriber task owns the receiving end of the control channel: a send
+// failure means that task is gone, so this instance no longer receives room
+// broadcasts at all.
+fn subscriber_gone<T>(e: tokio::sync::mpsc::error::SendError<T>) -> AppError {
+    AppError::RedisError {
+        msg: format!("the room subscriber task is no longer running: {e}"),
     }
 }
 
@@ -87,7 +99,7 @@ pub fn spawn_room_subscriber(
             let pubsub = match client.get_async_pubsub().await {
                 Ok(pubsub) => pubsub,
                 Err(e) => {
-                    println!("redis pub/sub connection failed: {}", e);
+                    tracing::error!(error = %e, "redis pub/sub connection failed");
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue 'reconnect;
                 }
@@ -98,7 +110,7 @@ pub fn spawn_room_subscriber(
 
             for channel in &channels {
                 if let Err(e) = sink.subscribe(channel).await {
-                    println!("redis re-subscribe to '{}' failed: {}", channel, e);
+                    tracing::error!(%channel, error = %e, "redis re-subscribe failed");
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue 'reconnect;
                 }
@@ -108,25 +120,25 @@ pub fn spawn_room_subscriber(
                 tokio::select! {
                     cmd = control_rx.recv() => match cmd {
                         Some(SubscriberCmd::Subscribe(channel, ack)) => {
-                            if channels.insert(channel.clone()) {
-                                if let Err(e) = sink.subscribe(&channel).await {
-                                    // Dropping `ack` reports the failure to the caller;
-                                    // the channel stays in `channels` and gets subscribed
-                                    // on reconnect.
-                                    println!("redis subscribe to '{}' failed: {}", channel, e);
-                                    tokio::time::sleep(Duration::from_secs(1)).await;
-                                    continue 'reconnect;
-                                }
+                            // Dropping `ack` reports the failure to the caller;
+                            // the channel stays in `channels` and gets subscribed
+                            // on reconnect.
+                            if channels.insert(channel.clone())
+                                && let Err(e) = sink.subscribe(&channel).await
+                            {
+                                tracing::error!(%channel, error = %e, "redis subscribe failed");
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                continue 'reconnect;
                             }
                             let _ = ack.send(());
                         }
                         Some(SubscriberCmd::Unsubscribe(channel)) => {
-                            if channels.remove(&channel) {
-                                if let Err(e) = sink.unsubscribe(&channel).await {
-                                    println!("redis unsubscribe from '{}' failed: {}", channel, e);
-                                    tokio::time::sleep(Duration::from_secs(1)).await;
-                                    continue 'reconnect;
-                                }
+                            if channels.remove(&channel)
+                                && let Err(e) = sink.unsubscribe(&channel).await
+                            {
+                                tracing::error!(%channel, error = %e, "redis unsubscribe failed");
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                continue 'reconnect;
                             }
                         }
                         // Every handle was dropped: the services are gone, stop the task.
@@ -139,7 +151,7 @@ pub fn spawn_room_subscriber(
                             {
                                 match msg.get_payload::<String>() {
                                     Ok(payload) => local_rooms.forward(pool_name, payload),
-                                    Err(e) => println!("invalid redis pub/sub payload: {}", e),
+                                    Err(e) => tracing::warn!(error = %e, "invalid redis pub/sub payload"),
                                 }
                             }
                         }
