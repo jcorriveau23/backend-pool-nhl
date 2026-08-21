@@ -8,20 +8,23 @@
 //! the ingest poller, so it gets a short TTL and is refreshed from Mongo.
 
 use chrono::{Duration, Local, Timelike};
-use mongodb::bson::doc;
 use mongodb::Collection;
-use redis::aio::ConnectionManager;
+use mongodb::bson::doc;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 
 use poolnhl_interface::daily_leaders::model::DailyLeaders;
 use poolnhl_interface::errors::{AppError, Result};
-use poolnhl_interface::pool::model::DayScores;
+use poolnhl_interface::pool::scoring::DayScores;
 
 use crate::database_connection::DatabaseConnection;
+use crate::database_connection::mongo_err;
+use crate::redis_connection::redis_err;
 
 // Cache-key schema version. Bump to invalidate every cached day at once (e.g.
 // if the compact format or a scoring-derivation rule changes).
-const CACHE_PREFIX: &str = "dl:v1:";
+// v2: `DayScores` carries the `played` set, so scoreless games are counted.
+const CACHE_PREFIX: &str = "dl:v2:";
 
 // Finalized days are immutable; two weeks is plenty for the working set while
 // still letting cold entries expire. The live day is rewritten every game
@@ -72,7 +75,7 @@ impl DayLeadersCache {
             .collection
             .find_one(doc! { "date": date }, None)
             .await
-            .map_err(|e| AppError::MongoError { msg: e.to_string() })?
+            .map_err(mongo_err)?
             .map(|daily_leaders| DayScores::from_daily_leaders(&daily_leaders))
             .unwrap_or_default();
 
@@ -87,8 +90,4 @@ impl DayLeadersCache {
 
         Ok(scores)
     }
-}
-
-fn redis_err(e: redis::RedisError) -> AppError {
-    AppError::RedisError { msg: e.to_string() }
 }

@@ -35,6 +35,11 @@ async fn main() {
         .init_indexes()
         .await
         .expect("could not initialize indexes for pool service.");
+    services
+        .daily_leaders_service
+        .init_indexes()
+        .await
+        .expect("could not initialize indexes for daily leaders service.");
 
     // Run the application.
     ApplicationController::run(settings, services).await;

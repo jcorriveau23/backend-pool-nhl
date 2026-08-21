@@ -7,6 +7,7 @@ use crate::errors::Result;
 
 #[async_trait]
 pub trait DailyLeadersService {
+    async fn init_indexes(&self) -> Result<()>;
     async fn get_daily_leaders(&self, date: &str) -> Result<DailyLeaders>;
 }
 

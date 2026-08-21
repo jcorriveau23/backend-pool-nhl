@@ -1,7 +1,11 @@
 [workspace]
+resolver = "3"
 members = [
     "crates/poolnhl_app",
     "crates/poolnhl_interface",
     "crates/poolnhl_infrastructure",
     "crates/poolnhl_routing",
 ]
+
+[workspace.package]
+edition = "2024"

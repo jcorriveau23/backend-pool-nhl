@@ -9,8 +9,8 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mongodb::bson::doc;
 use mongodb::Collection;
+use mongodb::bson::doc;
 use redis::AsyncCommands;
 
 use poolnhl_infrastructure::database_connection::{DatabaseConnection, DatabaseManager};
@@ -104,7 +104,7 @@ async fn day_scores_are_derived_read_through_and_cached() {
 
     // The value is now cached under the versioned key.
     let mut conn = redis.clone();
-    let key = format!("dl:v1:{date}");
+    let key = format!("dl:v2:{date}");
     let cached: Option<String> = conn.get(&key).await.unwrap();
     assert!(
         cached.is_some(),

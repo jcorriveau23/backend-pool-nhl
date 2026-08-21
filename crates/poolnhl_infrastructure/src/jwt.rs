@@ -1,16 +1,16 @@
 use std::fmt;
 
 use chrono::Utc;
-use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 
 use poolnhl_interface::{errors::AppError, users::model::UserEmailJwtPayload};
 use serde::Deserialize;
 use std::sync::RwLock;
 
-use axum::{async_trait, extract::FromRequestParts, http::request::Parts, RequestPartsExt};
+use axum::{RequestPartsExt, async_trait, extract::FromRequestParts, http::request::Parts};
 use axum_extra::{
-    headers::{authorization::Bearer, Authorization},
     TypedHeader,
+    headers::{Authorization, authorization::Bearer},
 };
 
 use crate::{services::ServiceRegistry, settings::Auth};

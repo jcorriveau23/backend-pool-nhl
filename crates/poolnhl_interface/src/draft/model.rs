@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::{
-    pool::model::{Pool, PoolSettings},
+    players::model::PlayerInfo,
+    pool::model::{Pool, PoolSettings, PoolState, PoolerRoster},
     users::model::UserEmailJwtPayload,
 };
 
@@ -44,6 +45,17 @@ impl PartialEq for RoomUser {
     }
 }
 
+// A roster rearrangement asked for over the draft socket. Same shape as the
+// `/modify-roster` REST body minus the pool name, which the room already knows.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct RosterModification {
+    pub roster_modified_user_id: String,
+    pub forw_list: Vec<u32>,
+    pub def_list: Vec<u32>,
+    pub goal_list: Vec<u32>,
+    pub reserv_list: Vec<u32>,
+}
+
 // Commands that the soket server can receive.
 #[derive(Deserialize, Serialize)]
 pub enum Command {
@@ -69,6 +81,10 @@ pub enum Command {
     DraftPlayer {
         player_id: i64,
     },
+    // Rosters can be rearranged during the draft too, and the room has to see
+    // it. The REST endpoint stays for pools that are already running, where
+    // there is no room and no socket.
+    ModifyRoster(RosterModification),
 }
 
 // Response return to the sockets clients as commands response.
@@ -79,6 +95,42 @@ pub enum CommandResponse {
     },
     Users {
         room_users: HashMap<String, RoomUser>,
+    },
+    // A single draft pick, sent instead of the whole pool. The pool is only a
+    // few fields larger after a pick but tens of kilobytes in total, and it is
+    // rebroadcast to every socket of the room on every pick, so the draft sends
+    // the delta and lets the clients apply it to the copy they already hold.
+    PlayerDrafted {
+        player: PlayerInfo,
+        // The participant the player was drafted for, which is not necessarily
+        // the socket that sent the command (the owner drafts for others).
+        participant_id: String,
+        // That participant's roster after the pick, sent whole so clients never
+        // have to reimplement the slot/reservist placement rules.
+        roster: PoolerRoster,
+        // What was appended to `players_name_drafted`.
+        appended_picks: Vec<u32>,
+        // `players_name_drafted.len()` after the pick. A client whose own list
+        // does not reach this length missed an update and must refetch the pool.
+        pick_count: usize,
+        // Flips to InProgress on the final pick of the draft.
+        status: PoolState,
+        date_updated: i64,
+    },
+    DraftPickUndone {
+        player_id: u32,
+        participant_id: String,
+        roster: PoolerRoster,
+        // `players_name_drafted` is truncated to this length.
+        pick_count: usize,
+        date_updated: i64,
+    },
+    // A participant rearranged the players it already holds. Nothing is drafted
+    // and no pick is consumed, so this carries no pick count.
+    RosterModified {
+        participant_id: String,
+        roster: PoolerRoster,
+        date_updated: i64,
     },
     Error {
         message: String,
@@ -102,6 +154,120 @@ mod tests {
             iat: 0,
             sub: user_id.to_string(),
         }
+    }
+
+    // The draft deltas are the contract with the web client, which branches on
+    // the variant key and reads these exact field names. Pin the shape so a
+    // rename here cannot silently freeze every draft board.
+    #[test]
+    fn player_drafted_serializes_as_a_tagged_delta() {
+        let response = CommandResponse::PlayerDrafted {
+            player: PlayerInfo {
+                active: true,
+                id: 7,
+                name: "player-7".to_string(),
+                team: None,
+                position: crate::players::model::Position::F,
+                age: None,
+                salary_cap: None,
+                contract_expiration_season: None,
+                game_played: None,
+                goals: None,
+                assists: None,
+                points: None,
+                points_per_game: None,
+                goal_against_average: None,
+                save_percentage: None,
+                saves: None,
+                shots: None,
+                wins: None,
+                ot: None,
+            },
+            participant_id: "user-1".to_string(),
+            roster: PoolerRoster {
+                chosen_forwards: vec![7],
+                chosen_defenders: Vec::new(),
+                chosen_goalies: Vec::new(),
+                chosen_reservists: Vec::new(),
+            },
+            appended_picks: vec![7, 0],
+            pick_count: 3,
+            status: PoolState::Draft,
+            date_updated: 42,
+        };
+
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&response).unwrap()).unwrap();
+
+        let delta = &json["PlayerDrafted"];
+        assert_eq!(delta["player"]["id"], 7);
+        assert_eq!(delta["participant_id"], "user-1");
+        assert_eq!(delta["roster"]["chosen_forwards"][0], 7);
+        assert_eq!(delta["appended_picks"], serde_json::json!([7, 0]));
+        assert_eq!(delta["pick_count"], 3);
+        assert_eq!(delta["status"], "Draft");
+        assert_eq!(delta["date_updated"], 42);
+    }
+
+    #[test]
+    fn draft_pick_undone_serializes_as_a_tagged_delta() {
+        let response = CommandResponse::DraftPickUndone {
+            player_id: 7,
+            participant_id: "user-1".to_string(),
+            roster: PoolerRoster::new(),
+            pick_count: 1,
+            date_updated: 42,
+        };
+
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&response).unwrap()).unwrap();
+
+        let delta = &json["DraftPickUndone"];
+        assert_eq!(delta["player_id"], 7);
+        assert_eq!(delta["participant_id"], "user-1");
+        assert_eq!(delta["roster"]["chosen_forwards"], serde_json::json!([]));
+        assert_eq!(delta["pick_count"], 1);
+        assert_eq!(delta["date_updated"], 42);
+    }
+
+    #[test]
+    fn roster_modified_serializes_as_a_tagged_delta() {
+        let response = CommandResponse::RosterModified {
+            participant_id: "user-1".to_string(),
+            roster: PoolerRoster {
+                chosen_forwards: vec![7],
+                chosen_defenders: Vec::new(),
+                chosen_goalies: Vec::new(),
+                chosen_reservists: vec![9],
+            },
+            date_updated: 42,
+        };
+
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&response).unwrap()).unwrap();
+
+        let delta = &json["RosterModified"];
+        assert_eq!(delta["participant_id"], "user-1");
+        assert_eq!(delta["roster"]["chosen_forwards"], serde_json::json!([7]));
+        assert_eq!(delta["roster"]["chosen_reservists"], serde_json::json!([9]));
+        assert_eq!(delta["date_updated"], 42);
+    }
+
+    // The web client builds this command as {"ModifyRoster": {...}}, so the
+    // variant has to stay a newtype around the flat payload.
+    #[test]
+    fn modify_roster_command_deserializes_from_a_flat_payload() {
+        let command: Command = serde_json::from_str(
+            r#"{"ModifyRoster":{"roster_modified_user_id":"user-1","forw_list":[1,2],"def_list":[3],"goal_list":[4],"reserv_list":[5]}}"#,
+        )
+        .unwrap();
+
+        let Command::ModifyRoster(modification) = command else {
+            panic!("expected a ModifyRoster command");
+        };
+        assert_eq!(modification.roster_modified_user_id, "user-1");
+        assert_eq!(modification.forw_list, vec![1, 2]);
+        assert_eq!(modification.reserv_list, vec![5]);
     }
 
     #[test]

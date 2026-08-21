@@ -1,19 +1,20 @@
 use std::collections::HashMap;
 
+use axum::Router;
 use axum::extract::{Json, Path, State};
 use axum::routing::{get, post};
-use axum::Router;
 
-use poolnhl_infrastructure::services::pool_scoring_service::PoolScoringService;
 use poolnhl_infrastructure::services::ServiceRegistry;
+use poolnhl_infrastructure::services::pool_scoring_service::PoolScoringService;
 use poolnhl_interface::errors::Result;
-use poolnhl_interface::pool::model::{
-    AddPlayerRequest, CompleteProtectionRequest, CreateTradeRequest, DailyRosterPoints,
-    DeleteTradeRequest, FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest,
-    ModifyRosterRequest, Pool, PoolCreationRequest, PoolDeletionRequest, ProjectedPoolShort,
-    ProtectPlayersRequest, RemovePlayerRequest, RespondTradeRequest, SeasonInfo,
-    UpdatePoolSettingsRequest,
+use poolnhl_interface::pool::model::{Pool, ProjectedPoolShort, SeasonInfo};
+use poolnhl_interface::pool::requests::{
+    AddPlayerRequest, CompleteProtectionRequest, CreateTradeRequest, DeleteTradeRequest,
+    FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest, ModifyRosterRequest,
+    PoolCreationRequest, PoolDeletionRequest, ProtectPlayersRequest, RemovePlayerRequest,
+    RespondTradeRequest, UpdatePoolSettingsRequest,
 };
+use poolnhl_interface::pool::scoring::DailyRosterPoints;
 use poolnhl_interface::pool::service::PoolServiceHandle;
 use poolnhl_interface::users::model::UserEmailJwtPayload;
 
@@ -101,7 +102,6 @@ impl PoolRouter {
         Path(season): Path<u32>,
         State(pool_service): State<PoolServiceHandle>,
     ) -> Result<Json<Vec<ProjectedPoolShort>>> {
-        print!("{}", season);
         pool_service.list_pools(season).await.map(Json)
     }
 

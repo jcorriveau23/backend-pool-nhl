@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::extract::FromRef;
 
-use crate::redis_connection::{spawn_room_subscriber, RedisManager};
+use crate::redis_connection::{RedisManager, spawn_room_subscriber};
 use crate::{database_connection::DatabaseConnection, jwt::CachedJwks};
 use poolnhl_interface::daily_leaders::service::DailyLeadersServiceHandle;
 use poolnhl_interface::draft::service::DraftServiceHandle;
@@ -21,7 +21,7 @@ pub mod pool_service;
 use daily_leaders_service::MongoDailyLeadersService;
 use day_leaders_cache::DayLeadersCache;
 use draft_service::MongoDraftService;
-use draft_state::{spawn_heartbeat, DraftServerState, LocalRooms};
+use draft_state::{DraftServerState, LocalRooms, spawn_heartbeat};
 use players_service::MongoPlayersService;
 use pool_scoring_service::PoolScoringService;
 use pool_service::MongoPoolService;

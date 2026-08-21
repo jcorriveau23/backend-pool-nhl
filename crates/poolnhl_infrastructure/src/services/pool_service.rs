@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use chrono::{Duration, Local, NaiveDate};
+use chrono::{Duration, Local, NaiveDate, Utc};
 use futures::stream::TryStreamExt;
 use mongodb::bson::doc;
-use mongodb::bson::{to_bson, Document};
+use mongodb::bson::{Document, to_bson};
 use mongodb::options::{
     FindOneAndUpdateOptions, FindOneOptions, FindOptions, IndexOptions, ReturnDocument,
 };
@@ -13,20 +13,19 @@ use poolnhl_interface::errors::AppError;
 
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::pool::model::{
-    CompleteProtectionRequest, GenerateDynastyRequest, PoolContext, PoolState, END_SEASON_DATE,
-    POOL_CREATION_SEASON,
+    END_SEASON_DATE, POOL_CREATION_SEASON, Pool, PoolContext, PoolState, ProjectedPoolShort,
+    START_SEASON_DATE,
 };
-use poolnhl_interface::pool::{
-    model::{
-        AddPlayerRequest, CreateTradeRequest, DeleteTradeRequest, FillSpotRequest,
-        MarkAsFinalRequest, ModifyRosterRequest, Pool, PoolCreationRequest, PoolDeletionRequest,
-        ProjectedPoolShort, ProtectPlayersRequest, RemovePlayerRequest, RespondTradeRequest,
-        UpdatePoolSettingsRequest, START_SEASON_DATE,
-    },
-    service::PoolService,
+use poolnhl_interface::pool::requests::{
+    AddPlayerRequest, CompleteProtectionRequest, CreateTradeRequest, DeleteTradeRequest,
+    FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest, ModifyRosterRequest,
+    PoolCreationRequest, PoolDeletionRequest, ProtectPlayersRequest, RemovePlayerRequest,
+    RespondTradeRequest, UpdatePoolSettingsRequest,
 };
+use poolnhl_interface::pool::service::PoolService;
 
 use crate::database_connection::DatabaseConnection;
+use crate::database_connection::{bson_err, mongo_err};
 
 #[derive(Clone)]
 pub struct MongoPoolService {
@@ -44,33 +43,77 @@ pub async fn get_optional_short_pool_by_name(
     let short_pool = collection
         .find_one(doc! {"name": &_name}, find_option)
         .await
-        .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
+        .map_err(mongo_err)?;
 
     Ok(short_pool)
 }
 
+/// The next value of a pool's `date_updated` version stamp.
+///
+/// Every mutation reads a pool, changes it in memory and writes the result
+/// back, so two concurrent mutations would otherwise silently overwrite each
+/// other. `date_updated` doubles as the optimistic-locking version: the update
+/// only applies if the document still carries the value that was read.
+///
+/// It stays a wall-clock millisecond timestamp (it is one on the wire), but is
+/// forced to strictly increase so two writes landing in the same millisecond
+/// still produce distinct versions.
+fn next_version(current_version: i64) -> i64 {
+    Utc::now().timestamp_millis().max(current_version + 1)
+}
+
+/// Apply `updated_field` to the pool, but only if it has not been modified
+/// since it was read at version `expected_version`.
+///
+/// Returns [`AppError::ConflictError`] when someone else wrote to the pool in
+/// the meantime, so the caller can refetch and retry rather than clobbering
+/// that update.
 pub async fn update_pool(
-    updated_field: Document,
+    mut updated_field: Document,
     collection: &Collection<Pool>,
     pool_name: &str,
+    expected_version: i64,
 ) -> Result<Pool> {
+    // Stamp the new version inside the caller's `$set`. Callers that `$set` a
+    // whole serialized pool carry the *old* `date_updated`, so this insert has
+    // to happen last to win.
+    updated_field
+        .get_document_mut("$set")
+        .map_err(|e| AppError::BsonError {
+            msg: format!("a pool update must carry a `$set` document: {e}"),
+        })?
+        .insert("date_updated", next_version(expected_version));
+
     // Update the fields in the mongoDB pool document.
     let find_one_and_update_options = FindOneAndUpdateOptions::builder()
         .return_document(ReturnDocument::After)
         .projection(doc! {"context.score_by_day": 0})
         .build();
 
-    collection
+    let updated = collection
         .find_one_and_update(
-            doc! {"name": pool_name},
+            doc! {"name": pool_name, "date_updated": expected_version},
             updated_field,
             find_one_and_update_options,
         )
         .await
-        .map_err(|e| AppError::MongoError { msg: e.to_string() })?
-        .ok_or(AppError::NotFound {
-            msg: format!("no pool found with name '{}'", pool_name),
-        })
+        .map_err(mongo_err)?;
+
+    match updated {
+        Some(pool) => Ok(pool),
+        // The filter matched nothing: either the pool is gone, or its version
+        // moved on. Tell those two apart so the client gets 404 vs 409.
+        None => match get_optional_short_pool_by_name(collection, pool_name).await? {
+            Some(_) => Err(AppError::ConflictError {
+                msg: "This pool was modified by someone else while you were editing it. \
+                      Refresh and try again."
+                    .to_string(),
+            }),
+            None => Err(AppError::NotFound {
+                msg: format!("no pool found with name '{pool_name}'"),
+            }),
+        },
+    }
 }
 
 pub async fn get_short_pool_by_name(
@@ -110,7 +153,7 @@ impl PoolService for MongoPoolService {
         self.collection
             .create_index(index_model, None)
             .await
-            .map_err(|e| AppError::ParseError { msg: e.to_string() })?;
+            .map_err(mongo_err)?;
         Ok(())
     }
     async fn get_pool_by_name(&self, name: &str) -> Result<Pool> {
@@ -118,7 +161,7 @@ impl PoolService for MongoPoolService {
             .collection
             .find_one(doc! {"name": name}, None)
             .await
-            .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
+            .map_err(mongo_err)?;
 
         pool.ok_or(AppError::NotFound {
             msg: format!("no pool found with name '{}'", name),
@@ -139,17 +182,18 @@ impl PoolService for MongoPoolService {
 
         // Projection will allow to filter all the date that the user did not want
         // (All the date before the from date received will be ignore).
+        //
+        // The loop compares dates, not their string forms: a caller-supplied
+        // `from` that chrono accepts but that does not round-trip to the same
+        // string (e.g. "2026-1-5") would otherwise never match the break
+        // condition and spin forever.
         let mut projection = doc! {};
-        if from_date >= start_date {
-            loop {
-                let str_date = start_date.to_string();
-
-                if str_date == *from_date_str {
-                    break;
-                }
-                projection.insert(format!("context.score_by_day.{}", str_date), 0);
-                start_date += Duration::days(1);
-            }
+        while start_date < from_date {
+            projection.insert(
+                format!("context.score_by_day.{}", start_date.format("%Y-%m-%d")),
+                0,
+            );
+            start_date += Duration::days(1);
         }
 
         let find_option = FindOneOptions::builder().projection(projection).build();
@@ -158,7 +202,7 @@ impl PoolService for MongoPoolService {
             .clone_with_type::<Pool>()
             .find_one(doc! {"name": &name}, find_option)
             .await
-            .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
+            .map_err(mongo_err)?;
 
         pool.ok_or(AppError::NotFound {
             msg: format!("no pool found with name '{}'", name),
@@ -177,12 +221,9 @@ impl PoolService for MongoPoolService {
             .clone_with_type::<ProjectedPoolShort>()
             .find(filter, find_option)
             .await
-            .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
+            .map_err(mongo_err)?;
 
-        let pools = cursor
-            .try_collect()
-            .await
-            .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
+        let pools = cursor.try_collect().await.map_err(mongo_err)?;
 
         Ok(pools)
     }
@@ -194,7 +235,7 @@ impl PoolService for MongoPoolService {
         self.collection
             .insert_one(&pool, None)
             .await
-            .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
+            .map_err(mongo_err)?;
 
         Ok(pool)
     }
@@ -208,7 +249,7 @@ impl PoolService for MongoPoolService {
             .collection
             .delete_one(doc! {"name": req.pool_name}, None)
             .await
-            .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
+            .map_err(mongo_err)?;
 
         if delete_result.deleted_count == 0 {
             return Err(AppError::CustomError {
@@ -229,11 +270,17 @@ impl PoolService for MongoPoolService {
         // Update the field in the pool
         let updated_fields = doc! {
             "$set": doc!{
-                "trades": to_bson(&pool.trades).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "trades": to_bson(&pool.trades).map_err(bson_err)?,
             }
         };
 
-        update_pool(updated_fields, &self.collection, &req.pool_name).await
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
     }
 
     async fn delete_trade(&self, user_id: &str, req: DeleteTradeRequest) -> Result<Pool> {
@@ -245,11 +292,17 @@ impl PoolService for MongoPoolService {
         // Update the field in the pool
         let updated_fields = doc! {
             "$set": doc!{
-                "trades": to_bson(&pool.trades).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "trades": to_bson(&pool.trades).map_err(bson_err)?,
             }
         };
 
-        update_pool(updated_fields, &self.collection, &req.pool_name).await
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
     }
 
     async fn respond_trade(&self, user_id: &str, req: RespondTradeRequest) -> Result<Pool> {
@@ -274,14 +327,20 @@ impl PoolService for MongoPoolService {
         // Update the field in the pool
         let updated_fields = doc! {
             "$set": doc!{
-                "trades": to_bson(&pool.trades).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "context.pooler_roster": to_bson(&context.pooler_roster ).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "context.tradable_picks": to_bson(&context.tradable_picks ).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "context.lineup_events": to_bson(&context.lineup_events).map_err(|e| AppError::MongoError { msg: e.to_string() })?
+                "trades": to_bson(&pool.trades).map_err(bson_err)?,
+                "context.pooler_roster": to_bson(&context.pooler_roster ).map_err(bson_err)?,
+                "context.tradable_picks": to_bson(&context.tradable_picks ).map_err(bson_err)?,
+                "context.lineup_events": to_bson(&context.lineup_events).map_err(bson_err)?
             }
         };
 
-        update_pool(updated_fields, &self.collection, &req.pool_name).await
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
     }
 
     async fn fill_spot(&self, user_id: &str, req: FillSpotRequest) -> Result<Pool> {
@@ -292,8 +351,9 @@ impl PoolService for MongoPoolService {
 
         // Update fields with the filled spot
 
+        let effective_date = pool.lineup_effective_date(&today());
         if let Some(context) = pool.context.as_mut() {
-            context.record_lineup_change(&req.filled_spot_user_id, &today());
+            context.record_lineup_change(&req.filled_spot_user_id, &effective_date);
         }
 
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
@@ -303,12 +363,18 @@ impl PoolService for MongoPoolService {
         // Update the field in the pool
         let updated_fields = doc! {
             "$set": doc!{
-                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "context.lineup_events": to_bson(&context.lineup_events).map_err(|e| AppError::MongoError { msg: e.to_string() })?
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(bson_err)?,
+                "context.lineup_events": to_bson(&context.lineup_events).map_err(bson_err)?
             }
         };
 
-        update_pool(updated_fields, &self.collection, &req.pool_name).await
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
     }
 
     async fn add_player(&self, user_id: &str, req: AddPlayerRequest) -> Result<Pool> {
@@ -323,14 +389,20 @@ impl PoolService for MongoPoolService {
 
         let updated_fields = doc! {
             "$set": doc!{
-                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "context.players": to_bson(&context.players).map_err(|e| AppError::MongoError { msg: e.to_string() })?
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(bson_err)?,
+                "context.players": to_bson(&context.players).map_err(bson_err)?
             }
         };
 
         // Update the fields in the mongoDB pool document.
 
-        update_pool(updated_fields, &self.collection, &req.pool_name).await
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
     }
 
     async fn remove_player(&self, user_id: &str, req: RemovePlayerRequest) -> Result<Pool> {
@@ -350,14 +422,20 @@ impl PoolService for MongoPoolService {
 
         let updated_fields = doc! {
             "$set": doc!{
-                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "context.lineup_events": to_bson(&context.lineup_events).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(bson_err)?,
+                "context.lineup_events": to_bson(&context.lineup_events).map_err(bson_err)?,
             }
         };
 
         // Update the fields in the mongoDB pool document.
 
-        update_pool(updated_fields, &self.collection, &req.pool_name).await
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
     }
 
     async fn update_pool_settings(
@@ -367,16 +445,22 @@ impl PoolService for MongoPoolService {
     ) -> Result<Pool> {
         let pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
 
-        pool.can_update_in_progress_pool_settings(user_id, &req.settings)?;
+        pool.can_update_started_pool_settings(user_id, &req.settings)?;
 
         let updated_fields = doc! {
             "$set": doc!{
-                "settings": to_bson(&req.settings).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "settings": to_bson(&req.settings).map_err(bson_err)?,
 
             }
         };
 
-        update_pool(updated_fields, &self.collection, &req.pool_name).await
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
     }
 
     async fn modify_roster(&self, user_id: &str, req: ModifyRosterRequest) -> Result<Pool> {
@@ -392,8 +476,9 @@ impl PoolService for MongoPoolService {
         )?;
         // Modify the all the pooler_roster (we could update only the pooler_roster[userId] if necessary)
 
+        let effective_date = pool.lineup_effective_date(&today());
         if let Some(context) = pool.context.as_mut() {
-            context.record_lineup_change(&req.roster_modified_user_id, &today());
+            context.record_lineup_change(&req.roster_modified_user_id, &effective_date);
         }
 
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
@@ -402,14 +487,20 @@ impl PoolService for MongoPoolService {
 
         let updated_fields = doc! {
             "$set": doc!{
-                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "context.lineup_events": to_bson(&context.lineup_events).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(bson_err)?,
+                "context.lineup_events": to_bson(&context.lineup_events).map_err(bson_err)?,
             }
         };
 
         // Update the fields in the mongoDB pool document.
 
-        update_pool(updated_fields, &self.collection, &req.pool_name).await
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
     }
 
     async fn protect_players(&self, user_id: &str, req: ProtectPlayersRequest) -> Result<Pool> {
@@ -427,15 +518,21 @@ impl PoolService for MongoPoolService {
 
         let updated_fields = doc! {
             "$set": doc!{
-                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "context.protected_players": to_bson(&context.protected_players).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "status":  to_bson(&pool.status).map_err(|e| AppError::MongoError { msg: e.to_string() })?
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(bson_err)?,
+                "context.protected_players": to_bson(&context.protected_players).map_err(bson_err)?,
+                "status":  to_bson(&pool.status).map_err(bson_err)?
             }
         };
 
         // Update the fields in the mongoDB pool document.
 
-        update_pool(updated_fields, &self.collection, &req.pool_name).await
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
     }
 
     async fn complete_protection(
@@ -453,15 +550,21 @@ impl PoolService for MongoPoolService {
 
         let updated_fields = doc! {
             "$set": doc!{
-                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "context.players": to_bson(&context.players).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "status":  to_bson(&pool.status).map_err(|e| AppError::MongoError { msg: e.to_string() })?
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(bson_err)?,
+                "context.players": to_bson(&context.players).map_err(bson_err)?,
+                "status":  to_bson(&pool.status).map_err(bson_err)?
             }
         };
 
         // Update the fields in the mongoDB pool document.
 
-        update_pool(updated_fields, &self.collection, &req.pool_name).await
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
     }
 
     async fn mark_as_final(&self, user_id: &str, req: MarkAsFinalRequest) -> Result<Pool> {
@@ -471,13 +574,19 @@ impl PoolService for MongoPoolService {
 
         let updated_fields = doc! {
             "$set": doc!{
-                "draft_order": to_bson(&pool.draft_order).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "final_rank": to_bson(&pool.final_rank).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "status":  to_bson(&pool.status).map_err(|e| AppError::MongoError { msg: e.to_string() })?
+                "draft_order": to_bson(&pool.draft_order).map_err(bson_err)?,
+                "final_rank": to_bson(&pool.final_rank).map_err(bson_err)?,
+                "status":  to_bson(&pool.status).map_err(bson_err)?
             }
         };
 
-        update_pool(updated_fields, &self.collection, &req.pool_name).await
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
     }
 
     async fn generate_dynasty(&self, user_id: &str, req: GenerateDynastyRequest) -> Result<Pool> {
@@ -543,14 +652,20 @@ impl PoolService for MongoPoolService {
         self.collection
             .insert_one(&new_dynasty_pool, None)
             .await
-            .map_err(|e| AppError::MongoError { msg: e.to_string() })?;
+            .map_err(mongo_err)?;
 
         let updated_fields = doc! {
             "$set": doc!{
-                "settings": to_bson(&pool.settings).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "settings": to_bson(&pool.settings).map_err(bson_err)?,
             }
         };
 
-        update_pool(updated_fields, &self.collection, &req.pool_name).await
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
     }
 }

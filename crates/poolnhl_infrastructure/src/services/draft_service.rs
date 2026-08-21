@@ -1,7 +1,7 @@
 use async_trait::async_trait;
+use mongodb::Collection;
 use mongodb::bson::doc;
 use mongodb::bson::to_bson;
-use mongodb::Collection;
 use poolnhl_interface::draft::service::DraftService;
 use poolnhl_interface::errors::AppError;
 use poolnhl_interface::players::model::PlayerInfo;
@@ -11,12 +11,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-use poolnhl_interface::draft::model::{CommandResponse, RoomUser};
+use poolnhl_interface::draft::model::{CommandResponse, RoomUser, RosterModification};
 use poolnhl_interface::errors::Result;
-use poolnhl_interface::pool::model::{Pool, PoolSettings, PoolState};
+use poolnhl_interface::pool::model::{Pool, PoolSettings, PoolState, PoolerRoster};
 
 use crate::database_connection::DatabaseConnection;
-use crate::jwt::{hanko_token_decode, CachedJwks};
+use crate::database_connection::bson_err;
+use crate::jwt::{CachedJwks, hanko_token_decode};
 
 use crate::services::draft_state::DraftServerState;
 use crate::services::players_service::get_player_with_id;
@@ -59,6 +60,29 @@ impl MongoDraftService {
             )
             .await
     }
+
+    // The roster of `participant` after a draft mutation. Sent with the draft
+    // deltas so clients do not have to redo the roster placement rules.
+    fn roster_of(pool: &Pool, participant: &str) -> Result<PoolerRoster> {
+        pool.context
+            .as_ref()
+            .and_then(|context| context.pooler_roster.get(participant))
+            .cloned()
+            .ok_or_else(|| AppError::CustomError {
+                msg: format!("no roster found for participant '{}'.", participant),
+            })
+    }
+
+    // The number of picks made so far, used by clients to detect that they
+    // missed a draft delta and need to refetch the pool.
+    fn pick_count(pool: &Pool) -> Result<usize> {
+        pool.context
+            .as_ref()
+            .map(|context| context.players_name_drafted.len())
+            .ok_or_else(|| AppError::CustomError {
+                msg: "pool context does not exist.".to_string(),
+            })
+    }
 }
 
 #[async_trait]
@@ -82,13 +106,19 @@ impl DraftService for MongoDraftService {
         // Update the fields in the mongoDB pool document.
 
         let updated_fields = doc! {
-            "$set": to_bson(&pool).map_err(|e| AppError::MongoError { msg: e.to_string() })?
+            "$set": to_bson(&pool).map_err(bson_err)?
         };
 
         // TODO Add the new pool to the list so that we know in which pool each users participated in.
         // add_pool_to_users(&collection_users, &_pool_info.name, participants).await?;
 
-        let updated_pool = update_pool(updated_fields, &self.pool_collection, pool_name).await?;
+        let updated_pool = update_pool(
+            updated_fields,
+            &self.pool_collection,
+            pool_name,
+            pool.date_updated,
+        )
+        .await?;
         self.publish_pool_info(pool_name, updated_pool).await
     }
 
@@ -100,7 +130,7 @@ impl DraftService for MongoDraftService {
         let player = get_player_with_id(&self.players_collection, player_id).await?;
 
         // Draft the player.
-        pool.draft_player(user_id, &player)?;
+        let outcome = pool.draft_player(user_id, &player)?;
 
         // The final pick flips the pool to InProgress: record each participant's
         // initial lineup, effective from the season start, so scores derive from
@@ -121,15 +151,37 @@ impl DraftService for MongoDraftService {
 
         let updated_fields = doc! {
             "$set": doc!{
-                "context": to_bson(context).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "status": to_bson(&pool.status).map_err(|e| AppError::MongoError { msg: e.to_string() })?
+                "context": to_bson(context).map_err(bson_err)?,
+                "status": to_bson(&pool.status).map_err(bson_err)?
             }
         };
         // Update the fields in the mongoDB pool document.
 
-        let updated_pool = update_pool(updated_fields, &self.pool_collection, pool_name).await?;
+        let updated_pool = update_pool(
+            updated_fields,
+            &self.pool_collection,
+            pool_name,
+            pool.date_updated,
+        )
+        .await?;
 
-        self.publish_pool_info(pool_name, updated_pool).await
+        // Only the pick itself is broadcast: the pool is rebroadcast to every
+        // socket of the room on every pick and grows with each drafted player,
+        // so sending it whole costs tens of kilobytes per pick per socket.
+        self.state
+            .publish(
+                pool_name,
+                &CommandResponse::PlayerDrafted {
+                    roster: Self::roster_of(&updated_pool, &outcome.drafter)?,
+                    pick_count: Self::pick_count(&updated_pool)?,
+                    participant_id: outcome.drafter,
+                    appended_picks: outcome.appended_picks,
+                    player,
+                    status: updated_pool.status.clone(),
+                    date_updated: updated_pool.date_updated,
+                },
+            )
+            .await
     }
 
     // Undo the last DraftPlayer command. This command can only be made by the pool owner.
@@ -137,7 +189,7 @@ impl DraftService for MongoDraftService {
         let mut pool = get_short_pool_by_name(&self.pool_collection, pool_name).await?;
 
         // Undo the last draft selection.
-        pool.undo_draft_player(user_id)?;
+        let outcome = pool.undo_draft_player(user_id)?;
 
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),
@@ -145,13 +197,84 @@ impl DraftService for MongoDraftService {
 
         let updated_fields = doc! {
             "$set": doc!{
-                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
-                "context.players_name_drafted": to_bson(&context.players_name_drafted).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(bson_err)?,
+                "context.players_name_drafted": to_bson(&context.players_name_drafted).map_err(bson_err)?,
             }
         };
         // Update the fields in the mongoDB pool document.
-        let updated_pool = update_pool(updated_fields, &self.pool_collection, &pool.name).await?;
-        self.publish_pool_info(pool_name, updated_pool).await
+        let updated_pool = update_pool(
+            updated_fields,
+            &self.pool_collection,
+            &pool.name,
+            pool.date_updated,
+        )
+        .await?;
+        self.state
+            .publish(
+                pool_name,
+                &CommandResponse::DraftPickUndone {
+                    roster: Self::roster_of(&updated_pool, &outcome.drafter)?,
+                    pick_count: Self::pick_count(&updated_pool)?,
+                    participant_id: outcome.drafter,
+                    player_id: outcome.player_id,
+                    date_updated: updated_pool.date_updated,
+                },
+            )
+            .await
+    }
+
+    // Rearrange the players a participant already holds, during the draft.
+    // Everyone in the room has to see it: their copy of the pool is now only
+    // refreshed by the deltas, so an unbroadcast roster change would leave the
+    // other draft boards showing a lineup that no longer exists.
+    async fn modify_roster(
+        &self,
+        pool_name: &str,
+        user_id: &str,
+        modification: &RosterModification,
+    ) -> Result<()> {
+        let mut pool = get_short_pool_by_name(&self.pool_collection, pool_name).await?;
+
+        pool.modify_roster(
+            user_id,
+            &modification.roster_modified_user_id,
+            &modification.forw_list,
+            &modification.def_list,
+            &modification.goal_list,
+            &modification.reserv_list,
+        )?;
+
+        // No lineup event here. The rosters are still being filled, and the
+        // final pick records everyone's opening lineup from the season start,
+        // which is the only lineup a draft-time arrangement can ever produce.
+        let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
+            msg: "pool context does not exist.".to_string(),
+        })?;
+
+        let updated_fields = doc! {
+            "$set": doc!{
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(bson_err)?,
+            }
+        };
+
+        let updated_pool = update_pool(
+            updated_fields,
+            &self.pool_collection,
+            pool_name,
+            pool.date_updated,
+        )
+        .await?;
+
+        self.state
+            .publish(
+                pool_name,
+                &CommandResponse::RosterModified {
+                    roster: Self::roster_of(&updated_pool, &modification.roster_modified_user_id)?,
+                    participant_id: modification.roster_modified_user_id.clone(),
+                    date_updated: updated_pool.date_updated,
+                },
+            )
+            .await
     }
 
     // Update pool settings, this command can only be made by the owner.
@@ -168,12 +291,18 @@ impl DraftService for MongoDraftService {
 
         let updated_fields = doc! {
             "$set": doc!{
-                "settings": to_bson(&pool_settings).map_err(|e| AppError::MongoError { msg: e.to_string() })?,
+                "settings": to_bson(&pool_settings).map_err(bson_err)?,
 
             }
         };
 
-        let updated_pool = update_pool(updated_fields, &self.pool_collection, pool_name).await?;
+        let updated_pool = update_pool(
+            updated_fields,
+            &self.pool_collection,
+            pool_name,
+            pool.date_updated,
+        )
+        .await?;
         self.publish_pool_info(pool_name, updated_pool).await
     }
 
@@ -184,12 +313,6 @@ impl DraftService for MongoDraftService {
 
     async fn list_room_users(&self, pool_name: &str) -> Result<HashMap<String, RoomUser>> {
         self.state.list_room_users(pool_name).await
-    }
-
-    // Note: sockets are owned by a single instance, so this only lists the
-    // sockets authenticated against the instance serving the request.
-    async fn list_authenticated_sockets(&self) -> Result<HashMap<String, UserEmailJwtPayload>> {
-        self.state.list_authenticated_sockets()
     }
 
     // Authenticate the token received as inputs.
@@ -210,7 +333,7 @@ impl DraftService for MongoDraftService {
                 }
             }
             Err(e) => {
-                println!("{}", e);
+                tracing::warn!(error = %e, "web socket authentication failed");
                 None
             }
         }
