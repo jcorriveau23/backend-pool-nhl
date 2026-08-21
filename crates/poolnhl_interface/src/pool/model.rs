@@ -620,7 +620,7 @@ impl Pool {
         reserv_list: &[u32],
         today: NaiveDate,
     ) -> Result<(), AppError> {
-        self.validate_pool_status(&PoolState::InProgress)?;
+        self.validate_pool_status_any(&[PoolState::Draft, PoolState::InProgress])?;
         self.validate_participant(roster_modified_user_id)?;
 
         if user_id != roster_modified_user_id {
@@ -1060,8 +1060,18 @@ impl Pool {
         Ok(())
     }
 
-    pub fn draft_player(&mut self, user_id: &str, player: &PlayerInfo) -> Result<(), AppError> {
+    pub fn draft_player(
+        &mut self,
+        user_id: &str,
+        player: &PlayerInfo,
+    ) -> Result<DraftOutcome, AppError> {
         // Match against
+
+        // Only a running draft accepts picks. Without this, a pick arriving
+        // after the last one (a late socket message, a double click) would find
+        // every roster full and fall through to the reservists, which are
+        // appended to without a capacity check.
+        self.validate_pool_status(&PoolState::Draft)?;
 
         let has_privileges = self.has_owner_rights(user_id);
 
@@ -1076,7 +1086,7 @@ impl Pool {
                 msg: "draft order does not exist.".to_string(),
             })?;
 
-        let is_done = if self.settings.dynasty_settings.is_some()
+        let outcome = if self.settings.dynasty_settings.is_some()
             && context.past_tradable_picks.is_some()
         {
             // This is a dynasty draft context.
@@ -1094,15 +1104,32 @@ impl Pool {
             context.draft_player(user_id, player, draft_order, &self.settings, has_privileges)?
         };
 
-        if is_done {
+        if outcome.is_done {
             // The draft is done.
             self.status = PoolState::InProgress;
         }
 
-        Ok(())
+        Ok(outcome)
     }
 
-    pub fn undo_draft_player(&mut self, user_id: &str) -> Result<(), AppError> {
+    // The date a lineup change made on `today` takes effect.
+    //
+    // A change made before the season starts has no day of its own to apply to:
+    // no game has been played, so it does not switch anything mid-season, it
+    // redefines the lineup the pool opens with. Landing it on the season start
+    // makes it replace the opening event already recorded there instead of
+    // stacking events on days that will never be scored — and, more to the
+    // point, an event dated before the season start is never the latest one on
+    // or before the opening day, so the change would simply not be applied.
+    pub fn lineup_effective_date(&self, today: &str) -> String {
+        // Dates are ISO (yyyy-MM-dd), so they order lexicographically.
+        if today < self.season_start.as_str() {
+            return self.season_start.clone();
+        }
+        today.to_string()
+    }
+
+    pub fn undo_draft_player(&mut self, user_id: &str) -> Result<UndoOutcome, AppError> {
         // Undo the last draft selection.
         // This call can only be made if the user id is the owner.
         self.has_owner_privileges(user_id)?;
@@ -1213,6 +1240,26 @@ impl fmt::Display for PoolState {
             PoolState::Created => write!(f, "Created"),
         }
     }
+}
+
+// What a single draft pick changed. Returned by the draft calls so the caller
+// can broadcast the delta instead of the whole pool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftOutcome {
+    // The participant the player was drafted for. Not necessarily the caller:
+    // the pool owner can draft on behalf of whoever's turn it is.
+    pub drafter: String,
+    // Exactly what got pushed onto `players_name_drafted`: the player id,
+    // followed by a 0 for each drafter skipped because its roster is full.
+    pub appended_picks: Vec<u32>,
+    pub is_done: bool,
+}
+
+// What an undo reverted, so the caller can broadcast the delta.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UndoOutcome {
+    pub drafter: String,
+    pub player_id: u32,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)] // Copy
@@ -1606,7 +1653,7 @@ impl PoolContext {
         draft_order: &[String], // being used as draft order.
         settings: &PoolSettings,
         has_privileges: bool,
-    ) -> Result<bool, AppError> {
+    ) -> Result<DraftOutcome, AppError> {
         // First, validate that the player selected is not already picked by any of the other poolers.
 
         for (id, roster) in &self.pooler_roster {
@@ -1630,6 +1677,7 @@ impl PoolContext {
 
         self.players.insert(player.id.to_string(), player.clone());
         self.players_name_drafted.push(player.id);
+        let mut appended_picks = vec![player.id];
 
         // Get the maximum number of player a user can draft.
         let mut continue_count = 0;
@@ -1643,9 +1691,14 @@ impl PoolContext {
             let new_next_drafter = self.find_dynasty_next_drafter(draft_order)?;
             if self.get_roster_count(&new_next_drafter)? >= max_player_count as usize {
                 if self.is_draft_done(settings)? {
-                    return Ok(true);
+                    return Ok(DraftOutcome {
+                        drafter: next_drafter,
+                        appended_picks,
+                        is_done: true,
+                    });
                 }
                 self.players_name_drafted.push(0); // Id 0 means the players did not draft because his roster is already full
+                appended_picks.push(0);
 
                 continue_count += 1;
 
@@ -1657,7 +1710,11 @@ impl PoolContext {
             break;
         }
 
-        self.is_draft_done(settings)
+        Ok(DraftOutcome {
+            drafter: next_drafter,
+            appended_picks,
+            is_done: self.is_draft_done(settings)?,
+        })
     }
 
     pub fn find_dynasty_next_drafter(
@@ -1699,7 +1756,7 @@ impl PoolContext {
         draft_order: &[String], // being used as draft order.
         settings: &PoolSettings,
         has_privileges: bool,
-    ) -> Result<bool, AppError> {
+    ) -> Result<DraftOutcome, AppError> {
         // Draft the right player in normal mode.
         // Taking only into account the draft order
 
@@ -1734,17 +1791,22 @@ impl PoolContext {
 
         // Add the drafted player if everything goes right.
         self.add_drafted_player(player, next_drafter, settings)?;
+        let drafter = next_drafter.clone();
 
         self.players.insert(player.id.to_string(), player.clone());
         self.players_name_drafted.push(player.id);
-        self.is_draft_done(settings)
+        Ok(DraftOutcome {
+            drafter,
+            appended_picks: vec![player.id],
+            is_done: self.is_draft_done(settings)?,
+        })
     }
 
     pub fn undo_draft_player(
         &mut self,
         participants: &[String],
         settings: &PoolSettings,
-    ) -> Result<(), AppError> {
+    ) -> Result<UndoOutcome, AppError> {
         // validate there is something to undo.
 
         let latest_pick_id;
@@ -1807,7 +1869,10 @@ impl PoolContext {
 
         self.remove_player_from_roster(latest_pick_id, &latest_drafter)?;
         self.players.remove(&latest_pick_id.to_string()); // Also remove the player from the pool players list.
-        Ok(())
+        Ok(UndoOutcome {
+            drafter: latest_drafter,
+            player_id: latest_pick_id,
+        })
     }
 
     pub fn remove_player_from_roster(

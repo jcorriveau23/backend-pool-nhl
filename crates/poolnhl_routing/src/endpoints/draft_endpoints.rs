@@ -225,6 +225,19 @@ impl DraftRouter {
                                                 let _ = send_task_sender.send(e.to_string()).await;
                                             }
                                         }
+                                        Command::ModifyRoster(modification) => {
+                                            if let Some(user) = &user
+                                                && let Err(e) = draft_service
+                                                    .modify_roster(
+                                                        &current_pool_name,
+                                                        &user.sub,
+                                                        &modification,
+                                                    )
+                                                    .await
+                                            {
+                                                let _ = send_task_sender.send(e.to_string()).await;
+                                            }
+                                        }
                                         Command::JoinRoom {
                                             pool_name: _,
                                             number_poolers: _,

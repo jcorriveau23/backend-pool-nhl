@@ -351,8 +351,9 @@ impl PoolService for MongoPoolService {
 
         // Update fields with the filled spot
 
+        let effective_date = pool.lineup_effective_date(&today());
         if let Some(context) = pool.context.as_mut() {
-            context.record_lineup_change(&req.filled_spot_user_id, &today());
+            context.record_lineup_change(&req.filled_spot_user_id, &effective_date);
         }
 
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
@@ -475,8 +476,9 @@ impl PoolService for MongoPoolService {
         )?;
         // Modify the all the pooler_roster (we could update only the pooler_roster[userId] if necessary)
 
+        let effective_date = pool.lineup_effective_date(&today());
         if let Some(context) = pool.context.as_mut() {
-            context.record_lineup_change(&req.roster_modified_user_id, &today());
+            context.record_lineup_change(&req.roster_modified_user_id, &effective_date);
         }
 
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {

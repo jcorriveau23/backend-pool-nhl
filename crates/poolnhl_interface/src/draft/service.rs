@@ -9,7 +9,7 @@ use crate::users::model::UserEmailJwtPayload;
 use std::net::SocketAddr;
 use tokio::sync::broadcast;
 
-use super::model::RoomUser;
+use super::model::{RoomUser, RosterModification};
 
 #[async_trait]
 pub trait DraftService {
@@ -22,6 +22,12 @@ pub trait DraftService {
     ) -> Result<()>;
     async fn draft_player(&self, pool_name: &str, user_id: &str, player_id: i64) -> Result<()>;
     async fn undo_draft_player(&self, pool_name: &str, user_id: &str) -> Result<()>;
+    async fn modify_roster(
+        &self,
+        pool_name: &str,
+        user_id: &str,
+        modification: &RosterModification,
+    ) -> Result<()>;
     async fn update_pool_settings(
         &self,
         use_id: &str,

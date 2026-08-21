@@ -638,6 +638,59 @@ fn modify_roster_is_free_before_the_season_starts() {
     .unwrap();
 }
 
+// Participants arrange the players they have picked while the draft is still
+// running, so the room sees the lineup they intend to open with.
+#[test]
+fn modify_roster_is_allowed_during_the_draft() {
+    let mut pool = draft_pool();
+    pool.draft_player(OWNER, &player(1, Position::F, None))
+        .unwrap();
+    pool.draft_player(USER_2, &player(2, Position::F, None))
+        .unwrap();
+    pool.draft_player(USER_3, &player(3, Position::F, None))
+        .unwrap();
+    pool.draft_player(USER_3, &player(4, Position::F, None))
+        .unwrap();
+    pool.draft_player(USER_2, &player(5, Position::F, None))
+        .unwrap();
+
+    // user-2 benches the second forward he picked. The roster is still partial,
+    // which is fine: the rules only compare it against itself.
+    pool.modify_roster_at(USER_2, USER_2, &[2], &[], &[], &[5], modification_day())
+        .unwrap();
+
+    let roster = &pool.context.as_ref().unwrap().pooler_roster[USER_2];
+    assert_eq!(roster.chosen_forwards, vec![2]);
+    assert_eq!(roster.chosen_reservists, vec![5]);
+}
+
+#[test]
+fn modify_roster_is_rejected_before_the_draft_starts() {
+    // A pool still in Created has no roster to arrange.
+    let mut pool = Pool::new("draft-pool", OWNER, &small_settings());
+    let result = pool.modify_roster_at(OWNER, OWNER, &[], &[], &[], &[], modification_day());
+
+    assert!(result.is_err());
+}
+
+// A lineup change made before the season starts does not switch anything
+// mid-season, it redefines the lineup the pool opens with. Dating it in the
+// past would leave it behind the opening event, and it would never apply.
+#[test]
+fn a_pre_season_lineup_change_lands_on_the_season_start() {
+    let pool = in_progress_pool();
+
+    assert_eq!(pool.lineup_effective_date("2025-09-01"), pool.season_start);
+}
+
+#[test]
+fn a_lineup_change_during_the_season_keeps_its_own_date() {
+    let mut pool = in_progress_pool();
+    pool.season_start = "2025-09-29".to_string();
+
+    assert_eq!(pool.lineup_effective_date("2025-12-01"), "2025-12-01");
+}
+
 #[test]
 fn modify_roster_validates_the_lineup() {
     let mut pool = in_progress_pool();
@@ -780,39 +833,111 @@ fn draft_player_rejects_an_already_picked_player() {
     assert!(result.unwrap_err().to_string().contains("already picked"));
 }
 
-#[test]
-fn the_draft_completes_once_every_roster_is_full() {
-    let mut pool = draft_pool();
-    // Each of the 5 rounds drafts one position; the last forward round
-    // overflows into the reservist spot.
-    let positions = [
-        Position::F,
-        Position::F,
-        Position::D,
-        Position::G,
-        Position::F,
-    ];
-    let draft_order = pool.draft_order.as_ref().unwrap().clone();
+// The rounds of a full draft under `small_settings`: one position per round,
+// the last forward round overflowing into the reservist spot.
+const DRAFT_ROUNDS: [Position; 5] = [
+    Position::F,
+    Position::F,
+    Position::D,
+    Position::G,
+    Position::F,
+];
 
-    let mut player_id = 0;
-    for (round, position) in positions.iter().enumerate() {
-        let mut drafters: Vec<String> = draft_order.clone();
+// The serpentine order of every pick of a full draft, as (round, drafter).
+fn full_draft_turns(draft_order: &[String]) -> Vec<(usize, String)> {
+    let mut turns = Vec::new();
+    for round in 0..DRAFT_ROUNDS.len() {
+        let mut drafters: Vec<String> = draft_order.to_vec();
         if round % 2 == 1 {
             drafters.reverse();
         }
-        for drafter in drafters {
-            player_id += 1;
-            pool.draft_player(&drafter, &player(player_id, position.clone(), None))
-                .unwrap();
-        }
+        turns.extend(drafters.into_iter().map(|drafter| (round, drafter)));
+    }
+    turns
+}
+
+#[test]
+fn the_draft_completes_once_every_roster_is_full() {
+    let mut pool = draft_pool();
+    let draft_order = pool.draft_order.as_ref().unwrap().clone();
+    let turns = full_draft_turns(&draft_order);
+    let total_picks = turns.len();
+
+    // 3 participants x 5 roster spots.
+    assert_eq!(total_picks, 15);
+
+    for (pick, (round, drafter)) in turns.into_iter().enumerate() {
+        let player_id = pick as u32 + 1;
+        let outcome = pool
+            .draft_player(
+                &drafter,
+                &player(player_id, DRAFT_ROUNDS[round].clone(), None),
+            )
+            .unwrap();
+
+        // The player went to whoever's turn it was, and the pick was recorded.
+        assert_eq!(outcome.drafter, drafter);
+        assert_eq!(outcome.appended_picks, vec![player_id]);
+
+        let is_last_pick = pick + 1 == total_picks;
+        assert_eq!(
+            outcome.is_done,
+            is_last_pick,
+            "pick {} of {total_picks} reported is_done={}",
+            pick + 1,
+            outcome.is_done
+        );
+
+        // The pool must stay in Draft for every pick but the last: flipping
+        // early would open roster moves on incomplete rosters.
+        let expected = if is_last_pick {
+            PoolState::InProgress
+        } else {
+            PoolState::Draft
+        };
+        assert_eq!(
+            pool.status,
+            expected,
+            "wrong status after pick {} of {total_picks}",
+            pick + 1
+        );
     }
 
-    assert_eq!(pool.status, PoolState::InProgress);
     let context = pool.context.as_ref().unwrap();
     for participant in PARTICIPANTS {
         assert_eq!(context.get_roster_count(participant).unwrap(), 5);
         assert_eq!(context.get_reservists_count(participant).unwrap(), 1);
     }
+    // Every pick made it into the draft history, in order.
+    assert_eq!(
+        context.players_name_drafted,
+        (1..=total_picks as u32).collect::<Vec<_>>()
+    );
+}
+
+// Once the draft is over the pool has left the Draft status, so further picks
+// (a late socket message, a double click) must be refused rather than
+// overfilling a roster.
+#[test]
+fn a_pick_after_the_draft_is_complete_is_refused() {
+    let mut pool = draft_pool();
+    let draft_order = pool.draft_order.as_ref().unwrap().clone();
+
+    for (pick, (round, drafter)) in full_draft_turns(&draft_order).into_iter().enumerate() {
+        pool.draft_player(
+            &drafter,
+            &player(pick as u32 + 1, DRAFT_ROUNDS[round].clone(), None),
+        )
+        .unwrap();
+    }
+    assert_eq!(pool.status, PoolState::InProgress);
+
+    let result = pool.draft_player(&draft_order[0], &player(99, Position::F, None));
+
+    assert!(result.is_err(), "a pick after completion must be refused");
+    let context = pool.context.as_ref().unwrap();
+    assert_eq!(context.get_roster_count(&draft_order[0]).unwrap(), 5);
+    assert_eq!(context.players_name_drafted.len(), 15);
 }
 
 #[test]
@@ -832,6 +957,114 @@ fn undo_draft_player_removes_the_last_pick() {
     assert!(!possesses(&pool, USER_2, 2));
     assert!(!context.players.contains_key("2"));
     assert_eq!(context.players_name_drafted, vec![1]);
+}
+
+// The draft broadcasts the outcome instead of the whole pool, so the outcome
+// has to name the participant the pick landed on and everything the pick
+// appended to `players_name_drafted`.
+#[test]
+fn draft_player_reports_the_pick_delta() {
+    let mut pool = draft_pool();
+
+    let outcome = pool
+        .draft_player(OWNER, &player(1, Position::F, None))
+        .unwrap();
+
+    assert_eq!(outcome.drafter, OWNER);
+    assert_eq!(outcome.appended_picks, vec![1]);
+    assert!(!outcome.is_done);
+
+    // The owner drafting for someone else reports that someone else, not the
+    // caller: this is the id the clients apply the roster update to.
+    let outcome = pool
+        .draft_player(OWNER, &player(2, Position::F, None))
+        .unwrap();
+
+    assert_eq!(outcome.drafter, USER_2);
+    assert_eq!(outcome.appended_picks, vec![2]);
+}
+
+#[test]
+fn draft_player_reports_the_last_pick_as_done() {
+    let mut pool = draft_pool();
+    let positions = [
+        Position::F,
+        Position::F,
+        Position::D,
+        Position::G,
+        Position::F,
+    ];
+    let draft_order = pool.draft_order.as_ref().unwrap().clone();
+
+    let mut player_id = 0;
+    let mut last_outcome = None;
+    for (round, position) in positions.iter().enumerate() {
+        let mut drafters: Vec<String> = draft_order.clone();
+        if round % 2 == 1 {
+            drafters.reverse();
+        }
+        for drafter in drafters {
+            player_id += 1;
+            last_outcome = Some(
+                pool.draft_player(&drafter, &player(player_id, position.clone(), None))
+                    .unwrap(),
+            );
+        }
+    }
+
+    assert!(last_outcome.unwrap().is_done);
+    assert_eq!(pool.status, PoolState::InProgress);
+}
+
+#[test]
+fn undo_draft_player_reports_the_reverted_pick() {
+    let mut pool = draft_pool();
+    pool.draft_player(OWNER, &player(1, Position::F, None))
+        .unwrap();
+    pool.draft_player(USER_2, &player(2, Position::F, None))
+        .unwrap();
+
+    let outcome = pool.undo_draft_player(OWNER).unwrap();
+
+    assert_eq!(outcome.drafter, USER_2);
+    assert_eq!(outcome.player_id, 2);
+}
+
+// A dynasty draft pushes a 0 onto `players_name_drafted` for every drafter it
+// skips because its roster is already full. Those zeros are part of the pick
+// delta, otherwise the clients drift out of sync with the draft board.
+#[test]
+fn dynasty_draft_reports_the_skipped_picks() {
+    let mut pool = dynasty_pool();
+    pool.protect_players(OWNER, OWNER, &[101, 111]).unwrap();
+    pool.protect_players(USER_2, USER_2, &[201, 211]).unwrap();
+    pool.protect_players(USER_3, USER_3, &[301, 311]).unwrap();
+    pool.complete_protection(OWNER).unwrap();
+    pool.draft_order = Some(PARTICIPANTS.iter().map(|id| id.to_string()).collect());
+
+    // Fill user-2's roster (max 5) so the draft has to skip his turn.
+    let roster = pool
+        .context
+        .as_mut()
+        .unwrap()
+        .pooler_roster
+        .get_mut(USER_2)
+        .unwrap();
+    roster.chosen_forwards.push(202);
+    roster.chosen_goalies.push(221);
+    roster.chosen_reservists.push(231);
+
+    // The owner drafts first, then user-2's turn is skipped.
+    let outcome = pool
+        .draft_player(OWNER, &player(1, Position::F, None))
+        .unwrap();
+
+    assert_eq!(outcome.drafter, OWNER);
+    assert_eq!(outcome.appended_picks, vec![1, 0]);
+    assert_eq!(
+        pool.context.as_ref().unwrap().players_name_drafted,
+        vec![1, 0]
+    );
 }
 
 // -------------------------------------------------------------------
