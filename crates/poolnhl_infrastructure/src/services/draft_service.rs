@@ -7,7 +7,6 @@ use poolnhl_interface::errors::AppError;
 use poolnhl_interface::players::model::PlayerInfo;
 use poolnhl_interface::users::model::UserEmailJwtPayload;
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -320,18 +319,13 @@ impl DraftService for MongoDraftService {
     async fn authenticate_web_socket(
         &self,
         token: &str,
-        socket_addr: SocketAddr,
+        socket_id: &str,
     ) -> Option<UserEmailJwtPayload> {
         match hanko_token_decode(token, &self.cached_jwks).await {
-            Ok(user) => {
-                match self
-                    .state
-                    .add_socket(&socket_addr.to_string(), user.clone())
-                {
-                    Ok(()) => Some(user),
-                    Err(_) => None,
-                }
-            }
+            Ok(user) => match self.state.add_socket(socket_id, user.clone()) {
+                Ok(()) => Some(user),
+                Err(_) => None,
+            },
             Err(e) => {
                 tracing::warn!(error = %e, "web socket authentication failed");
                 None
@@ -339,8 +333,8 @@ impl DraftService for MongoDraftService {
         }
     }
 
-    async fn unauthenticate_web_socket(&self, socket_addr: SocketAddr) -> Result<()> {
-        self.state.remove_socket(&socket_addr.to_string())
+    async fn unauthenticate_web_socket(&self, socket_id: &str) -> Result<()> {
+        self.state.remove_socket(socket_id)
     }
 
     // JoinRoom command.
@@ -348,48 +342,30 @@ impl DraftService for MongoDraftService {
         &self,
         pool_name: &str,
         number_poolers: u8,
-        socket_addr: SocketAddr,
+        socket_id: &str,
     ) -> Result<broadcast::Receiver<String>> {
         self.state
-            .join_room(pool_name, number_poolers, &socket_addr.to_string())
+            .join_room(pool_name, number_poolers, socket_id)
             .await
     }
 
     // LeaveRoom command.
-    async fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr) -> Result<()> {
-        self.state
-            .leave_room(pool_name, &socket_addr.to_string())
-            .await
+    async fn leave_room(&self, pool_name: &str, socket_id: &str) -> Result<()> {
+        self.state.leave_room(pool_name, socket_id).await
     }
 
     // OnReady command. This command can only be made when the pool is into CREATED status.
-    async fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr) -> Result<()> {
-        self.state
-            .on_ready(pool_name, &socket_addr.to_string())
-            .await
+    async fn on_ready(&self, pool_name: &str, socket_id: &str) -> Result<()> {
+        self.state.on_ready(pool_name, socket_id).await
     }
 
     // AddUser command. This command can only be made when the pool is into CREATED status.
-    async fn add_user(
-        &self,
-        pool_name: &str,
-        user_name: &str,
-        socket_addr: SocketAddr,
-    ) -> Result<()> {
-        self.state
-            .add_user(pool_name, user_name, &socket_addr.to_string())
-            .await
+    async fn add_user(&self, pool_name: &str, user_name: &str, socket_id: &str) -> Result<()> {
+        self.state.add_user(pool_name, user_name, socket_id).await
     }
 
     // RemoveUser command. This command can only be made when the pool is into CREATED status.
-    async fn remove_user(
-        &self,
-        pool_name: &str,
-        user_id: &str,
-        socket_addr: SocketAddr,
-    ) -> Result<()> {
-        self.state
-            .remove_user(pool_name, user_id, &socket_addr.to_string())
-            .await
+    async fn remove_user(&self, pool_name: &str, user_id: &str, socket_id: &str) -> Result<()> {
+        self.state.remove_user(pool_name, user_id, socket_id).await
     }
 }
