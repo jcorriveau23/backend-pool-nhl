@@ -15,8 +15,27 @@ use poolnhl_interface::draft::service::DraftServiceHandle;
 use poolnhl_interface::errors::{AppError, Result};
 use poolnhl_interface::users::model::UserEmailJwtPayload;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use std::{collections::HashMap, net::SocketAddr};
 use tokio::sync::{broadcast, mpsc};
+use uuid::Uuid;
+
+// A socket that connects and never sends JoinRoom would otherwise sit there
+// indefinitely, holding a task without ever having authenticated.
+const JOIN_ROOM_TIMEOUT: Duration = Duration::from_secs(10);
+
+// Keepalive period. Without pings, a half-open connection (mobile handover,
+// NAT timeout, laptop lid) is indistinguishable from an idle one: `recv()`
+// simply never returns, so `leave_room` never runs and the member stays in the
+// room forever — the room heartbeat keeps re-arming its redis TTL because this
+// instance still believes it owns a live socket for it.
+const PING_PERIOD: Duration = Duration::from_secs(20);
+
+// How long the closing frame is given to reach the client before the writer is
+// torn down with the socket.
+const CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct DraftRouter;
 
@@ -48,12 +67,21 @@ impl DraftRouter {
         ConnectInfo(addr): ConnectInfo<SocketAddr>,
         State(draft_service): State<DraftServiceHandle>,
     ) -> impl IntoResponse {
+        // One id per connection. Not derived from the peer address: see the
+        // note on the DraftService room commands.
+        let socket_id = Uuid::new_v4().to_string();
+
         if jwt != "unauthenticated" {
-            let user = draft_service.authenticate_web_socket(&jwt, addr).await;
-            return ws
-                .on_upgrade(move |socket| Self::handle_socket(socket, user, addr, draft_service));
+            let user = draft_service
+                .authenticate_web_socket(&jwt, &socket_id)
+                .await;
+            return ws.on_upgrade(move |socket| {
+                Self::handle_socket(socket, user, socket_id, addr, draft_service)
+            });
         }
-        ws.on_upgrade(move |socket| Self::handle_socket(socket, None, addr, draft_service))
+        ws.on_upgrade(move |socket| {
+            Self::handle_socket(socket, None, socket_id, addr, draft_service)
+        })
     }
 
     // The initial socket state.
@@ -61,7 +89,7 @@ impl DraftRouter {
     // before leaving the state. It returns the the receiver and the room name.
     async fn waiting_join_room_command(
         socket: &mut WebSocket,
-        addr: &SocketAddr,
+        socket_id: &str,
         draft_service: &DraftServiceHandle,
     ) -> Result<(broadcast::Receiver<String>, String)> {
         while let Some(Ok(msg)) = socket.recv().await {
@@ -75,7 +103,7 @@ impl DraftRouter {
                         } => {
                             // join the requested room.
                             let rx = draft_service
-                                .join_room(&pool_name, number_poolers, *addr)
+                                .join_room(&pool_name, number_poolers, socket_id)
                                 .await?;
                             tracing::debug!(%pool_name, "draft room joined");
 
@@ -97,6 +125,7 @@ impl DraftRouter {
     async fn handle_socket(
         mut socket: WebSocket,
         user: Option<UserEmailJwtPayload>,
+        socket_id: String,
         addr: SocketAddr,
         draft_service: DraftServiceHandle,
     ) {
@@ -104,39 +133,63 @@ impl DraftRouter {
         // before leaving the initial socket state.
         let mut is_authenticated_users = false;
         if let Some(u) = &user {
-            tracing::debug!(user = %u.sub, "authenticated socket connecting");
+            tracing::debug!(user = %u.sub, %socket_id, %addr, "authenticated socket connecting");
             is_authenticated_users = true;
         } else {
-            tracing::debug!("unauthenticated socket connecting");
+            tracing::debug!(%socket_id, %addr, "unauthenticated socket connecting");
         }
 
-        match DraftRouter::waiting_join_room_command(&mut socket, &addr, &draft_service).await {
+        // Joining is bounded: a socket does not get to stall in the initial
+        // state and keep the task alive for free.
+        let joined = tokio::time::timeout(
+            JOIN_ROOM_TIMEOUT,
+            Self::waiting_join_room_command(&mut socket, &socket_id, &draft_service),
+        )
+        .await;
+
+        match joined {
+            Err(_elapsed) => {
+                tracing::debug!(%socket_id, "draft socket closed: no JoinRoom before the timeout");
+                let _ = socket.send(Message::Close(None)).await;
+            }
             // The socket never joined a room; nothing to clean up, just close it.
-            Err(e) => tracing::debug!(error = %e, "draft socket closed before joining a room"),
-            Ok((mut rx, current_pool_name)) => {
+            Ok(Err(e)) => {
+                tracing::debug!(error = %e, %socket_id, "draft socket closed before joining a room")
+            }
+            Ok(Ok((mut rx, current_pool_name))) => {
                 // Actual websocket statemachine (one will be spawned per connection)
                 let (mut sender, mut receiver) = socket.split();
 
                 // create an mpsc so we can send messages to the socket from multiple threads
-                let (agg_sender, mut agg_receiver) = mpsc::channel::<String>(100);
+                let (agg_sender, mut agg_receiver) = mpsc::channel::<Message>(100);
 
                 // spawn a task that forwards messages from the mpsc to the sender
                 // This is a way to share the sender between 2 different threads.
-                tokio::spawn(async move {
+                let mut write_task = tokio::spawn(async move {
                     while let Some(message) = agg_receiver.recv().await {
-                        if sender.send(message.into()).await.is_err() {
+                        if sender.send(message).await.is_err() {
                             break;
                         }
                     }
                 });
+
+                // Set by the read task on every frame the client sends (pongs
+                // included), cleared by the keepalive task on every tick. Two
+                // consecutive silent periods mean the peer is gone.
+                let alive = Arc::new(AtomicBool::new(true));
 
                 // Spawn the socket to handle commands received from the socket user.
                 let mut send_messages = {
                     let send_task_sender = agg_sender.clone();
                     let current_pool_name = current_pool_name.clone();
                     let draft_service = draft_service.clone();
+                    let socket_id = socket_id.clone();
+                    let alive = alive.clone();
                     tokio::spawn(async move {
                         while let Some(Ok(msg)) = receiver.next().await {
+                            // Any frame at all proves the peer is still there.
+                            alive.store(true, Ordering::Relaxed);
+
                             // Handle the message received.
                             if let Message::Text(command) = msg {
                                 tracing::debug!(%command, "draft socket command received");
@@ -158,33 +211,48 @@ impl DraftRouter {
                                                     )
                                                     .await
                                                 {
-                                                    let _ =
-                                                        send_task_sender.send(e.to_string()).await;
+                                                    let _ = send_task_sender
+                                                        .send(Message::Text(e.to_string()))
+                                                        .await;
                                                 }
                                             }
                                         }
                                         Command::OnReady => {
                                             if let Err(e) = draft_service
-                                                .on_ready(&current_pool_name, addr)
+                                                .on_ready(&current_pool_name, &socket_id)
                                                 .await
                                             {
-                                                let _ = send_task_sender.send(e.to_string()).await;
+                                                let _ = send_task_sender
+                                                    .send(Message::Text(e.to_string()))
+                                                    .await;
                                             }
                                         }
                                         Command::AddUser { user_name } => {
                                             if let Err(e) = draft_service
-                                                .add_user(&current_pool_name, &user_name, addr)
+                                                .add_user(
+                                                    &current_pool_name,
+                                                    &user_name,
+                                                    &socket_id,
+                                                )
                                                 .await
                                             {
-                                                let _ = send_task_sender.send(e.to_string()).await;
+                                                let _ = send_task_sender
+                                                    .send(Message::Text(e.to_string()))
+                                                    .await;
                                             }
                                         }
                                         Command::RemoveUser { user_id } => {
                                             if let Err(e) = draft_service
-                                                .remove_user(&current_pool_name, &user_id, addr)
+                                                .remove_user(
+                                                    &current_pool_name,
+                                                    &user_id,
+                                                    &socket_id,
+                                                )
                                                 .await
                                             {
-                                                let _ = send_task_sender.send(e.to_string()).await;
+                                                let _ = send_task_sender
+                                                    .send(Message::Text(e.to_string()))
+                                                    .await;
                                             }
                                         }
                                         Command::StartDraft { draft_order } => {
@@ -197,7 +265,9 @@ impl DraftRouter {
                                                     )
                                                     .await
                                             {
-                                                let _ = send_task_sender.send(e.to_string()).await;
+                                                let _ = send_task_sender
+                                                    .send(Message::Text(e.to_string()))
+                                                    .await;
                                             }
                                         }
                                         Command::DraftPlayer { player_id } => {
@@ -210,7 +280,9 @@ impl DraftRouter {
                                                     )
                                                     .await
                                             {
-                                                let _ = send_task_sender.send(e.to_string()).await;
+                                                let _ = send_task_sender
+                                                    .send(Message::Text(e.to_string()))
+                                                    .await;
                                             }
                                         }
                                         Command::UndoDraftPlayer => {
@@ -222,7 +294,9 @@ impl DraftRouter {
                                                     )
                                                     .await
                                             {
-                                                let _ = send_task_sender.send(e.to_string()).await;
+                                                let _ = send_task_sender
+                                                    .send(Message::Text(e.to_string()))
+                                                    .await;
                                             }
                                         }
                                         Command::ModifyRoster(modification) => {
@@ -235,7 +309,9 @@ impl DraftRouter {
                                                     )
                                                     .await
                                             {
-                                                let _ = send_task_sender.send(e.to_string()).await;
+                                                let _ = send_task_sender
+                                                    .send(Message::Text(e.to_string()))
+                                                    .await;
                                             }
                                         }
                                         Command::JoinRoom {
@@ -245,10 +321,10 @@ impl DraftRouter {
                                     }
                                 } else {
                                     let _ = send_task_sender
-                                        .send(
+                                        .send(Message::Text(
                                             "could not deserialize the command received."
                                                 .to_string(),
-                                        )
+                                        ))
                                         .await;
                                 }
                             }
@@ -260,10 +336,54 @@ impl DraftRouter {
                 // When a socket in the room send a messages that needs to be communicated to every one in the room.
                 let mut recv_messages = {
                     let recv_sender = agg_sender.clone();
+                    let socket_id = socket_id.clone();
                     tokio::spawn(async move {
-                        while let Ok(msg) = rx.recv().await {
-                            if recv_sender.send(msg).await.is_err() {
-                                break;
+                        loop {
+                            match rx.recv().await {
+                                Ok(msg) => {
+                                    if recv_sender.send(Message::Text(msg)).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                // This socket fell behind the room's fan-out
+                                // buffer. Dropping it from the room over that
+                                // would be worse than the gap itself: the draft
+                                // deltas carry a pick_count, so the next one to
+                                // arrive tells the client it missed updates and
+                                // it refetches the pool on its own.
+                                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                    tracing::warn!(
+                                        %socket_id,
+                                        skipped,
+                                        "draft socket lagged behind the room broadcast"
+                                    );
+                                }
+                                Err(broadcast::error::RecvError::Closed) => break,
+                            }
+                        }
+                    })
+                };
+
+                // Ping the client on a fixed period and close the socket when a
+                // whole period goes by without a single frame coming back.
+                let mut keepalive = {
+                    let ping_sender = agg_sender.clone();
+                    let socket_id = socket_id.clone();
+                    tokio::spawn(async move {
+                        let mut interval = tokio::time::interval(PING_PERIOD);
+                        // The first tick of an interval completes immediately.
+                        interval.tick().await;
+                        loop {
+                            interval.tick().await;
+                            if !alive.swap(false, Ordering::Relaxed) {
+                                tracing::debug!(
+                                    %socket_id,
+                                    "draft socket closed: silent for a whole keepalive period"
+                                );
+                                return;
+                            }
+                            if ping_sender.send(Message::Ping(Vec::new())).await.is_err() {
+                                return;
                             }
                         }
                     })
@@ -271,16 +391,37 @@ impl DraftRouter {
 
                 // Tome make sure that if the receiver/sender thread complete, the other one get cleared.
                 tokio::select! {
-                    _ = (&mut send_messages) => recv_messages.abort(),
-                    _ = (&mut recv_messages) => send_messages.abort(),
+                    _ = (&mut send_messages) => {
+                        recv_messages.abort();
+                        keepalive.abort();
+                    }
+                    _ = (&mut recv_messages) => {
+                        send_messages.abort();
+                        keepalive.abort();
+                    }
+                    _ = (&mut keepalive) => {
+                        send_messages.abort();
+                        recv_messages.abort();
+                    }
                 };
+
+                // Close deliberately, so the client can tell the end of a
+                // session from a connection that just dropped. The writer stops
+                // on its own once every sender is gone; give the frame a bounded
+                // moment to get out, then tear the writer down regardless.
+                let _ = agg_sender.send(Message::Close(None)).await;
+                drop(agg_sender);
+                let _ = tokio::time::timeout(CLOSE_FLUSH_TIMEOUT, &mut write_task).await;
+                write_task.abort();
 
                 // Make sure that if we lose the socket communication we force the user to leave the room and unauthenticate.
                 // leave_room is called for every socket (authenticated or not) so the
                 // instance can release its local room bookkeeping.
-                let _ = draft_service.leave_room(&current_pool_name, addr).await;
+                let _ = draft_service
+                    .leave_room(&current_pool_name, &socket_id)
+                    .await;
                 if is_authenticated_users {
-                    let _ = draft_service.unauthenticate_web_socket(addr).await;
+                    let _ = draft_service.unauthenticate_web_socket(&socket_id).await;
                 }
             }
         }

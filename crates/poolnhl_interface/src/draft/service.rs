@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use crate::errors::Result;
 use crate::pool::model::PoolSettings;
 use crate::users::model::UserEmailJwtPayload;
-use std::net::SocketAddr;
 use tokio::sync::broadcast;
 
 use super::model::{RoomUser, RosterModification};
@@ -40,30 +39,20 @@ pub trait DraftService {
         &self,
         pool_name: &str,
         number_poolers: u8,
-        socket_addr: SocketAddr,
+        socket_id: &str,
     ) -> Result<broadcast::Receiver<String>>;
-    async fn leave_room(&self, pool_name: &str, socket_addr: SocketAddr) -> Result<()>;
-    async fn on_ready(&self, pool_name: &str, socket_addr: SocketAddr) -> Result<()>;
-    async fn add_user(
-        &self,
-        pool_name: &str,
-        user_name: &str,
-        socket_addr: SocketAddr,
-    ) -> Result<()>;
-    async fn remove_user(
-        &self,
-        pool_name: &str,
-        user_id: &str,
-        socket_addr: SocketAddr,
-    ) -> Result<()>;
+    async fn leave_room(&self, pool_name: &str, socket_id: &str) -> Result<()>;
+    async fn on_ready(&self, pool_name: &str, socket_id: &str) -> Result<()>;
+    async fn add_user(&self, pool_name: &str, user_name: &str, socket_id: &str) -> Result<()>;
+    async fn remove_user(&self, pool_name: &str, user_id: &str, socket_id: &str) -> Result<()>;
 
     // Socket jwt token authentications (called only on socket connection)
     async fn authenticate_web_socket(
         &self,
         token: &str,
-        socket_addr: SocketAddr,
+        socket_id: &str,
     ) -> Option<UserEmailJwtPayload>;
-    async fn unauthenticate_web_socket(&self, socket_addr: SocketAddr) -> Result<()>;
+    async fn unauthenticate_web_socket(&self, socket_id: &str) -> Result<()>;
 
     // end point that list the active rooms.
     async fn list_rooms(&self) -> Result<Vec<String>>;
