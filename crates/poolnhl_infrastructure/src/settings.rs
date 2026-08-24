@@ -60,7 +60,8 @@ impl Settings {
         };
 
         let builder = Config::builder()
-            .add_source(File::with_name(&format!("config/{config}")))
+            // Optional, because production supplies every value through APP_*
+            .add_source(File::with_name(&format!("config/{config}")).required(false))
             // Env vars override file values, e.g. APP_DATABASE__URI, APP_AUTH__JWKS_URL.
             // Lets secrets be injected at deploy time instead of living in the config file.
             .add_source(

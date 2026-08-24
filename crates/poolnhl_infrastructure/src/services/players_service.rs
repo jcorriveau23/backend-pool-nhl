@@ -4,6 +4,7 @@ use futures::TryStreamExt;
 use mongodb::Collection;
 use mongodb::bson::doc;
 use mongodb::options::FindOptions;
+use mongodb::{IndexModel, options::IndexOptions};
 use poolnhl_interface::errors::AppError;
 
 use poolnhl_interface::errors::Result;
@@ -88,6 +89,28 @@ pub async fn get_player_with_id(
 
 #[async_trait]
 impl PlayersService for MongoPlayersService {
+    async fn init_indexes(&self) -> Result<()> {
+        let sort_indexes = [
+            doc! { "salary_cap": -1, "_id": 1 },
+            doc! { "points": -1, "_id": 1 },
+            doc! { "position": 1, "salary_cap": -1, "_id": 1 },
+            doc! { "position": 1, "points": -1, "_id": 1 },
+        ];
+
+        for keys in sort_indexes {
+            let index_model = IndexModel::builder()
+                .keys(keys)
+                .options(IndexOptions::builder().build())
+                .build();
+
+            self.collection
+                .create_index(index_model, None)
+                .await
+                .map_err(mongo_err)?;
+        }
+        Ok(())
+    }
+
     async fn get_players(&self, params: GetPlayerQuery) -> Result<Vec<PlayerInfo>> {
         let mut filter = doc! {};
         if let Some(active) = params.active {
