@@ -10,10 +10,21 @@ pub struct Server {
     #[serde(default = "default_host")]
     pub host: String,
     pub port: u16,
+
+    // Prometheus scrape port, on its own listener so `/metrics` can never be
+    // reached through the routes Caddy proxies. Defaulted rather than required
+    // so no config file has to change to pick this up — override with
+    // APP_SERVER__METRICS_PORT if 9000 is ever taken.
+    #[serde(default = "default_metrics_port")]
+    pub metrics_port: u16,
 }
 
 fn default_host() -> String {
     "0.0.0.0".to_string()
+}
+
+fn default_metrics_port() -> u16 {
+    9000
 }
 
 #[derive(Debug, Clone, Deserialize)]

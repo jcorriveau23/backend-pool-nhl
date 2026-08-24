@@ -15,9 +15,11 @@ use poolnhl_interface::draft::service::DraftServiceHandle;
 use poolnhl_interface::errors::{AppError, Result};
 use poolnhl_interface::users::model::UserEmailJwtPayload;
 
+use crate::metrics as app_metrics;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{collections::HashMap, net::SocketAddr};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
@@ -36,6 +38,85 @@ const PING_PERIOD: Duration = Duration::from_secs(20);
 // How long the closing frame is given to reach the client before the writer is
 // torn down with the socket.
 const CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
+
+// Stable label for a command. A &'static str rather than the serde tag so the
+// label set is closed by construction — an unbounded `command` label would let
+// a client mint new series at will.
+fn command_name(command: &Command) -> &'static str {
+    match command {
+        Command::JoinRoom { .. } => "join_room",
+        Command::LeaveRoom => "leave_room",
+        Command::OnPoolSettingChanges { .. } => "on_pool_setting_changes",
+        Command::OnReady => "on_ready",
+        Command::AddUser { .. } => "add_user",
+        Command::RemoveUser { .. } => "remove_user",
+        Command::StartDraft { .. } => "start_draft",
+        Command::DraftPlayer { .. } => "draft_player",
+        Command::UndoDraftPlayer => "undo_draft_player",
+        Command::ModifyRoster(_) => "modify_roster",
+    }
+}
+
+// Records a command's duration and outcome when it goes out of scope.
+//
+// Drop rather than an explicit call at the end because `Command::LeaveRoom`
+// returns straight out of the read task — an explicit record would be skipped
+// on exactly the path worth measuring.
+struct CommandTimer {
+    command: &'static str,
+    started: Instant,
+    outcome: &'static str,
+}
+
+impl CommandTimer {
+    fn start(command: &'static str) -> Self {
+        Self {
+            command,
+            started: Instant::now(),
+            outcome: "ok",
+        }
+    }
+
+    fn failed(&mut self) {
+        self.outcome = "error";
+    }
+}
+
+impl Drop for CommandTimer {
+    fn drop(&mut self) {
+        let labels = [("command", self.command), ("outcome", self.outcome)];
+        metrics::counter!(app_metrics::COMMAND_TOTAL, &labels).increment(1);
+        metrics::histogram!(app_metrics::COMMAND_DURATION, &[("command", self.command)])
+            .record(self.started.elapsed().as_secs_f64());
+    }
+}
+
+// Keeps the open-socket gauge honest. The socket task has several exit paths
+// (join timeout, client close, keepalive failure) and can also be aborted, so
+// decrementing by hand at each one is a leak waiting to happen: a gauge that
+// only ever goes up is worse than no gauge, because it reads as load.
+struct ConnectionGuard {
+    reason: &'static str,
+}
+
+impl ConnectionGuard {
+    fn new() -> Self {
+        metrics::counter!(app_metrics::WS_CONNECTED_TOTAL).increment(1);
+        metrics::gauge!(app_metrics::WS_CONNECTIONS).increment(1.0);
+        Self { reason: "unknown" }
+    }
+
+    fn closed_because(&mut self, reason: &'static str) {
+        self.reason = reason;
+    }
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        metrics::gauge!(app_metrics::WS_CONNECTIONS).decrement(1.0);
+        metrics::counter!(app_metrics::WS_CLOSED_TOTAL, &[("reason", self.reason)]).increment(1);
+    }
+}
 
 pub struct DraftRouter;
 
@@ -129,6 +210,10 @@ impl DraftRouter {
         addr: SocketAddr,
         draft_service: DraftServiceHandle,
     ) {
+        // Counts the socket as open for as long as this function runs; the
+        // Drop impl is what releases it on every exit path.
+        let mut connection = ConnectionGuard::new();
+
         // At the beginning there is a state where the user needs to join a room
         // before leaving the initial socket state.
         let mut is_authenticated_users = false;
@@ -149,11 +234,13 @@ impl DraftRouter {
 
         match joined {
             Err(_elapsed) => {
+                connection.closed_because("no_join_timeout");
                 tracing::debug!(%socket_id, "draft socket closed: no JoinRoom before the timeout");
                 let _ = socket.send(Message::Close(None)).await;
             }
             // The socket never joined a room; nothing to clean up, just close it.
             Ok(Err(e)) => {
+                connection.closed_because("join_failed");
                 tracing::debug!(error = %e, %socket_id, "draft socket closed before joining a room")
             }
             Ok(Ok((mut rx, current_pool_name))) => {
@@ -194,6 +281,9 @@ impl DraftRouter {
                             if let Message::Text(command) = msg {
                                 tracing::debug!(%command, "draft socket command received");
                                 if let Ok(command) = serde_json::from_str::<Command>(&command) {
+                                    // Dropped at the end of this block, so the early `return` on
+                                    // LeaveRoom is still recorded.
+                                    let mut timer = CommandTimer::start(command_name(&command));
                                     match command {
                                         Command::LeaveRoom => {
                                             // The socket needs to be killed when the user leave a room.
@@ -211,6 +301,7 @@ impl DraftRouter {
                                                     )
                                                     .await
                                                 {
+                                                    timer.failed();
                                                     let _ = send_task_sender
                                                         .send(Message::Text(e.to_string()))
                                                         .await;
@@ -222,6 +313,7 @@ impl DraftRouter {
                                                 .on_ready(&current_pool_name, &socket_id)
                                                 .await
                                             {
+                                                timer.failed();
                                                 let _ = send_task_sender
                                                     .send(Message::Text(e.to_string()))
                                                     .await;
@@ -236,6 +328,7 @@ impl DraftRouter {
                                                 )
                                                 .await
                                             {
+                                                timer.failed();
                                                 let _ = send_task_sender
                                                     .send(Message::Text(e.to_string()))
                                                     .await;
@@ -250,6 +343,7 @@ impl DraftRouter {
                                                 )
                                                 .await
                                             {
+                                                timer.failed();
                                                 let _ = send_task_sender
                                                     .send(Message::Text(e.to_string()))
                                                     .await;
@@ -265,6 +359,7 @@ impl DraftRouter {
                                                     )
                                                     .await
                                             {
+                                                timer.failed();
                                                 let _ = send_task_sender
                                                     .send(Message::Text(e.to_string()))
                                                     .await;
@@ -280,6 +375,7 @@ impl DraftRouter {
                                                     )
                                                     .await
                                             {
+                                                timer.failed();
                                                 let _ = send_task_sender
                                                     .send(Message::Text(e.to_string()))
                                                     .await;
@@ -294,6 +390,7 @@ impl DraftRouter {
                                                     )
                                                     .await
                                             {
+                                                timer.failed();
                                                 let _ = send_task_sender
                                                     .send(Message::Text(e.to_string()))
                                                     .await;
@@ -309,6 +406,7 @@ impl DraftRouter {
                                                     )
                                                     .await
                                             {
+                                                timer.failed();
                                                 let _ = send_task_sender
                                                     .send(Message::Text(e.to_string()))
                                                     .await;
@@ -341,7 +439,17 @@ impl DraftRouter {
                         loop {
                             match rx.recv().await {
                                 Ok(msg) => {
-                                    if recv_sender.send(Message::Text(msg)).await.is_err() {
+                                    // The socket's outbound queue is bounded at
+                                    // 100 and this send blocks rather than
+                                    // dropping, so a client that cannot drain as
+                                    // fast as the room produces stalls *here*,
+                                    // silently. Timing the send is what makes
+                                    // that visible before it turns into a lag.
+                                    let send_started = Instant::now();
+                                    let send_result = recv_sender.send(Message::Text(msg)).await;
+                                    metrics::histogram!(app_metrics::WS_SEND_BLOCKED_SECONDS)
+                                        .record(send_started.elapsed().as_secs_f64());
+                                    if send_result.is_err() {
                                         break;
                                     }
                                 }
@@ -352,6 +460,9 @@ impl DraftRouter {
                                 // arrive tells the client it missed updates and
                                 // it refetches the pool on its own.
                                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                    metrics::counter!(app_metrics::WS_LAGGED_TOTAL).increment(1);
+                                    metrics::counter!(app_metrics::WS_LAGGED_MESSAGES_TOTAL)
+                                        .increment(skipped);
                                     tracing::warn!(
                                         %socket_id,
                                         skipped,
@@ -391,15 +502,23 @@ impl DraftRouter {
 
                 // Tome make sure that if the receiver/sender thread complete, the other one get cleared.
                 tokio::select! {
+                    // The read task ended: the client closed, or sent LeaveRoom.
                     _ = (&mut send_messages) => {
+                        connection.closed_because("client");
                         recv_messages.abort();
                         keepalive.abort();
                     }
+                    // The room's broadcast channel closed under us.
                     _ = (&mut recv_messages) => {
+                        connection.closed_because("broadcast_closed");
                         send_messages.abort();
                         keepalive.abort();
                     }
+                    // A whole keepalive period with no frame at all — the peer
+                    // is gone without having closed. This is the half-open case
+                    // that used to leave members stuck in the room.
                     _ = (&mut keepalive) => {
+                        connection.closed_because("keepalive_timeout");
                         send_messages.abort();
                         recv_messages.abort();
                     }
