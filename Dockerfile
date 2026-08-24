@@ -43,9 +43,15 @@ COPY --from=builder /app/target/release/poolnhl_app ./server
 USER appuser
 EXPOSE 8000
 
-# config/release.json is read from the working directory at startup and is
-# NOT baked into the image. Mount the non-secret defaults in at runtime:
+# No config file is baked into the image, and none is required: the file source
+# in settings.rs is optional, so every value can arrive as an APP_* env var.
+# That is how production runs it — see docker-compose.yml in deploy-pool-nhl.
+#   docker run \
+#     -e APP_ENVIRONMENT=production -e APP_SERVER__PORT=8000 \
+#     -e APP_DATABASE__URI=mongodb://... -e APP_DATABASE__NAME=hockeypool \
+#     -e APP_REDIS__URI=redis://... \
+#     -e APP_AUTH__JWKS_URL=... -e APP_AUTH__TOKEN_AUDIENCE=slapshot.xyz \
+#     -e APP_LOGGER__LEVEL=info -p 8000:8000 <image>
+# Mounting config/ still works and still wins for anything the env does not set:
 #   docker run -v $(pwd)/config:/app/config:ro -p 8000:8000 <image>
-# Override/inject secrets per-deploy via env vars instead of the file, e.g.:
-#   docker run -e APP_DATABASE__URI=mongodb+srv://... <image>
 CMD ["./server"]

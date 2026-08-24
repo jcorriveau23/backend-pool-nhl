@@ -154,6 +154,18 @@ impl PoolService for MongoPoolService {
             .create_index(index_model, None)
             .await
             .map_err(mongo_err)?;
+
+        // Not unique: many pools share a season. This covers the season filter
+        // on the pool listing.
+        let season_index = IndexModel::builder()
+            .keys(doc! { "season": 1 })
+            .options(IndexOptions::builder().build())
+            .build();
+
+        self.collection
+            .create_index(season_index, None)
+            .await
+            .map_err(mongo_err)?;
         Ok(())
     }
     async fn get_pool_by_name(&self, name: &str) -> Result<Pool> {
