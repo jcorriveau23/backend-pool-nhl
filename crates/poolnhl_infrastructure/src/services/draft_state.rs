@@ -98,6 +98,9 @@ impl LocalRooms {
         if let Some(member_id) = owned_member_id {
             room.owned_member_ids.insert(member_id.to_string());
         }
+        if is_new {
+            metrics::gauge!(poolnhl_interface::metrics::ROOMS_ACTIVE).increment(1.0);
+        }
         Ok((room.tx.subscribe(), is_new))
     }
 
@@ -112,6 +115,7 @@ impl LocalRooms {
             }
             if room.socket_count == 0 {
                 rooms.remove(pool_name);
+                metrics::gauge!(poolnhl_interface::metrics::ROOMS_ACTIVE).decrement(1.0);
                 return Ok(true);
             }
         }
