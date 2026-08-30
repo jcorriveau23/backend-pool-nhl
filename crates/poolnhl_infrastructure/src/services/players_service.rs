@@ -28,7 +28,7 @@ const MAX_NAME_SEARCH_LEN: usize = 64;
 
 // Fields a client may sort on. Anything else is rejected rather than passed
 // through to mongo as a sort key.
-const SORTABLE_FIELDS: [&str; 10] = [
+const SORTABLE_FIELDS: [&str; 12] = [
     "salary_cap",
     "name",
     "age",
@@ -39,6 +39,8 @@ const SORTABLE_FIELDS: [&str; 10] = [
     "points_per_game",
     "save_percentage",
     "goal_against_average",
+    "wins",
+    "ot",
 ];
 
 fn sortable_field(field: &str) -> Result<&'static str> {
@@ -209,6 +211,10 @@ mod tests {
     #[test]
     fn only_allow_listed_sort_fields_are_accepted() {
         assert_eq!(sortable_field("points").unwrap(), "points");
+        // The goalie table defaults to `wins` and also sorts on `ot`, so both
+        // have to be reachable or the whole goalie view answers 400.
+        assert_eq!(sortable_field("wins").unwrap(), "wins");
+        assert_eq!(sortable_field("ot").unwrap(), "ot");
         assert!(matches!(
             sortable_field("$where"),
             Err(AppError::CustomError { .. })
