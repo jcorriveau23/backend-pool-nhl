@@ -26,6 +26,9 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
+
+ARG APP_VERSION
+ENV APP_VERSION=${APP_VERSION}
 RUN cargo build --release --workspace
 
 # ---- Runtime stage ----

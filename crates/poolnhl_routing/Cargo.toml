@@ -18,3 +18,9 @@ uuid = { version = "1.0", features = ["v4"] }
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 metrics-util = "0.20.4"
+
+[dev-dependencies]
+# Both already in the lock file via axum; declared here only so the route can
+# be driven directly in-process, without binding a port.
+tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"
