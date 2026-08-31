@@ -19,6 +19,10 @@ pub const END_SEASON_DATE: &str = "2027-04-10";
 pub const POOL_CREATION_SEASON: u32 = 20262027;
 pub const TRADE_DEADLINE_DATE: &str = "2027-03-01";
 
+// Pooler names are displayed in every ranking, table and chart of the pool, a
+// name longer than this would be cut with an ellipsis everywhere it appears.
+pub const MAX_POOLER_NAME_LENGTH: usize = 32;
+
 /// Season date information exposed to the front end.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SeasonInfo {
@@ -1013,6 +1017,66 @@ impl Pool {
                 msg: "These settings cannot be updated once the pool has started.".to_string(),
             }); // Need to make this robust, potentially need another pool status
         }
+
+        Ok(())
+    }
+
+    /// Rename one of the poolers of the pool.
+    ///
+    /// Only the display name carried by the participant changes: everything
+    /// else in the pool (rosters, trades, draft order, scores) is keyed by the
+    /// pooler's id, which stays untouched. This is what lets the owner replace
+    /// the email address a pooler registered with by the name everybody in the
+    /// pool actually calls them.
+    ///
+    /// Renaming is the owner's alone, and only once the pool has participants:
+    /// before the draft they still live in the draft room, not in the pool.
+    pub fn update_pooler_name(
+        &mut self,
+        user_id: &str,
+        pooler_user_id: &str,
+        new_name: &str,
+    ) -> Result<(), AppError> {
+        self.has_owner_privileges(user_id)?;
+
+        let new_name = new_name.trim();
+
+        if new_name.is_empty() {
+            return Err(AppError::CustomError {
+                msg: "A pooler name cannot be empty.".to_string(),
+            });
+        }
+
+        if new_name.chars().count() > MAX_POOLER_NAME_LENGTH {
+            return Err(AppError::CustomError {
+                msg: format!(
+                    "A pooler name cannot be longer than {MAX_POOLER_NAME_LENGTH} characters."
+                ),
+            });
+        }
+
+        // The front end tells poolers apart by name in its rankings and in the
+        // shareable `selectedParticipant` link, so two poolers sharing one name
+        // would make the pool ambiguous to read.
+        if self
+            .participants
+            .iter()
+            .any(|user| user.id != pooler_user_id && user.name == new_name)
+        {
+            return Err(AppError::CustomError {
+                msg: format!("Another pooler of this pool is already named '{new_name}'."),
+            });
+        }
+
+        let participant = self
+            .participants
+            .iter_mut()
+            .find(|user| user.id == pooler_user_id)
+            .ok_or_else(|| AppError::CustomError {
+                msg: format!("User {pooler_user_id} is not a pool participants."),
+            })?;
+
+        participant.name = new_name.to_string();
 
         Ok(())
     }

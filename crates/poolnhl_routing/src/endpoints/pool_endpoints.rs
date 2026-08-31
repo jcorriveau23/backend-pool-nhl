@@ -12,7 +12,7 @@ use poolnhl_interface::pool::requests::{
     AddPlayerRequest, CompleteProtectionRequest, CreateTradeRequest, DeleteTradeRequest,
     FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest, ModifyRosterRequest,
     PoolCreationRequest, PoolDeletionRequest, ProtectPlayersRequest, RemovePlayerRequest,
-    RespondTradeRequest, UpdatePoolSettingsRequest,
+    RespondTradeRequest, UpdatePoolSettingsRequest, UpdatePoolerNameRequest,
 };
 use poolnhl_interface::pool::scoring::DailyRosterPoints;
 use poolnhl_interface::pool::service::PoolServiceHandle;
@@ -53,6 +53,7 @@ impl PoolRouter {
             .route("/complete-protection", post(Self::complete_protection))
             .route("/modify-roster", post(Self::modify_roster))
             .route("/update-pool-settings", post(Self::update_pool_settings))
+            .route("/update-pooler-name", post(Self::update_pooler_name))
             .route("/mark-as-final", post(Self::mark_as_final))
             .route("/generate-dynasty", post(Self::generate_dynasty))
             .with_state(service_registry)
@@ -214,6 +215,17 @@ impl PoolRouter {
     ) -> Result<Json<Pool>> {
         pool_service
             .update_pool_settings(&token.sub, body)
+            .await
+            .map(Json)
+    }
+
+    async fn update_pooler_name(
+        token: UserEmailJwtPayload,
+        State(pool_service): State<PoolServiceHandle>,
+        Json(body): Json<UpdatePoolerNameRequest>,
+    ) -> Result<Json<Pool>> {
+        pool_service
+            .update_pooler_name(&token.sub, body)
             .await
             .map(Json)
     }
