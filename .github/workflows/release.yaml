@@ -57,6 +57,12 @@ jobs:
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          # Compiled into the binary and served from GET /api-rust/version, so
+          # the web app footer can name the running backend build. Passed on
+          # every architecture's build, not just once, since it is baked into
+          # each binary separately.
+          build-args: |
+            APP_VERSION=${{ github.event.release.tag_name }}
           # Scoped per platform. Sharing one scope makes the two legs evict
           # each other's cargo-chef layers on every run.
           cache-from: type=gha,scope=${{ matrix.platform }}
