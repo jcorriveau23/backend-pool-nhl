@@ -8,7 +8,7 @@ use crate::pool::requests::{
     AddPlayerRequest, CompleteProtectionRequest, CreateTradeRequest, DeleteTradeRequest,
     FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest, ModifyRosterRequest,
     PoolCreationRequest, PoolDeletionRequest, ProtectPlayersRequest, RemovePlayerRequest,
-    RespondTradeRequest, UpdatePoolSettingsRequest,
+    RespondTradeRequest, UpdatePoolSettingsRequest, UpdatePoolerNameRequest,
 };
 
 #[async_trait]
@@ -39,6 +39,8 @@ pub trait PoolService {
         user_id: &str,
         req: UpdatePoolSettingsRequest,
     ) -> Result<Pool>;
+    async fn update_pooler_name(&self, user_id: &str, req: UpdatePoolerNameRequest)
+    -> Result<Pool>;
     // Dynasty call
     async fn protect_players(&self, user_id: &str, req: ProtectPlayersRequest) -> Result<Pool>;
     async fn complete_protection(

@@ -100,6 +100,14 @@ pub struct UpdatePoolSettingsRequest {
     pub settings: PoolSettings,
 }
 
+// payload to sent when the owner renames one of the poolers of the pool.
+#[derive(Debug, Deserialize, Clone)]
+pub struct UpdatePoolerNameRequest {
+    pub pool_name: String,
+    pub pooler_user_id: String,
+    pub new_name: String,
+}
+
 // payload to sent when marking a pool as final
 #[derive(Debug, Deserialize, Clone)]
 pub struct MarkAsFinalRequest {

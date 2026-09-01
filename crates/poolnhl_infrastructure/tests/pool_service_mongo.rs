@@ -22,6 +22,7 @@ use poolnhl_interface::pool::model::{
 };
 use poolnhl_interface::pool::requests::{
     AddPlayerRequest, PoolCreationRequest, PoolDeletionRequest, RespondTradeRequest,
+    UpdatePoolerNameRequest,
 };
 use poolnhl_interface::pool::scoring::{DailyRosterPoints, Roster};
 use poolnhl_interface::pool::service::PoolService;
@@ -357,6 +358,55 @@ async fn delete_pool_requires_the_owner() {
     service.delete_pool(OWNER, request).await.unwrap();
     let fetched = service.get_pool_by_name(&pool_name).await;
     assert!(matches!(fetched, Err(AppError::NotFound { .. })));
+
+    cleanup(&collection, &pool_name).await;
+}
+
+#[tokio::test]
+#[ignore = "requires a running mongo (docker compose up -d mongo)"]
+async fn update_pooler_name_persists_the_new_name_for_the_owner_only() {
+    let (service, collection) = service_and_collection().await;
+    let pool_name = unique_pool_name("rename");
+    collection
+        .insert_one(&in_progress_pool(&pool_name), None)
+        .await
+        .unwrap();
+
+    let request = UpdatePoolerNameRequest {
+        pool_name: pool_name.clone(),
+        pooler_user_id: USER_2.to_string(),
+        new_name: "Raph".to_string(),
+    };
+
+    // A participant that does not own the pool cannot rename anybody.
+    assert!(
+        service
+            .update_pooler_name(USER_2, request.clone())
+            .await
+            .is_err()
+    );
+
+    let updated = service.update_pooler_name(OWNER, request).await.unwrap();
+    let renamed = updated
+        .participants
+        .iter()
+        .find(|user| user.id == USER_2)
+        .unwrap();
+    assert_eq!(renamed.name, "Raph");
+
+    // The rename reached the document, not only the returned pool, and the
+    // rosters are still keyed by the untouched id.
+    let fetched = service.get_pool_by_name(&pool_name).await.unwrap();
+    assert_eq!(
+        fetched
+            .participants
+            .iter()
+            .find(|user| user.id == USER_2)
+            .unwrap()
+            .name,
+        "Raph"
+    );
+    assert!(fetched.context.unwrap().pooler_roster.contains_key(USER_2));
 
     cleanup(&collection, &pool_name).await;
 }

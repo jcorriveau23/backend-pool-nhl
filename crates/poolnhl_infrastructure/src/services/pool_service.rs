@@ -20,7 +20,7 @@ use poolnhl_interface::pool::requests::{
     AddPlayerRequest, CompleteProtectionRequest, CreateTradeRequest, DeleteTradeRequest,
     FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest, ModifyRosterRequest,
     PoolCreationRequest, PoolDeletionRequest, ProtectPlayersRequest, RemovePlayerRequest,
-    RespondTradeRequest, UpdatePoolSettingsRequest,
+    RespondTradeRequest, UpdatePoolSettingsRequest, UpdatePoolerNameRequest,
 };
 use poolnhl_interface::pool::service::PoolService;
 
@@ -463,6 +463,30 @@ impl PoolService for MongoPoolService {
             "$set": doc!{
                 "settings": to_bson(&req.settings).map_err(bson_err)?,
 
+            }
+        };
+
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
+    }
+
+    async fn update_pooler_name(
+        &self,
+        user_id: &str,
+        req: UpdatePoolerNameRequest,
+    ) -> Result<Pool> {
+        let mut pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
+
+        pool.update_pooler_name(user_id, &req.pooler_user_id, &req.new_name)?;
+
+        let updated_fields = doc! {
+            "$set": doc!{
+                "participants": to_bson(&pool.participants).map_err(bson_err)?,
             }
         };
 

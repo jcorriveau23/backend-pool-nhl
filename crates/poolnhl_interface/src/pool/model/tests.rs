@@ -224,6 +224,69 @@ fn a_pool_that_has_not_started_or_is_over_keeps_its_settings() {
 }
 
 // -------------------------------------------------------------------
+// Pooler names
+// -------------------------------------------------------------------
+
+#[test]
+fn the_owner_renames_a_pooler_without_touching_its_id() {
+    let mut pool = in_progress_pool();
+
+    pool.update_pooler_name(OWNER, USER_2, "  Raph  ").unwrap();
+
+    let renamed = pool
+        .participants
+        .iter()
+        .find(|user| user.id == USER_2)
+        .unwrap();
+    // The surrounding whitespace is dropped, everything keyed by the id (the
+    // rosters here) still finds the pooler.
+    assert_eq!(renamed.name, "Raph");
+    assert!(pool.context.unwrap().pooler_roster.contains_key(USER_2));
+}
+
+#[test]
+fn renaming_a_pooler_is_the_owner_call_alone() {
+    let mut pool = in_progress_pool();
+    pool.settings.assistants = vec![USER_2.to_string()];
+
+    assert!(pool.update_pooler_name(USER_2, USER_3, "Raph").is_err());
+    assert!(pool.update_pooler_name(USER_3, USER_3, "Raph").is_err());
+    assert!(pool.update_pooler_name(OWNER, USER_3, "Raph").is_ok());
+}
+
+#[test]
+fn a_pooler_name_cannot_be_empty_or_too_long() {
+    let mut pool = in_progress_pool();
+
+    assert!(pool.update_pooler_name(OWNER, USER_2, "   ").is_err());
+    assert!(
+        pool.update_pooler_name(OWNER, USER_2, &"a".repeat(MAX_POOLER_NAME_LENGTH + 1))
+            .is_err()
+    );
+    assert!(
+        pool.update_pooler_name(OWNER, USER_2, &"a".repeat(MAX_POOLER_NAME_LENGTH))
+            .is_ok()
+    );
+}
+
+#[test]
+fn two_poolers_of_a_pool_cannot_share_a_name() {
+    let mut pool = in_progress_pool();
+
+    assert!(pool.update_pooler_name(OWNER, USER_2, USER_3).is_err());
+    // Renaming a pooler to the name it already carries is not a clash with
+    // itself.
+    assert!(pool.update_pooler_name(OWNER, USER_2, USER_2).is_ok());
+}
+
+#[test]
+fn only_a_participant_of_the_pool_can_be_renamed() {
+    let mut pool = in_progress_pool();
+
+    assert!(pool.update_pooler_name(OWNER, "stranger", "Raph").is_err());
+}
+
+// -------------------------------------------------------------------
 // Trades
 // -------------------------------------------------------------------
 
