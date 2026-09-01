@@ -843,6 +843,19 @@ fn start_draft_validates_the_participants_and_the_order() {
     ];
     assert!(pool.start_draft(OWNER, &room_users, &bad_order).is_err());
 
+    // A draft order that gives a pooler two spots and leaves another one out.
+    let mut pool = Pool::new("draft-pool", OWNER, &small_settings());
+    let duplicated_order = vec![OWNER.to_string(), USER_2.to_string(), USER_2.to_string()];
+    assert!(
+        pool.start_draft(OWNER, &room_users, &duplicated_order)
+            .is_err()
+    );
+
+    // A draft order that does not cover every pooler of the room.
+    let mut pool = Pool::new("draft-pool", OWNER, &small_settings());
+    let short_order = vec![OWNER.to_string(), USER_2.to_string()];
+    assert!(pool.start_draft(OWNER, &room_users, &short_order).is_err());
+
     // Only a pool in the Created state can start a draft.
     let mut pool = in_progress_pool();
     assert!(pool.start_draft(OWNER, &room_users, &draft_order).is_err());

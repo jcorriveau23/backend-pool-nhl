@@ -1108,8 +1108,14 @@ impl Pool {
             });
         }
 
-        // Set the draft order with the shuffle list.
-        if !draft_order.iter().all(|user_id| user_ids.contains(user_id)) {
+        // The draft order has to be a permutation of the room users: as long as
+        // it is, every pooler gets exactly one spot per round.
+        let ordered_users: HashSet<&String> = draft_order.iter().collect();
+
+        if draft_order.len() != user_ids.len()
+            || ordered_users.len() != draft_order.len()
+            || !draft_order.iter().all(|user_id| user_ids.contains(user_id))
+        {
             return Err(AppError::CustomError {
                 msg: "The draft order list provided is not valid.".to_string(),
             });
