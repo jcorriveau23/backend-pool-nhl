@@ -137,5 +137,3 @@ impl ApplicationController {
         .expect("Failed to start the server");
     }
 }
-
-
