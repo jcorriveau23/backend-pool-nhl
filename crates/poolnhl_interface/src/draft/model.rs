@@ -59,6 +59,9 @@ pub struct RosterModification {
 // Commands that the soket server can receive.
 #[derive(Deserialize, Serialize)]
 pub enum Command {
+    Auth {
+        token: String,
+    },
     JoinRoom {
         pool_name: String,
         number_poolers: u8,
@@ -287,5 +290,47 @@ mod tests {
         assert!(first.email.is_none());
         assert!(first.is_ready);
         assert_ne!(first.id, second.id);
+    }
+
+    // The exact bytes the web client puts on the wire, from
+    // `createSocketCommand(Command.Auth, JSON.stringify({ token }))` in
+    // src/context/socket-context.tsx. The token moved out of the URL path and
+    // into this frame, so if this stops parsing every signed-in pooler silently
+    // drops to read-only in the draft room — with no error anywhere.
+    #[test]
+    fn auth_command_parses_the_frame_the_web_client_sends() {
+        let command: Command =
+            serde_json::from_str(r#"{"Auth":{"token":"header.payload.signature"}}"#)
+                .expect("the client's auth frame must deserialize");
+
+        match command {
+            Command::Auth { token } => assert_eq!(token, "header.payload.signature"),
+            _ => panic!("expected Command::Auth"),
+        }
+    }
+
+    // Adding a variant to an externally tagged enum is the kind of change that
+    // can quietly alter how the others parse. These two cover both shapes the
+    // client emits: a struct variant and a bare unit variant.
+    #[test]
+    fn adding_auth_left_the_other_commands_parsing() {
+        let join: Command =
+            serde_json::from_str(r#"{"JoinRoom":{"pool_name":"my pool","number_poolers":6}}"#)
+                .expect("JoinRoom must still deserialize");
+        match join {
+            Command::JoinRoom {
+                pool_name,
+                number_poolers,
+            } => {
+                assert_eq!(pool_name, "my pool");
+                assert_eq!(number_poolers, 6);
+            }
+            _ => panic!("expected Command::JoinRoom"),
+        }
+
+        // Unit variants go over the wire as a bare JSON string.
+        let ready: Command =
+            serde_json::from_str(r#""OnReady""#).expect("OnReady must still deserialize");
+        assert!(matches!(ready, Command::OnReady));
     }
 }

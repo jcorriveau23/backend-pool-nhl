@@ -25,23 +25,12 @@ use crate::endpoints::version_endpoints::VersionRouter;
 
 pub struct ApplicationController;
 
-// The draft socket carries its bearer token in the path (`/ws/{jwt}`), so the
-// raw path must never reach a log sink. Everything after the `/ws/` prefix is
-// replaced before the span is built.
-fn redacted_path(path: &str) -> &str {
-    if path.starts_with("/api-rust/ws/") {
-        "/api-rust/ws/[redacted]"
-    } else {
-        path
-    }
-}
-
 // Per-request counter and latency histogram.
 //
 // Labelled with the *matched route* (`/pools/:name`), never the concrete URI —
 // one series per route instead of one per pool, and it keeps pool names out of
-// the metrics entirely. The websocket route is the reason that matters: its URI
-// contains a bearer token.
+// the metrics entirely. It also means a stale client's `/ws/{jwt}` cannot mint
+// a metric series per token.
 async fn track_metrics(request: Request, next: Next) -> Response {
     let path = request
         .extensions()
@@ -113,7 +102,7 @@ impl ApplicationController {
                         tracing::info_span!(
                             "request",
                             method = %request.method(),
-                            path = %redacted_path(request.uri().path()),
+                            path = %request.uri().path(),
                         )
                     })
                     // tower_http logs these at DEBUG by default, which a
@@ -146,26 +135,5 @@ impl ApplicationController {
         )
         .await
         .expect("Failed to start the server");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::redacted_path;
-
-    #[test]
-    fn the_socket_token_never_reaches_the_span() {
-        assert_eq!(
-            redacted_path("/api-rust/ws/eyJhbGciOiJSUzI1NiIsImtpZCI6IjEyMyJ9.payload.sig"),
-            "/api-rust/ws/[redacted]"
-        );
-    }
-
-    #[test]
-    fn other_paths_are_untouched() {
-        assert_eq!(
-            redacted_path("/api-rust/pools/20262027"),
-            "/api-rust/pools/20262027"
-        );
     }
 }

@@ -44,6 +44,7 @@ const CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 // a client mint new series at will.
 fn command_name(command: &Command) -> &'static str {
     match command {
+        Command::Auth { .. } => "auth",
         Command::JoinRoom { .. } => "join_room",
         Command::LeaveRoom => "leave_room",
         Command::OnPoolSettingChanges { .. } => "on_pool_setting_changes",
@@ -123,7 +124,7 @@ pub struct DraftRouter;
 impl DraftRouter {
     pub fn router(service_registry: ServiceRegistry) -> Router {
         Router::new()
-            .route("/ws/:jwt", get(Self::ws_handler))
+            .route("/ws", get(Self::ws_handler))
             .route("/rooms", get(Self::list_rooms))
             .route("/room-users/:room", get(Self::list_room_users))
             .with_state(service_registry)
@@ -144,7 +145,6 @@ impl DraftRouter {
 
     async fn ws_handler(
         ws: WebSocketUpgrade,
-        Path(jwt): Path<String>,
         ConnectInfo(addr): ConnectInfo<SocketAddr>,
         State(draft_service): State<DraftServiceHandle>,
     ) -> impl IntoResponse {
@@ -152,14 +152,6 @@ impl DraftRouter {
         // note on the DraftService room commands.
         let socket_id = Uuid::new_v4().to_string();
 
-        if jwt != "unauthenticated" {
-            let user = draft_service
-                .authenticate_web_socket(&jwt, &socket_id)
-                .await;
-            return ws.on_upgrade(move |socket| {
-                Self::handle_socket(socket, user, socket_id, addr, draft_service)
-            });
-        }
         ws.on_upgrade(move |socket| {
             Self::handle_socket(socket, None, socket_id, addr, draft_service)
         })
@@ -172,12 +164,35 @@ impl DraftRouter {
         socket: &mut WebSocket,
         socket_id: &str,
         draft_service: &DraftServiceHandle,
+        user: &mut Option<UserEmailJwtPayload>,
     ) -> Result<(broadcast::Receiver<String>, String)> {
         while let Some(Ok(msg)) = socket.recv().await {
             if let Message::Text(command) = msg {
                 tracing::debug!(%command, "draft socket command received");
                 if let Ok(command) = serde_json::from_str::<Command>(&command) {
                     match command {
+                        Command::Auth { token } => {
+                            // A failed token leaves the socket unauthenticated
+                            // rather than closing it: the draft board is
+                            // readable without an account, and this is the same
+                            // outcome the path-token route produced for a bad
+                            // token.
+                            *user = draft_service
+                                .authenticate_web_socket(&token, socket_id)
+                                .await;
+                            match user {
+                                Some(u) => tracing::debug!(
+                                    user = %u.sub,
+                                    %socket_id,
+                                    "draft socket authenticated from first frame"
+                                ),
+                                None => tracing::debug!(
+                                    %socket_id,
+                                    "draft socket auth frame rejected"
+                                ),
+                            }
+                            continue;
+                        }
                         Command::JoinRoom {
                             pool_name,
                             number_poolers,
@@ -216,19 +231,15 @@ impl DraftRouter {
 
         // At the beginning there is a state where the user needs to join a room
         // before leaving the initial socket state.
-        let mut is_authenticated_users = false;
-        if let Some(u) = &user {
-            tracing::debug!(user = %u.sub, %socket_id, %addr, "authenticated socket connecting");
-            is_authenticated_users = true;
-        } else {
-            tracing::debug!(%socket_id, %addr, "unauthenticated socket connecting");
-        }
+        let mut user = user;
+        tracing::debug!(%socket_id, %addr, "draft socket connecting");
 
         // Joining is bounded: a socket does not get to stall in the initial
-        // state and keep the task alive for free.
+        // state and keep the task alive for free. The same bound now covers
+        // authentication, which happens inside this wait.
         let joined = tokio::time::timeout(
             JOIN_ROOM_TIMEOUT,
-            Self::waiting_join_room_command(&mut socket, &socket_id, &draft_service),
+            Self::waiting_join_room_command(&mut socket, &socket_id, &draft_service, &mut user),
         )
         .await;
 
@@ -244,6 +255,14 @@ impl DraftRouter {
                 tracing::debug!(error = %e, %socket_id, "draft socket closed before joining a room")
             }
             Ok(Ok((mut rx, current_pool_name))) => {
+                // Read here rather than before the join: on the tokenless route
+                // the identity is only known once the `Auth` frame has been
+                // seen, and `user` is moved into the read task just below.
+                let is_authenticated_users = user.is_some();
+                if let Some(u) = &user {
+                    tracing::debug!(user = %u.sub, %socket_id, "authenticated socket joined");
+                }
+
                 // Actual websocket statemachine (one will be spawned per connection)
                 let (mut sender, mut receiver) = socket.split();
 
@@ -285,6 +304,12 @@ impl DraftRouter {
                                     // LeaveRoom is still recorded.
                                     let mut timer = CommandTimer::start(command_name(&command));
                                     match command {
+                                        Command::Auth { .. } => {
+                                            tracing::debug!(
+                                                %socket_id,
+                                                "auth frame after join, ignored"
+                                            );
+                                        }
                                         Command::LeaveRoom => {
                                             // The socket needs to be killed when the user leave a room.
                                             // The leave room commands will be called once the socket is killed.
