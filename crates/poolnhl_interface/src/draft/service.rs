@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::errors::Result;
-use crate::pool::model::PoolSettings;
+use crate::pool::model::{PoolSettings, Trade};
 use crate::users::model::UserEmailJwtPayload;
 use tokio::sync::broadcast;
 
@@ -33,6 +33,20 @@ pub trait DraftService {
         pool_name: &str,
         pool_settings: &PoolSettings,
     ) -> Result<()>;
+
+    async fn create_trade(&self, pool_name: &str, user_id: &str, trade: &Trade) -> Result<()>;
+
+    async fn update_trade(
+        &self,
+        pool_name: &str,
+        user_id: &str,
+        trade_id: u32,
+        trade: &Trade,
+    ) -> Result<()>;
+
+    async fn confirm_trade(&self, pool_name: &str, user_id: &str, trade_id: u32) -> Result<()>;
+
+    async fn delete_trade(&self, pool_name: &str, user_id: &str, trade_id: u32) -> Result<()>;
 
     // Socket Room commands:
     async fn join_room(

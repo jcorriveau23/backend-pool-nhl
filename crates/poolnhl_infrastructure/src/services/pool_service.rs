@@ -14,13 +14,13 @@ use poolnhl_interface::errors::AppError;
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::pool::model::{
     END_SEASON_DATE, POOL_CREATION_SEASON, Pool, PoolContext, PoolState, ProjectedPoolShort,
-    START_SEASON_DATE,
+    START_SEASON_DATE, TradeStatus,
 };
 use poolnhl_interface::pool::requests::{
-    AddPlayerRequest, CompleteProtectionRequest, CreateTradeRequest, DeleteTradeRequest,
-    FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest, ModifyRosterRequest,
-    PoolCreationRequest, PoolDeletionRequest, ProtectPlayersRequest, RemovePlayerRequest,
-    RespondTradeRequest, UpdatePoolSettingsRequest, UpdatePoolerNameRequest,
+    AddPlayerRequest, CompleteProtectionRequest, ConfirmTradeRequest, CreateTradeRequest,
+    DeleteTradeRequest, FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest,
+    ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest, ProtectPlayersRequest,
+    RemovePlayerRequest, UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
 };
 use poolnhl_interface::pool::service::PoolService;
 
@@ -140,6 +140,37 @@ impl MongoPoolService {
 // `roster_modification_date` still governs when changes are permitted.
 fn today() -> String {
     Local::now().date_naive().format("%Y-%m-%d").to_string()
+}
+
+pub(crate) fn trade_update(pool: &mut Pool, effective_date: Option<&str>) -> Result<Document> {
+    // A trade moves players between two rosters, so record both. Only for a
+    // running pool: during the draft and the protection window the rosters are
+    // still being assembled, and everybody's opening lineup is recorded from
+    // the season start on the final pick of the draft.
+    if matches!(pool.status, PoolState::InProgress) {
+        let effective = effective_date.map(str::to_string).unwrap_or_else(today);
+        if let Some(context) = pool.context.as_mut() {
+            let participants: Vec<String> = context.pooler_roster.keys().cloned().collect();
+            for participant in participants {
+                context.record_lineup_change(&participant, &effective);
+            }
+        }
+    }
+
+    let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
+        msg: "pool context does not exist.".to_string(),
+    })?;
+
+    Ok(doc! {
+        "$set": doc!{
+            "trades": to_bson(&pool.trades).map_err(bson_err)?,
+            "context.pooler_roster": to_bson(&context.pooler_roster).map_err(bson_err)?,
+            "context.tradable_picks": to_bson(&context.tradable_picks).map_err(bson_err)?,
+            "context.past_tradable_picks": to_bson(&context.past_tradable_picks).map_err(bson_err)?,
+            "context.protected_players": to_bson(&context.protected_players).map_err(bson_err)?,
+            "context.lineup_events": to_bson(&context.lineup_events).map_err(bson_err)?,
+        }
+    })
 }
 
 #[async_trait]
@@ -273,18 +304,61 @@ impl PoolService for MongoPoolService {
     }
 
     async fn create_trade(&self, user_id: &str, req: &mut CreateTradeRequest) -> Result<Pool> {
-        // Create a trade and update the database
         let mut pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
 
-        // Create the new trade in the pool
+        // Filed, not applied: nothing but the trade list changes until the
+        // owner or an assistant confirms it.
         pool.create_trade(&mut req.trade, user_id)?;
 
-        // Update the field in the pool
         let updated_fields = doc! {
             "$set": doc!{
                 "trades": to_bson(&pool.trades).map_err(bson_err)?,
             }
         };
+
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
+    }
+
+    async fn update_trade(&self, user_id: &str, req: UpdateTradeRequest) -> Result<Pool> {
+        let mut pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
+
+        // Still only the trade list: an open trade has moved nothing to fix up.
+        pool.update_trade(user_id, req.trade_id, &req.trade)?;
+
+        let updated_fields = doc! {
+            "$set": doc!{
+                "trades": to_bson(&pool.trades).map_err(bson_err)?,
+            }
+        };
+
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
+    }
+
+    async fn confirm_trade(&self, user_id: &str, req: ConfirmTradeRequest) -> Result<Pool> {
+        let mut pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
+
+        // This is where the players and the picks actually move.
+        pool.confirm_trade(user_id, req.trade_id)?;
+
+        let effective_date = pool
+            .trades
+            .as_ref()
+            .and_then(|trades| trades.iter().find(|trade| trade.id == req.trade_id))
+            .and_then(|trade| trade.effective_date.clone());
+
+        let updated_fields = trade_update(&mut pool, effective_date.as_deref())?;
 
         update_pool(
             updated_fields,
@@ -298,51 +372,17 @@ impl PoolService for MongoPoolService {
     async fn delete_trade(&self, user_id: &str, req: DeleteTradeRequest) -> Result<Pool> {
         let mut pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
 
-        // Delete the trade
-        pool.delete_trade(user_id, req.trade_id)?;
+        // Deleting a confirmed trade puts every item back, so it writes the
+        // same fields as confirming one. An open trade only leaves the list.
+        let deleted = pool.delete_trade(user_id, req.trade_id)?;
 
-        // Update the field in the pool
-        let updated_fields = doc! {
-            "$set": doc!{
-                "trades": to_bson(&pool.trades).map_err(bson_err)?,
-            }
-        };
-
-        update_pool(
-            updated_fields,
-            &self.collection,
-            &req.pool_name,
-            pool.date_updated,
-        )
-        .await
-    }
-
-    async fn respond_trade(&self, user_id: &str, req: RespondTradeRequest) -> Result<Pool> {
-        let mut pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
-
-        // repond the trade
-        pool.respond_trade(user_id, req.is_accepted, req.trade_id)?;
-
-        // A trade can move players between the two rosters, so record both.
-        let effective = today();
-        if let Some(context) = pool.context.as_mut() {
-            let participants: Vec<String> = context.pooler_roster.keys().cloned().collect();
-            for participant in participants {
-                context.record_lineup_change(&participant, &effective);
-            }
-        }
-
-        let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
-            msg: "pool context does not exist.".to_string(),
-        })?;
-
-        // Update the field in the pool
-        let updated_fields = doc! {
-            "$set": doc!{
-                "trades": to_bson(&pool.trades).map_err(bson_err)?,
-                "context.pooler_roster": to_bson(&context.pooler_roster ).map_err(bson_err)?,
-                "context.tradable_picks": to_bson(&context.tradable_picks ).map_err(bson_err)?,
-                "context.lineup_events": to_bson(&context.lineup_events).map_err(bson_err)?
+        let updated_fields = if matches!(deleted.status, TradeStatus::Confirmed) {
+            trade_update(&mut pool, deleted.effective_date.as_deref())?
+        } else {
+            doc! {
+                "$set": doc!{
+                    "trades": to_bson(&pool.trades).map_err(bson_err)?,
+                }
             }
         };
 

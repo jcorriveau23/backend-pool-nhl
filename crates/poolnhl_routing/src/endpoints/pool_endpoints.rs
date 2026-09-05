@@ -9,10 +9,10 @@ use poolnhl_infrastructure::services::pool_scoring_service::PoolScoringService;
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::pool::model::{Pool, ProjectedPoolShort, SeasonInfo};
 use poolnhl_interface::pool::requests::{
-    AddPlayerRequest, CompleteProtectionRequest, CreateTradeRequest, DeleteTradeRequest,
-    FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest, ModifyRosterRequest,
-    PoolCreationRequest, PoolDeletionRequest, ProtectPlayersRequest, RemovePlayerRequest,
-    RespondTradeRequest, UpdatePoolSettingsRequest, UpdatePoolerNameRequest,
+    AddPlayerRequest, CompleteProtectionRequest, ConfirmTradeRequest, CreateTradeRequest,
+    DeleteTradeRequest, FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest,
+    ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest, ProtectPlayersRequest,
+    RemovePlayerRequest, UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
 };
 use poolnhl_interface::pool::scoring::DailyRosterPoints;
 use poolnhl_interface::pool::service::PoolServiceHandle;
@@ -46,8 +46,9 @@ impl PoolRouter {
             .route("/add-player", post(Self::add_player))
             .route("/remove-player", post(Self::remove_player))
             .route("/create-trade", post(Self::create_trade))
+            .route("/update-trade", post(Self::update_trade))
+            .route("/confirm-trade", post(Self::confirm_trade))
             .route("/delete-trade", post(Self::delete_trade))
-            .route("/respond-trade", post(Self::respond_trade))
             .route("/fill-spot", post(Self::fill_spot))
             .route("/protect-players", post(Self::protect_players))
             .route("/complete-protection", post(Self::complete_protection))
@@ -155,20 +156,28 @@ impl PoolRouter {
             .map(Json)
     }
 
+    async fn update_trade(
+        token: UserEmailJwtPayload,
+        State(pool_service): State<PoolServiceHandle>,
+        Json(body): Json<UpdateTradeRequest>,
+    ) -> Result<Json<Pool>> {
+        pool_service.update_trade(&token.sub, body).await.map(Json)
+    }
+
+    async fn confirm_trade(
+        token: UserEmailJwtPayload,
+        State(pool_service): State<PoolServiceHandle>,
+        Json(body): Json<ConfirmTradeRequest>,
+    ) -> Result<Json<Pool>> {
+        pool_service.confirm_trade(&token.sub, body).await.map(Json)
+    }
+
     async fn delete_trade(
         token: UserEmailJwtPayload,
         State(pool_service): State<PoolServiceHandle>,
         Json(body): Json<DeleteTradeRequest>,
     ) -> Result<Json<Pool>> {
         pool_service.delete_trade(&token.sub, body).await.map(Json)
-    }
-
-    async fn respond_trade(
-        token: UserEmailJwtPayload,
-        State(pool_service): State<PoolServiceHandle>,
-        Json(body): Json<RespondTradeRequest>,
-    ) -> Result<Json<Pool>> {
-        pool_service.respond_trade(&token.sub, body).await.map(Json)
     }
 
     async fn fill_spot(

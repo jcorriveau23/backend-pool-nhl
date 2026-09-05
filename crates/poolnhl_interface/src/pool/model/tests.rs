@@ -105,16 +105,24 @@ fn trade(proposed_by: &str, ask_to: &str, from_players: Vec<u32>, to_players: Ve
             players: to_players,
             picks: Vec::new(),
         },
-        status: TradeStatus::NEW,
         id: 0,
         date_created: 0,
-        date_accepted: 0,
+        status: TradeStatus::Open,
+        effective_date: None,
+        draft_pick_index: None,
     }
 }
 
 // The deadline day itself is still a valid trading day.
 fn deadline() -> NaiveDate {
     NaiveDate::parse_from_str(TRADE_DEADLINE_DATE, "%Y-%m-%d").unwrap()
+}
+
+// File a trade and sign it off, which is what the old one-step create did.
+// Most tests care about the trade having happened, not about the two steps.
+fn file_and_confirm(pool: &mut Pool, trade: &mut Trade, user_id: &str) -> Result<(), AppError> {
+    pool.create_trade_at(trade, user_id, deadline())?;
+    pool.confirm_trade_at(OWNER, trade.id, deadline())
 }
 
 fn possesses(pool: &Pool, user_id: &str, player_id: u32) -> bool {
@@ -290,18 +298,23 @@ fn only_a_participant_of_the_pool_can_be_renamed() {
 // Trades
 // -------------------------------------------------------------------
 
+// A trade is a record of a deal the poolers already agreed on, so filing it
+// moves the items there and then. There is no proposal to accept.
 #[test]
-fn create_trade_registers_a_new_trade() {
+fn filing_a_trade_moves_the_items_immediately() {
     let mut pool = in_progress_pool();
     let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
 
-    pool.create_trade_at(&mut new_trade, OWNER, deadline())
-        .unwrap();
+    file_and_confirm(&mut pool, &mut new_trade, OWNER).unwrap();
+
+    assert!(possesses(&pool, USER_2, 131));
+    assert!(possesses(&pool, OWNER, 231));
+    assert!(!possesses(&pool, OWNER, 131));
+    assert!(!possesses(&pool, USER_2, 231));
 
     let trades = pool.trades.as_ref().unwrap();
     assert_eq!(trades.len(), 1);
     assert_eq!(trades[0].id, 0);
-    assert!(matches!(trades[0].status, TradeStatus::NEW));
     assert!(trades[0].date_created > 0);
 }
 
@@ -313,63 +326,98 @@ fn create_trade_is_rejected_after_the_deadline() {
     let result = pool.create_trade_at(&mut new_trade, OWNER, deadline() + Duration::days(1));
 
     assert!(result.unwrap_err().to_string().contains("deadline"));
+    // Nothing moved.
+    assert!(possesses(&pool, OWNER, 131));
 }
 
 #[test]
-fn create_trade_requires_an_in_progress_pool() {
-    let mut pool = in_progress_pool();
-    pool.status = PoolState::Created;
-    let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
+fn create_trade_requires_a_pool_with_rosters_to_trade_from() {
+    for status in [PoolState::Created, PoolState::Final] {
+        let mut pool = in_progress_pool();
+        pool.status = status;
+        let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
 
-    assert!(
-        pool.create_trade_at(&mut new_trade, OWNER, deadline())
-            .is_err()
-    );
+        assert!(
+            pool.create_trade_at(&mut new_trade, OWNER, deadline())
+                .is_err()
+        );
+    }
 }
 
+// Between two seasons the poolers keep trading: during the protection window
+// they shape the roster they are about to keep, and during the draft they move
+// the picks of that draft.
 #[test]
-fn a_proposer_cannot_have_two_pending_trades() {
+fn trades_are_open_during_the_protection_window_and_the_draft() {
+    for status in [PoolState::Dynasty, PoolState::Draft] {
+        let mut pool = in_progress_pool();
+        pool.status = status;
+        let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
+
+        // The trade deadline belongs to the running season: it is long past by
+        // the time the protection window opens, and must not close it.
+        pool.create_trade_at(&mut new_trade, OWNER, deadline() + Duration::days(90))
+            .unwrap();
+        pool.confirm_trade_at(OWNER, new_trade.id, deadline() + Duration::days(90))
+            .unwrap();
+
+        assert!(possesses(&pool, USER_2, 131));
+        assert!(possesses(&pool, OWNER, 231));
+    }
+}
+
+// Nothing stops a pooler filing several trades: they are records of deals that
+// already happened, not proposals competing for an answer.
+#[test]
+fn a_pooler_can_file_several_trades() {
     let mut pool = in_progress_pool();
-    pool.create_trade_at(
+
+    file_and_confirm(
+        &mut pool,
         &mut trade(OWNER, USER_2, vec![131], vec![231]),
         OWNER,
-        deadline(),
     )
     .unwrap();
-
-    let result = pool.create_trade_at(
-        &mut trade(OWNER, USER_3, vec![131], vec![331]),
+    file_and_confirm(
+        &mut pool,
+        &mut trade(OWNER, USER_3, vec![101], vec![331]),
         OWNER,
-        deadline(),
-    );
-
-    assert!(result.unwrap_err().to_string().contains("one active trade"));
-}
-
-#[test]
-fn a_pending_trade_does_not_block_other_proposers() {
-    let mut pool = in_progress_pool();
-    pool.create_trade_at(
-        &mut trade(OWNER, USER_2, vec![131], vec![231]),
-        OWNER,
-        deadline(),
     )
     .unwrap();
-
-    // user-3 must still be able to propose his own trade.
-    let mut other_trade = trade(USER_3, USER_2, vec![331], vec![231]);
-    pool.create_trade_at(&mut other_trade, USER_3, deadline())
-        .unwrap();
 
     assert_eq!(pool.trades.as_ref().unwrap().len(), 2);
-    assert_eq!(other_trade.id, 1);
+}
+
+// Ids are handed out above the highest one in the list, not from its length:
+// deleting a trade from the middle would otherwise let the next one be filed
+// with an id a surviving trade already carries.
+#[test]
+fn a_trade_never_reuses_the_id_of_a_surviving_one() {
+    let mut pool = in_progress_pool();
+
+    let mut first = trade(OWNER, USER_2, vec![131], vec![231]);
+    file_and_confirm(&mut pool, &mut first, OWNER).unwrap();
+    // Untouched players on both sides, so this one is independent of the first.
+    let mut second = trade(USER_2, USER_3, vec![201], vec![301]);
+    file_and_confirm(&mut pool, &mut second, USER_2).unwrap();
+    assert_eq!((first.id, second.id), (0, 1));
+
+    // Take the first one back out, leaving id 1 in the list.
+    pool.delete_trade(OWNER, first.id).unwrap();
+
+    let mut third = trade(OWNER, USER_3, vec![101], vec![311]);
+    file_and_confirm(&mut pool, &mut third, OWNER).unwrap();
+
+    assert_eq!(third.id, 2, "id 1 is still taken");
+    let ids: Vec<u32> = pool.trades.as_ref().unwrap().iter().map(|t| t.id).collect();
+    assert_eq!(ids, vec![1, 2]);
 }
 
 #[test]
 fn creating_a_trade_for_someone_else_requires_privileges() {
     let mut pool = in_progress_pool();
 
-    // user-2 cannot create a trade on behalf of user-3.
+    // user-2 cannot file a trade on behalf of user-3.
     let result = pool.create_trade_at(
         &mut trade(USER_3, OWNER, vec![331], vec![131]),
         USER_2,
@@ -378,10 +426,10 @@ fn creating_a_trade_for_someone_else_requires_privileges() {
     assert!(result.is_err());
 
     // The owner can.
-    pool.create_trade_at(
+    file_and_confirm(
+        &mut pool,
         &mut trade(USER_3, OWNER, vec![331], vec![131]),
         OWNER,
-        deadline(),
     )
     .unwrap();
 }
@@ -406,106 +454,137 @@ fn create_trade_validates_the_traded_items() {
     );
     assert!(result.is_err());
 
-    // Proposing a player the proposer does not own.
+    // None of that was written down.
+    assert!(pool.trades.as_ref().map(Vec::len).unwrap_or(0) == 0);
+}
+
+// A trade over players their side never owned is refused on the spot, rather
+// than sitting in the pool looking like a deal until somebody tries to sign it.
+#[test]
+fn a_trade_over_players_a_side_does_not_own_is_refused_at_filing() {
+    let mut pool = in_progress_pool();
+
+    // 231 belongs to USER_2, not to the proposer.
     let result = pool.create_trade_at(
         &mut trade(OWNER, USER_2, vec![231], vec![201]),
         OWNER,
         deadline(),
     );
     assert!(result.unwrap_err().to_string().contains("possess"));
-}
 
-#[test]
-fn delete_trade_is_limited_to_the_proposer_or_privileged_users() {
-    let mut pool = in_progress_pool();
-    let mut new_trade = trade(USER_2, USER_3, vec![231], vec![331]);
-    pool.create_trade_at(&mut new_trade, USER_2, deadline())
-        .unwrap();
-
-    // Another participant cannot delete it.
-    assert!(pool.delete_trade(USER_3, new_trade.id).is_err());
-
-    // The proposer can.
-    pool.delete_trade(USER_2, new_trade.id).unwrap();
-    assert!(pool.trades.as_ref().unwrap().is_empty());
-
-    // The owner can too.
-    let mut second_trade = trade(USER_2, USER_3, vec![231], vec![331]);
-    pool.create_trade_at(&mut second_trade, USER_2, deadline())
-        .unwrap();
-    pool.delete_trade(OWNER, second_trade.id).unwrap();
-    assert!(pool.trades.as_ref().unwrap().is_empty());
-}
-
-#[test]
-fn responding_a_trade_requires_a_24h_delay_for_regular_users() {
-    let mut pool = in_progress_pool();
-    let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
-    pool.create_trade_at(&mut new_trade, OWNER, deadline())
-        .unwrap();
-
-    // The trade was just created: the asked user has to wait 24h.
-    let result = pool.respond_trade(USER_2, true, new_trade.id);
-    assert!(result.unwrap_err().to_string().contains("24h"));
-
-    // Backdate the trade beyond 24h: the asked user can now accept it.
-    pool.trades.as_mut().unwrap()[0].date_created = 0;
-    pool.respond_trade(USER_2, true, new_trade.id).unwrap();
-
-    // The players moved to the other participant's reservists.
-    assert!(possesses(&pool, USER_2, 131));
-    assert!(possesses(&pool, OWNER, 231));
-    assert!(!possesses(&pool, OWNER, 131));
-    assert!(!possesses(&pool, USER_2, 231));
-    let trades = pool.trades.as_ref().unwrap();
-    assert!(matches!(trades[0].status, TradeStatus::ACCEPTED));
-    assert!(trades[0].date_accepted > 0);
-}
-
-#[test]
-fn the_owner_can_refuse_a_trade_immediately() {
-    let mut pool = in_progress_pool();
-    let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
-    pool.create_trade_at(&mut new_trade, OWNER, deadline())
-        .unwrap();
-
-    pool.respond_trade(OWNER, false, new_trade.id).unwrap();
-
-    assert!(matches!(
-        pool.trades.as_ref().unwrap()[0].status,
-        TradeStatus::REFUSED
-    ));
-    // Rosters are untouched.
+    // Nothing moved, and nothing was written down.
     assert!(possesses(&pool, OWNER, 131));
     assert!(possesses(&pool, USER_2, 231));
+    assert!(pool.trades.as_ref().map(Vec::len).unwrap_or(0) == 0);
 }
 
+// Possession is checked again when the trade is signed off: it was sound the
+// day it was filed, but the rosters keep moving while it sits open.
 #[test]
-fn only_the_asked_user_or_privileged_users_can_respond() {
+fn possession_is_checked_again_when_the_trade_is_confirmed() {
     let mut pool = in_progress_pool();
+
+    // Filed against the roster of the day: the owner does hold 131.
     let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
     pool.create_trade_at(&mut new_trade, OWNER, deadline())
         .unwrap();
-    pool.trades.as_mut().unwrap()[0].date_created = 0;
 
-    assert!(pool.respond_trade(USER_3, true, new_trade.id).is_err());
+    // 131 leaves the owner's roster in the meantime.
+    let mut meanwhile = trade(OWNER, USER_3, vec![131], vec![331]);
+    file_and_confirm(&mut pool, &mut meanwhile, OWNER).unwrap();
+
+    // So the first trade can no longer be signed off.
+    let result = pool.confirm_trade_at(OWNER, new_trade.id, deadline());
+    assert!(result.unwrap_err().to_string().contains("possess"));
+
+    // Nothing of it moved, and it is still there to be corrected.
+    assert!(possesses(&pool, USER_2, 231));
+    assert!(possesses(&pool, USER_3, 131));
+    let stored = pool
+        .trades
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|trade| trade.id == new_trade.id)
+        .unwrap();
+    assert_eq!(stored.status, TradeStatus::Open);
+}
+
+// Deleting is the only way to undo a trade, and it puts everything back.
+#[test]
+fn deleting_a_trade_puts_every_item_back() {
+    let mut pool = in_progress_pool();
+    let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
+    file_and_confirm(&mut pool, &mut new_trade, OWNER).unwrap();
+
+    pool.delete_trade(OWNER, new_trade.id).unwrap();
+
+    assert!(possesses(&pool, OWNER, 131));
+    assert!(possesses(&pool, USER_2, 231));
+    assert!(!possesses(&pool, USER_2, 131));
+    assert!(pool.trades.as_ref().unwrap().is_empty());
 }
 
 #[test]
-fn a_responded_trade_cannot_be_responded_again() {
+fn either_side_of_a_trade_or_a_privileged_user_can_delete_it() {
+    let mut pool = in_progress_pool();
+    let mut new_trade = trade(USER_2, USER_3, vec![231], vec![331]);
+    file_and_confirm(&mut pool, &mut new_trade, USER_2).unwrap();
+
+    // Somebody with nothing to do with the trade cannot.
+    assert!(pool.delete_trade("stranger", new_trade.id).is_err());
+
+    // The pooler that was traded with can.
+    pool.delete_trade(USER_3, new_trade.id).unwrap();
+    assert!(pool.trades.as_ref().unwrap().is_empty());
+
+    // So can the one that filed it.
+    let mut second = trade(USER_2, USER_3, vec![231], vec![331]);
+    file_and_confirm(&mut pool, &mut second, USER_2).unwrap();
+    pool.delete_trade(USER_2, second.id).unwrap();
+
+    // And so can the owner.
+    let mut third = trade(USER_2, USER_3, vec![231], vec![331]);
+    file_and_confirm(&mut pool, &mut third, USER_2).unwrap();
+    pool.delete_trade(OWNER, third.id).unwrap();
+    assert!(pool.trades.as_ref().unwrap().is_empty());
+}
+
+#[test]
+fn a_deleted_trade_cannot_be_deleted_again() {
     let mut pool = in_progress_pool();
     let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
-    pool.create_trade_at(&mut new_trade, OWNER, deadline())
-        .unwrap();
-    pool.trades.as_mut().unwrap()[0].date_created = 0;
-    pool.respond_trade(USER_2, true, new_trade.id).unwrap();
+    file_and_confirm(&mut pool, &mut new_trade, OWNER).unwrap();
+    pool.delete_trade(OWNER, new_trade.id).unwrap();
 
-    assert!(pool.respond_trade(USER_2, true, new_trade.id).is_err());
     assert!(pool.delete_trade(OWNER, new_trade.id).is_err());
 }
 
+// Two trades that moved the same player have to come off in reverse order.
+// Nothing tracks that: the reversal is validated like any other trade, so the
+// one that is no longer undoable simply fails.
 #[test]
-fn an_accepted_trade_moves_picks_to_their_new_owner() {
+fn a_trade_cannot_be_undone_out_of_order() {
+    let mut pool = in_progress_pool();
+
+    let mut first = trade(OWNER, USER_2, vec![131], vec![231]);
+    file_and_confirm(&mut pool, &mut first, OWNER).unwrap();
+
+    // user-2 passes the same player straight on to user-3.
+    let mut second = trade(USER_2, USER_3, vec![131], vec![331]);
+    file_and_confirm(&mut pool, &mut second, USER_2).unwrap();
+
+    // The first trade can no longer be reversed: the player is two rosters away.
+    assert!(pool.delete_trade(OWNER, first.id).is_err());
+
+    // Peeling them off in reverse order works.
+    pool.delete_trade(USER_2, second.id).unwrap();
+    pool.delete_trade(OWNER, first.id).unwrap();
+    assert!(possesses(&pool, OWNER, 131));
+}
+
+#[test]
+fn a_filed_trade_moves_picks_to_their_new_owner() {
     let mut pool = in_progress_pool();
     let round: HashMap<String, String> = PARTICIPANTS
         .iter()
@@ -518,15 +597,505 @@ fn an_accepted_trade_moves_picks_to_their_new_owner() {
         round: 0,
         from: OWNER.to_string(),
     });
-    pool.create_trade_at(&mut new_trade, OWNER, deadline())
-        .unwrap();
-    pool.trades.as_mut().unwrap()[0].date_created = 0;
-
-    pool.respond_trade(USER_2, true, new_trade.id).unwrap();
+    file_and_confirm(&mut pool, &mut new_trade, OWNER).unwrap();
 
     let context = pool.context.as_ref().unwrap();
     assert_eq!(context.tradable_picks.as_ref().unwrap()[0][OWNER], USER_2);
     assert!(possesses(&pool, OWNER, 231));
+
+    // And deleting it hands the pick back.
+    pool.delete_trade(OWNER, new_trade.id).unwrap();
+    let context = pool.context.as_ref().unwrap();
+    assert_eq!(context.tradable_picks.as_ref().unwrap()[0][OWNER], OWNER);
+}
+
+// -------------------------------------------------------------------
+// Open, edited, then confirmed
+// -------------------------------------------------------------------
+
+// Filing is writing the deal down. Nothing moves until somebody signs it off,
+// which is what makes it safe to let every pooler file one.
+#[test]
+fn filing_a_trade_moves_nothing_until_it_is_confirmed() {
+    let mut pool = in_progress_pool();
+    let mut new_trade = trade(USER_2, USER_3, vec![231], vec![331]);
+
+    pool.create_trade_at(&mut new_trade, USER_2, deadline())
+        .unwrap();
+
+    assert_eq!(pool.trades.as_ref().unwrap()[0].status, TradeStatus::Open);
+    assert!(possesses(&pool, USER_2, 231), "nothing has moved yet");
+    assert!(possesses(&pool, USER_3, 331));
+
+    pool.confirm_trade_at(OWNER, new_trade.id, deadline())
+        .unwrap();
+
+    assert_eq!(
+        pool.trades.as_ref().unwrap()[0].status,
+        TradeStatus::Confirmed
+    );
+    assert!(possesses(&pool, USER_3, 231));
+    assert!(possesses(&pool, USER_2, 331));
+}
+
+// Any pooler writes down their own deal; doing it for somebody else, and
+// signing any of them off, is the owner's job.
+#[test]
+fn filing_is_open_to_everyone_but_confirming_is_not() {
+    let mut pool = in_progress_pool();
+
+    let mut new_trade = trade(USER_2, USER_3, vec![231], vec![331]);
+    pool.create_trade_at(&mut new_trade, USER_2, deadline())
+        .unwrap();
+
+    // Neither side of the deal can sign it off themselves.
+    assert!(
+        pool.confirm_trade_at(USER_2, new_trade.id, deadline())
+            .is_err()
+    );
+    assert!(
+        pool.confirm_trade_at(USER_3, new_trade.id, deadline())
+            .is_err()
+    );
+
+    // An assistant can, and so can the owner.
+    pool.settings.assistants = vec![USER_3.to_string()];
+    pool.confirm_trade_at(USER_3, new_trade.id, deadline())
+        .unwrap();
+    assert!(possesses(&pool, USER_3, 231));
+}
+
+// The owner keeps the books, so they are the one who fixes a deal written down
+// wrong before it becomes history.
+#[test]
+fn the_owner_can_correct_an_open_trade_before_confirming_it() {
+    let mut pool = in_progress_pool();
+    let mut new_trade = trade(USER_2, USER_3, vec![231], vec![331]);
+    pool.create_trade_at(&mut new_trade, USER_2, deadline())
+        .unwrap();
+
+    // It was the wrong player, and the wrong day.
+    let mut corrected = trade(USER_2, USER_3, vec![201], vec![331]);
+    corrected.effective_date = Some("2026-12-01".to_string());
+    pool.update_trade_at(OWNER, new_trade.id, &corrected, deadline())
+        .unwrap();
+
+    let stored = &pool.trades.as_ref().unwrap()[0];
+    assert_eq!(stored.from_items.players, vec![201]);
+    assert_eq!(stored.effective_date.as_deref(), Some("2026-12-01"));
+    // The record keeps its identity.
+    assert_eq!(stored.id, new_trade.id);
+    assert_eq!(stored.status, TradeStatus::Open);
+
+    pool.confirm_trade_at(OWNER, new_trade.id, deadline())
+        .unwrap();
+    assert!(possesses(&pool, USER_3, 201));
+    assert!(possesses(&pool, USER_2, 231), "the wrong player stayed put");
+}
+
+#[test]
+fn editing_a_trade_is_not_open_to_the_poolers_in_it() {
+    let mut pool = in_progress_pool();
+    let mut new_trade = trade(USER_2, USER_3, vec![231], vec![331]);
+    pool.create_trade_at(&mut new_trade, USER_2, deadline())
+        .unwrap();
+
+    let corrected = trade(USER_2, USER_3, vec![201], vec![331]);
+    assert!(
+        pool.update_trade_at(USER_2, new_trade.id, &corrected, deadline())
+            .is_err()
+    );
+    assert!(
+        pool.update_trade_at(USER_3, new_trade.id, &corrected, deadline())
+            .is_err()
+    );
+}
+
+// Once it has happened it is history: correcting it would rewrite rosters
+// behind everyone's back.
+#[test]
+fn a_confirmed_trade_cannot_be_edited_or_confirmed_again() {
+    let mut pool = in_progress_pool();
+    let mut new_trade = trade(USER_2, USER_3, vec![231], vec![331]);
+    file_and_confirm(&mut pool, &mut new_trade, USER_2).unwrap();
+
+    // Refused for being confirmed, before what the correction is even made of:
+    // the trade already moved 231 and 331, so nobody holds what it named.
+    let corrected = trade(USER_2, USER_3, vec![201], vec![331]);
+    let result = pool.update_trade_at(OWNER, new_trade.id, &corrected, deadline());
+    assert!(result.unwrap_err().to_string().contains("cannot be edited"));
+
+    let result = pool.confirm_trade_at(OWNER, new_trade.id, deadline());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("already confirmed")
+    );
+}
+
+// An open trade moved nothing, so dropping it is just dropping the record.
+#[test]
+fn deleting_an_open_trade_touches_no_roster() {
+    let mut pool = in_progress_pool();
+    let mut new_trade = trade(USER_2, USER_3, vec![231], vec![331]);
+    pool.create_trade_at(&mut new_trade, USER_2, deadline())
+        .unwrap();
+
+    let deleted = pool.delete_trade(USER_3, new_trade.id).unwrap();
+
+    assert_eq!(deleted.status, TradeStatus::Open);
+    assert!(possesses(&pool, USER_2, 231));
+    assert!(possesses(&pool, USER_3, 331));
+    assert!(pool.trades.as_ref().unwrap().is_empty());
+}
+
+// Only a confirmed trade lands on the draft timeline: an open one has moved
+// nothing for the undo to walk back past.
+#[test]
+fn an_open_trade_is_nowhere_on_the_draft_timeline() {
+    let mut pool = dynasty_draft_pool();
+    pool.draft_player(OWNER, &player(1, Position::F, None))
+        .unwrap();
+
+    let mut new_trade = player_for_pick_trade(OWNER, USER_2, vec![1], 1, USER_2);
+    pool.create_trade(&mut new_trade, OWNER).unwrap();
+    assert_eq!(pool.trades.as_ref().unwrap()[0].draft_pick_index, None);
+
+    // The undo reaches straight past it to the pick.
+    let outcome = pool.undo_draft_player(OWNER).unwrap();
+    assert!(matches!(outcome, UndoOutcome::PickUndone { .. }));
+
+    // And the open trade now names a player nobody holds, so signing it off is
+    // refused rather than corrupting a roster.
+    let result = pool.confirm_trade(OWNER, new_trade.id);
+    assert!(result.unwrap_err().to_string().contains("possess"));
+
+    // Draft the player again and it goes through, landing on the timeline.
+    pool.draft_player(OWNER, &player(1, Position::F, None))
+        .unwrap();
+    pool.confirm_trade(OWNER, new_trade.id).unwrap();
+    assert_eq!(
+        pool.trades.as_ref().unwrap()[0].draft_pick_index,
+        Some(1),
+        "confirming is what places it on the timeline"
+    );
+}
+
+// Legacy records: the old flow's states map onto whether anything had moved.
+#[test]
+fn stored_trades_from_the_old_flow_keep_their_meaning() {
+    let accepted: Trade = serde_json::from_str(
+        r#"{"proposed_by":"a","ask_to":"b","from_items":{"players":[1],"picks":[]},"to_items":{"players":[2],"picks":[]},"status":"ACCEPTED","id":0,"date_created":0}"#,
+    )
+    .unwrap();
+    assert_eq!(accepted.status, TradeStatus::Confirmed);
+
+    for never_applied in ["NEW", "REFUSED", "CANCELLED"] {
+        let trade: Trade = serde_json::from_str(&format!(
+            r#"{{"proposed_by":"a","ask_to":"b","from_items":{{"players":[1],"picks":[]}},"to_items":{{"players":[2],"picks":[]}},"status":"{never_applied}","id":0,"date_created":0}}"#
+        ))
+        .unwrap();
+        assert_eq!(trade.status, TradeStatus::Open);
+    }
+
+    // And one written by the version that had no status at all had applied it.
+    let no_status: Trade = serde_json::from_str(
+        r#"{"proposed_by":"a","ask_to":"b","from_items":{"players":[1],"picks":[]},"to_items":{"players":[2],"picks":[]},"id":0,"date_created":0}"#,
+    )
+    .unwrap();
+    assert_eq!(no_status.status, TradeStatus::Confirmed);
+}
+
+// -------------------------------------------------------------------
+// The day a trade counts from
+// -------------------------------------------------------------------
+
+// A trade is filed after the fact, so it carries the day the poolers shook on
+// it rather than the day somebody got around to recording it.
+#[test]
+fn a_trade_keeps_the_effective_date_it_was_given() {
+    let mut pool = in_progress_pool();
+    let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
+    new_trade.effective_date = Some("2026-12-01".to_string());
+
+    file_and_confirm(&mut pool, &mut new_trade, OWNER).unwrap();
+
+    assert_eq!(
+        pool.trades.as_ref().unwrap()[0].effective_date.as_deref(),
+        Some("2026-12-01")
+    );
+}
+
+#[test]
+fn a_trade_without_a_date_counts_from_the_day_it_was_filed() {
+    let mut pool = in_progress_pool();
+    let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
+
+    file_and_confirm(&mut pool, &mut new_trade, OWNER).unwrap();
+
+    assert_eq!(
+        pool.trades.as_ref().unwrap()[0].effective_date.as_deref(),
+        Some(TRADE_DEADLINE_DATE)
+    );
+}
+
+// Before opening night there is no day of its own to apply to: the trade
+// redefines the lineup the pool opens with.
+#[test]
+fn a_trade_dated_before_the_season_counts_from_opening_night() {
+    let mut pool = in_progress_pool();
+    let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
+    new_trade.effective_date = Some("2020-01-01".to_string());
+
+    file_and_confirm(&mut pool, &mut new_trade, OWNER).unwrap();
+
+    assert_eq!(
+        pool.trades.as_ref().unwrap()[0].effective_date.as_deref(),
+        Some(START_SEASON_DATE)
+    );
+}
+
+#[test]
+fn a_trade_cannot_be_dated_after_the_season_or_with_nonsense() {
+    let mut pool = in_progress_pool();
+
+    let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
+    new_trade.effective_date = Some("2030-01-01".to_string());
+    let result = pool.create_trade_at(&mut new_trade, OWNER, deadline());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("end of the season")
+    );
+
+    let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
+    new_trade.effective_date = Some("not-a-date".to_string());
+    let result = pool.create_trade_at(&mut new_trade, OWNER, deadline());
+    assert!(result.unwrap_err().to_string().contains("not a valid date"));
+
+    // Neither attempt moved anything.
+    assert!(possesses(&pool, OWNER, 131));
+}
+
+// The two between-seasons phases score no days, so there is nothing to date.
+#[test]
+fn a_trade_outside_a_running_pool_carries_no_effective_date() {
+    for status in [PoolState::Dynasty, PoolState::Draft] {
+        let mut pool = in_progress_pool();
+        pool.status = status;
+        let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
+        new_trade.effective_date = Some("2026-12-01".to_string());
+
+        file_and_confirm(&mut pool, &mut new_trade, OWNER).unwrap();
+
+        assert_eq!(pool.trades.as_ref().unwrap()[0].effective_date, None);
+    }
+}
+
+// -------------------------------------------------------------------
+// Trades before the draft has been played
+// -------------------------------------------------------------------
+
+// A pool waiting for its dynasty draft: the picks of that draft live in
+// `past_tradable_picks`, `nb_picks_made` of them have already been played, and
+// the draft order is the participant order.
+fn pre_draft_pool(status: PoolState, rounds: u8, nb_picks_made: usize) -> Pool {
+    let mut pool = in_progress_pool();
+    pool.status = status;
+    pool.draft_order = Some(PARTICIPANTS.iter().map(|id| id.to_string()).collect());
+    pool.settings.dynasty_settings = Some(DynastySettings {
+        next_season_number_players_protected: 2,
+        tradable_picks: rounds,
+        past_season_pool_name: Vec::new(),
+        next_season_pool_name: None,
+    });
+
+    let context = pool.context.as_mut().unwrap();
+    context.past_tradable_picks = Some(
+        (0..rounds)
+            .map(|_| {
+                PARTICIPANTS
+                    .iter()
+                    .map(|id| (id.to_string(), id.to_string()))
+                    .collect()
+            })
+            .collect(),
+    );
+    // The picks of the draft to come are not next season's, which do not exist
+    // yet — the same shape `generate_dynasty` leaves behind.
+    context.tradable_picks = Some(Vec::new());
+    context.players_name_drafted = (0..nb_picks_made as u32).collect();
+    context.protected_players = Some(
+        PARTICIPANTS
+            .iter()
+            .map(|id| (id.to_string(), vec![100, 200]))
+            .collect(),
+    );
+
+    pool
+}
+
+// A pick of `proposed_by` against the reservist of `ask_to` (participant number
+// `i` owns reservist i*100+31, so the owner's is 131 and user-2's is 231).
+fn pick_trade(proposed_by: &str, ask_to: &str, round: u8, from: &str) -> Trade {
+    let asked_reservist = match ask_to {
+        OWNER => 131,
+        USER_2 => 231,
+        _ => 331,
+    };
+    let mut new_trade = trade(proposed_by, ask_to, Vec::new(), vec![asked_reservist]);
+    new_trade.from_items.picks.push(Pick {
+        round,
+        from: from.to_string(),
+    });
+    new_trade
+}
+
+// Before the draft is played, a trade moves the picks of *that* draft
+// (`past_tradable_picks`), not next season's.
+#[test]
+fn a_trade_before_the_draft_moves_the_picks_of_that_draft() {
+    for status in [PoolState::Dynasty, PoolState::Draft] {
+        let mut pool = pre_draft_pool(status, 2, 0);
+        let mut new_trade = pick_trade(OWNER, USER_2, 1, OWNER);
+
+        file_and_confirm(&mut pool, &mut new_trade, OWNER).unwrap();
+
+        let context = pool.context.as_ref().unwrap();
+        assert_eq!(
+            context.past_tradable_picks.as_ref().unwrap()[1][OWNER],
+            USER_2
+        );
+        // Next season's picks are untouched — they do not exist yet.
+        assert!(context.tradable_picks.as_ref().unwrap().is_empty());
+    }
+}
+
+// The picks are consumed one per pooler per round, in draft order. With 3
+// poolers and 4 picks made, rounds 0 and the first pick of round 1 are spent.
+#[test]
+fn a_pick_already_played_in_the_draft_cannot_be_traded() {
+    let mut pool = pre_draft_pool(PoolState::Draft, 2, 4);
+
+    // Round 0 is entirely behind us.
+    let mut spent = pick_trade(OWNER, USER_2, 0, OWNER);
+    let result = pool.create_trade(&mut spent, OWNER);
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("already been used")
+    );
+
+    // So is the owner's pick in round 1: it was the 4th of the draft.
+    let mut spent = pick_trade(OWNER, USER_2, 1, OWNER);
+    let result = pool.create_trade(&mut spent, OWNER);
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("already been used")
+    );
+
+    // The next one has not been played, and can still change hands.
+    let mut new_trade = pick_trade(USER_2, OWNER, 1, USER_2);
+    file_and_confirm(&mut pool, &mut new_trade, USER_2).unwrap();
+    assert_eq!(
+        pool.context
+            .as_ref()
+            .unwrap()
+            .past_tradable_picks
+            .as_ref()
+            .unwrap()[1][USER_2],
+        OWNER
+    );
+}
+
+// Nothing is drafted during the protection window, so every pick of the coming
+// draft is still on the table.
+#[test]
+fn no_pick_is_spent_during_the_protection_window() {
+    let mut pool = pre_draft_pool(PoolState::Dynasty, 2, 0);
+
+    pool.create_trade(&mut pick_trade(OWNER, USER_2, 0, OWNER), OWNER)
+        .unwrap();
+}
+
+// A protection list is built against the roster its author held. A trade during
+// the window can take one of those players away, so both lists go back to
+// empty and the two poolers protect again from the roster they now have.
+#[test]
+fn a_trade_during_the_protection_window_clears_both_protection_lists() {
+    let mut pool = pre_draft_pool(PoolState::Dynasty, 1, 0);
+    let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
+
+    file_and_confirm(&mut pool, &mut new_trade, OWNER).unwrap();
+
+    let protected = pool
+        .context
+        .as_ref()
+        .unwrap()
+        .protected_players
+        .as_ref()
+        .unwrap();
+    assert!(protected[OWNER].is_empty());
+    assert!(protected[USER_2].is_empty());
+    // The pooler that was not part of the trade keeps their protections.
+    assert_eq!(protected[USER_3], vec![100, 200]);
+}
+
+// Deleting a trade moves the rosters a second time, so it invalidates the two
+// protection lists just as filing it did.
+#[test]
+fn deleting_a_trade_during_the_protection_window_clears_both_lists_again() {
+    let mut pool = pre_draft_pool(PoolState::Dynasty, 1, 0);
+    let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
+    file_and_confirm(&mut pool, &mut new_trade, OWNER).unwrap();
+
+    // Both poolers protect again against the roster the trade left them.
+    let protected = pool
+        .context
+        .as_mut()
+        .unwrap()
+        .protected_players
+        .as_mut()
+        .unwrap();
+    protected.insert(OWNER.to_string(), vec![101, 231]);
+    protected.insert(USER_2.to_string(), vec![201, 131]);
+
+    pool.delete_trade(OWNER, new_trade.id).unwrap();
+
+    let protected = pool
+        .context
+        .as_ref()
+        .unwrap()
+        .protected_players
+        .as_ref()
+        .unwrap();
+    assert!(protected[OWNER].is_empty());
+    assert!(protected[USER_2].is_empty());
+    // The pooler that was not part of the trade keeps theirs.
+    assert_eq!(protected[USER_3], vec![100, 200]);
+    // And the players went back.
+    assert!(possesses(&pool, OWNER, 131));
+    assert!(possesses(&pool, USER_2, 231));
+}
+
+// A round or a pooler the pool does not have used to index straight into the
+// picks, which panics the request handler rather than answering it.
+#[test]
+fn a_pick_the_pool_does_not_have_is_refused_not_a_panic() {
+    let mut pool = pre_draft_pool(PoolState::Draft, 2, 0);
+
+    let mut bad_round = pick_trade(OWNER, USER_2, 9, OWNER);
+    let result = pool.create_trade(&mut bad_round, OWNER);
+    assert!(result.unwrap_err().to_string().contains("does not exist"));
+
+    let mut bad_pooler = pick_trade(OWNER, USER_2, 0, "stranger");
+    let result = pool.create_trade(&mut bad_pooler, OWNER);
+    assert!(result.unwrap_err().to_string().contains("does not exist"));
 }
 
 // -------------------------------------------------------------------
@@ -1102,8 +1671,13 @@ fn undo_draft_player_reports_the_reverted_pick() {
 
     let outcome = pool.undo_draft_player(OWNER).unwrap();
 
-    assert_eq!(outcome.drafter, USER_2);
-    assert_eq!(outcome.player_id, 2);
+    assert_eq!(
+        outcome,
+        UndoOutcome::PickUndone {
+            drafter: USER_2.to_string(),
+            player_id: 2,
+        }
+    );
 }
 
 // A dynasty draft pushes a 0 onto `players_name_drafted` for every drafter it
@@ -1482,5 +2056,272 @@ fn mark_as_final_waits_for_the_season_to_end() {
     assert_eq!(
         pool.final_rank.as_ref().unwrap(),
         &[USER_2.to_string(), OWNER.to_string(), USER_3.to_string()]
+    );
+}
+
+// -------------------------------------------------------------------
+// Undo after a trade made during the draft
+// -------------------------------------------------------------------
+
+// A dynasty pool mid-draft: empty rosters, 2 rounds of picks to play, the
+// draft order being the participant order.
+fn dynasty_draft_pool() -> Pool {
+    let mut pool = Pool::new("dynasty-draft", OWNER, &small_settings());
+    pool.participants = PARTICIPANTS.iter().map(|id| pool_user(id)).collect();
+    pool.status = PoolState::Draft;
+    pool.draft_order = Some(PARTICIPANTS.iter().map(|id| id.to_string()).collect());
+    pool.settings.dynasty_settings = Some(DynastySettings {
+        next_season_number_players_protected: 2,
+        tradable_picks: 2,
+        past_season_pool_name: Vec::new(),
+        next_season_pool_name: None,
+    });
+
+    let ids: Vec<String> = PARTICIPANTS.iter().map(|id| id.to_string()).collect();
+    let mut context = PoolContext::new(&ids);
+    context.past_tradable_picks = Some(
+        (0..2)
+            .map(|_| {
+                PARTICIPANTS
+                    .iter()
+                    .map(|id| (id.to_string(), id.to_string()))
+                    .collect()
+            })
+            .collect(),
+    );
+    context.tradable_picks = Some(Vec::new());
+    pool.context = Some(context);
+    pool
+}
+
+// Undo resolves who made a pick by reading the pick's current owner, and picks
+// can now change hands mid-draft. A pick that has already been played cannot be
+// traded, so the owner undo reads is still the one who drafted with it.
+#[test]
+fn undo_follows_a_pick_traded_during_the_draft() {
+    let mut pool = dynasty_draft_pool();
+
+    // Pick 0: the owner drafts with their own first-round pick.
+    pool.draft_player(OWNER, &player(1, Position::F, None))
+        .unwrap();
+
+    // user-2 trades their still-unplayed first-round pick to the owner.
+    let mut new_trade = Trade {
+        proposed_by: USER_2.to_string(),
+        ask_to: OWNER.to_string(),
+        from_items: TradeItems {
+            players: Vec::new(),
+            picks: vec![Pick {
+                round: 0,
+                from: USER_2.to_string(),
+            }],
+        },
+        to_items: TradeItems {
+            players: Vec::new(),
+            picks: vec![Pick {
+                round: 1,
+                from: OWNER.to_string(),
+            }],
+        },
+        id: 0,
+        date_created: 0,
+        status: TradeStatus::Open,
+        effective_date: None,
+        draft_pick_index: None,
+    };
+    file_and_confirm(&mut pool, &mut new_trade, USER_2).unwrap();
+
+    // Pick 1 now belongs to the owner, who drafts with it.
+    let outcome = pool
+        .draft_player(OWNER, &player(2, Position::F, None))
+        .unwrap();
+    assert_eq!(outcome.drafter, OWNER, "pick 1 was traded to the owner");
+
+    // Undoing it has to take the player back off the owner's roster.
+    let undone = pool.undo_draft_player(OWNER).unwrap();
+    assert_eq!(
+        undone,
+        UndoOutcome::PickUndone {
+            drafter: OWNER.to_string(),
+            player_id: 2,
+        }
+    );
+    assert!(!possesses(&pool, OWNER, 2));
+
+    // And out of the pool's player list, so the board stops showing it as
+    // drafted and it can be picked again.
+    assert!(!pool.context.as_ref().unwrap().players.contains_key("2"));
+}
+
+// -------------------------------------------------------------------
+// Undo walking back past a trade
+// -------------------------------------------------------------------
+
+// A trade of `players` (owned by `proposed_by`) against `picks` (owned by
+// `ask_to`), which is the shape a draft-day trade usually takes: rosters are
+// still mostly empty, so the other side pays in picks.
+fn player_for_pick_trade(
+    proposed_by: &str,
+    ask_to: &str,
+    players: Vec<u32>,
+    round: u8,
+    from: &str,
+) -> Trade {
+    Trade {
+        proposed_by: proposed_by.to_string(),
+        ask_to: ask_to.to_string(),
+        from_items: TradeItems {
+            players,
+            picks: Vec::new(),
+        },
+        to_items: TradeItems {
+            players: Vec::new(),
+            picks: vec![Pick {
+                round,
+                from: from.to_string(),
+            }],
+        },
+        id: 0,
+        date_created: 0,
+        status: TradeStatus::Open,
+        effective_date: None,
+        draft_pick_index: None,
+    }
+}
+
+// The case that made undo impossible: a player is drafted, then traded away, so
+// the pick can no longer be taken off the roster it landed on. The trade is an
+// event of the draft too, and it comes off first.
+#[test]
+fn undoing_past_a_trade_reverts_the_trade_first() {
+    let mut pool = dynasty_draft_pool();
+
+    pool.draft_player(OWNER, &player(1, Position::F, None))
+        .unwrap();
+
+    let mut new_trade = player_for_pick_trade(OWNER, USER_2, vec![1], 1, USER_2);
+    file_and_confirm(&mut pool, &mut new_trade, OWNER).unwrap();
+
+    // The trade landed after the first pick, and is stamped there.
+    assert!(possesses(&pool, USER_2, 1));
+    assert_eq!(
+        pool.trades.as_ref().unwrap()[0].draft_pick_index,
+        Some(1),
+        "the trade sits after pick 0"
+    );
+
+    // First undo: the trade comes off, and the pick is still there.
+    let outcome = pool.undo_draft_player(OWNER).unwrap();
+    assert_eq!(outcome, UndoOutcome::TradeReverted { trade_id: 0 });
+    assert!(
+        possesses(&pool, OWNER, 1),
+        "the player is back on the owner"
+    );
+    assert!(!possesses(&pool, USER_2, 1));
+    assert_eq!(
+        pool.context
+            .as_ref()
+            .unwrap()
+            .past_tradable_picks
+            .as_ref()
+            .unwrap()[1][USER_2],
+        USER_2,
+        "the pick went back too"
+    );
+    assert!(
+        pool.trades.as_ref().unwrap().is_empty(),
+        "the trade is dropped, not left listed as cancelled"
+    );
+    assert_eq!(
+        pool.context.as_ref().unwrap().players_name_drafted,
+        vec![1],
+        "the pick itself is untouched"
+    );
+
+    // Second undo: now the pick comes off, as it always did.
+    let outcome = pool.undo_draft_player(OWNER).unwrap();
+    assert_eq!(
+        outcome,
+        UndoOutcome::PickUndone {
+            drafter: OWNER.to_string(),
+            player_id: 1,
+        }
+    );
+    assert!(!possesses(&pool, OWNER, 1));
+    assert!(
+        pool.context
+            .as_ref()
+            .unwrap()
+            .players_name_drafted
+            .is_empty()
+    );
+}
+
+// Only the trades that landed after the last pick are in the way. One made
+// earlier in the draft stays put until the undo has walked back to it.
+#[test]
+fn undo_leaves_a_trade_made_before_the_last_pick_alone() {
+    let mut pool = dynasty_draft_pool();
+
+    pool.draft_player(OWNER, &player(1, Position::F, None))
+        .unwrap();
+
+    let mut new_trade = player_for_pick_trade(OWNER, USER_2, vec![1], 1, USER_2);
+    file_and_confirm(&mut pool, &mut new_trade, OWNER).unwrap();
+
+    // A second pick is made on top of the trade.
+    pool.draft_player(OWNER, &player(2, Position::F, None))
+        .unwrap();
+
+    // The latest event is that pick, so that is what comes off.
+    let outcome = pool.undo_draft_player(OWNER).unwrap();
+    assert!(matches!(
+        outcome,
+        UndoOutcome::PickUndone { player_id: 2, .. }
+    ));
+    assert_eq!(pool.trades.as_ref().unwrap().len(), 1, "the trade stands");
+    assert!(possesses(&pool, USER_2, 1));
+
+    // Now the trade is the latest event again.
+    let outcome = pool.undo_draft_player(OWNER).unwrap();
+    assert_eq!(outcome, UndoOutcome::TradeReverted { trade_id: 0 });
+}
+
+// A trade made outside a running draft carries no position, so it is never
+// something the draft undo can reach.
+#[test]
+fn a_trade_made_outside_the_draft_is_not_stamped() {
+    let mut pool = in_progress_pool();
+    let mut new_trade = trade(OWNER, USER_2, vec![131], vec![231]);
+
+    file_and_confirm(&mut pool, &mut new_trade, OWNER).unwrap();
+
+    assert_eq!(pool.trades.as_ref().unwrap()[0].draft_pick_index, None);
+}
+
+// The undo used to pop the pick before removing the player, so a removal that
+// failed left the pick list one entry short of what it had actually undone.
+#[test]
+fn a_failed_undo_leaves_the_pick_list_untouched() {
+    let mut pool = dynasty_draft_pool();
+    pool.draft_player(OWNER, &player(1, Position::F, None))
+        .unwrap();
+
+    // Take the player off the roster behind the draft's back, so the removal
+    // inside the undo cannot succeed.
+    pool.context
+        .as_mut()
+        .unwrap()
+        .pooler_roster
+        .get_mut(OWNER)
+        .unwrap()
+        .chosen_forwards
+        .clear();
+
+    assert!(pool.undo_draft_player(OWNER).is_err());
+    assert_eq!(
+        pool.context.as_ref().unwrap().players_name_drafted,
+        vec![1],
+        "a failed undo must not consume the pick"
     );
 }

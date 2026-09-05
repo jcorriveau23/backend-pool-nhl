@@ -12,7 +12,9 @@ use tokio::sync::broadcast;
 
 use poolnhl_interface::draft::model::{CommandResponse, RoomUser, RosterModification};
 use poolnhl_interface::errors::Result;
-use poolnhl_interface::pool::model::{Pool, PoolSettings, PoolState, PoolerRoster};
+use poolnhl_interface::pool::model::{
+    Pool, PoolSettings, PoolState, PoolerRoster, Trade, TradeStatus, UndoOutcome,
+};
 
 use crate::database_connection::DatabaseConnection;
 use crate::database_connection::bson_err;
@@ -20,7 +22,7 @@ use crate::jwt::{CachedJwks, hanko_token_decode};
 
 use crate::services::draft_state::DraftServerState;
 use crate::services::players_service::get_player_with_id;
-use crate::services::pool_service::{get_short_pool_by_name, update_pool};
+use crate::services::pool_service::{get_short_pool_by_name, trade_update, update_pool};
 
 pub struct MongoDraftService {
     // Need both collections during Draft session.
@@ -58,6 +60,26 @@ impl MongoDraftService {
                 },
             )
             .await
+    }
+
+    // Persist a trade-list-only change and republish the pool. Filing,
+    // correcting and dropping an open trade all move nothing on any roster.
+    async fn save_and_publish_trades(&self, pool: Pool, pool_name: &str) -> Result<()> {
+        let updated_fields = doc! {
+            "$set": doc!{
+                "trades": to_bson(&pool.trades).map_err(bson_err)?,
+            }
+        };
+
+        let updated_pool = update_pool(
+            updated_fields,
+            &self.pool_collection,
+            pool_name,
+            pool.date_updated,
+        )
+        .await?;
+
+        self.publish_pool_info(pool_name, updated_pool).await
     }
 
     // The roster of `participant` after a draft mutation. Sent with the draft
@@ -183,23 +205,38 @@ impl DraftService for MongoDraftService {
             .await
     }
 
-    // Undo the last DraftPlayer command. This command can only be made by the pool owner.
+    // Undo the last thing the draft did. Usually a pick; when a trade was
+    // accepted after that pick, the trade comes off first.
     async fn undo_draft_player(&self, pool_name: &str, user_id: &str) -> Result<()> {
         let mut pool = get_short_pool_by_name(&self.pool_collection, pool_name).await?;
 
-        // Undo the last draft selection.
         let outcome = pool.undo_draft_player(user_id)?;
 
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),
         })?;
 
-        let updated_fields = doc! {
-            "$set": doc!{
-                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(bson_err)?,
-                "context.players_name_drafted": to_bson(&context.players_name_drafted).map_err(bson_err)?,
-            }
+        // A reverted trade moves players and picks between two rosters and
+        // consumes no pick, so it writes (and broadcasts) different things than
+        // an undone pick.
+        let updated_fields = match outcome {
+            UndoOutcome::PickUndone { .. } => doc! {
+                "$set": doc!{
+                    "context.pooler_roster": to_bson(&context.pooler_roster).map_err(bson_err)?,
+                    "context.players_name_drafted": to_bson(&context.players_name_drafted).map_err(bson_err)?,
+                    "context.players": to_bson(&context.players).map_err(bson_err)?,
+                }
+            },
+            UndoOutcome::TradeReverted { .. } => doc! {
+                "$set": doc!{
+                    "trades": to_bson(&pool.trades).map_err(bson_err)?,
+                    "context.pooler_roster": to_bson(&context.pooler_roster).map_err(bson_err)?,
+                    "context.past_tradable_picks": to_bson(&context.past_tradable_picks).map_err(bson_err)?,
+                    "context.tradable_picks": to_bson(&context.tradable_picks).map_err(bson_err)?,
+                }
+            },
         };
+
         // Update the fields in the mongoDB pool document.
         let updated_pool = update_pool(
             updated_fields,
@@ -208,18 +245,29 @@ impl DraftService for MongoDraftService {
             pool.date_updated,
         )
         .await?;
-        self.state
-            .publish(
-                pool_name,
-                &CommandResponse::DraftPickUndone {
-                    roster: Self::roster_of(&updated_pool, &outcome.drafter)?,
-                    pick_count: Self::pick_count(&updated_pool)?,
-                    participant_id: outcome.drafter,
-                    player_id: outcome.player_id,
-                    date_updated: updated_pool.date_updated,
-                },
-            )
-            .await
+
+        match outcome {
+            UndoOutcome::PickUndone { drafter, player_id } => {
+                self.state
+                    .publish(
+                        pool_name,
+                        &CommandResponse::DraftPickUndone {
+                            roster: Self::roster_of(&updated_pool, &drafter)?,
+                            pick_count: Self::pick_count(&updated_pool)?,
+                            participant_id: drafter,
+                            player_id,
+                            date_updated: updated_pool.date_updated,
+                        },
+                    )
+                    .await
+            }
+            // Two rosters changed at once and no pick was consumed, so there is
+            // no delta shaped for this. The whole pool goes out instead; the
+            // clients drop it if they already hold something newer.
+            UndoOutcome::TradeReverted { .. } => {
+                self.publish_pool_info(pool_name, updated_pool).await
+            }
+        }
     }
 
     // Rearrange the players a participant already holds, during the draft.
@@ -274,6 +322,77 @@ impl DraftService for MongoDraftService {
                 },
             )
             .await
+    }
+
+    // Poolers keep trading while the draft runs. The pool logic is the same one
+    // the REST endpoints use — only the delivery and the broadcast differ.
+    //
+    // A trade moves players and picks between two rosters at once and consumes
+    // no pick, so there is no delta shaped for it: the whole pool goes out and
+    // clients drop it if they already hold something newer.
+    async fn create_trade(&self, pool_name: &str, user_id: &str, trade: &Trade) -> Result<()> {
+        let mut pool = get_short_pool_by_name(&self.pool_collection, pool_name).await?;
+
+        // Filed, not applied: only the trade list changes here.
+        let mut trade = trade.clone();
+        pool.create_trade(&mut trade, user_id)?;
+
+        self.save_and_publish_trades(pool, pool_name).await
+    }
+
+    async fn update_trade(
+        &self,
+        pool_name: &str,
+        user_id: &str,
+        trade_id: u32,
+        trade: &Trade,
+    ) -> Result<()> {
+        let mut pool = get_short_pool_by_name(&self.pool_collection, pool_name).await?;
+
+        pool.update_trade(user_id, trade_id, trade)?;
+
+        self.save_and_publish_trades(pool, pool_name).await
+    }
+
+    async fn confirm_trade(&self, pool_name: &str, user_id: &str, trade_id: u32) -> Result<()> {
+        let mut pool = get_short_pool_by_name(&self.pool_collection, pool_name).await?;
+
+        // This is where the picks of the draft actually change hands.
+        pool.confirm_trade(user_id, trade_id)?;
+
+        let updated_fields = trade_update(&mut pool, None)?;
+        let updated_pool = update_pool(
+            updated_fields,
+            &self.pool_collection,
+            pool_name,
+            pool.date_updated,
+        )
+        .await?;
+
+        self.publish_pool_info(pool_name, updated_pool).await
+    }
+
+    async fn delete_trade(&self, pool_name: &str, user_id: &str, trade_id: u32) -> Result<()> {
+        let mut pool = get_short_pool_by_name(&self.pool_collection, pool_name).await?;
+
+        let deleted = pool.delete_trade(user_id, trade_id)?;
+
+        // Deleting a confirmed trade puts every item back, so it writes the
+        // same fields as confirming one. An open trade only leaves the list.
+        if !matches!(deleted.status, TradeStatus::Confirmed) {
+            return self.save_and_publish_trades(pool, pool_name).await;
+        }
+
+        let updated_fields = trade_update(&mut pool, None)?;
+        let updated_pool = update_pool(
+            updated_fields,
+            &self.pool_collection,
+            pool_name,
+            pool.date_updated,
+        )
+        .await?;
+
+        self.publish_pool_info(pool_name, updated_pool).await
     }
 
     // Update pool settings, this command can only be made by the owner.

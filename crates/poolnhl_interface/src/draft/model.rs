@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     players::model::PlayerInfo,
-    pool::model::{Pool, PoolSettings, PoolState, PoolerRoster},
+    pool::model::{Pool, PoolSettings, PoolState, PoolerRoster, Trade},
     users::model::UserEmailJwtPayload,
 };
 
@@ -88,6 +88,24 @@ pub enum Command {
     // it. The REST endpoint stays for pools that are already running, where
     // there is no room and no socket.
     ModifyRoster(RosterModification),
+    // Poolers keep trading while the draft runs, and a trade moves the picks of
+    // the draft itself — so the room has to see it the same way it sees a pick.
+    // Same split as ModifyRoster: the REST endpoints serve the states that have
+    // no room. Anybody files one; the owner and the assistants correct it and
+    // sign it off, which is the point at which the items actually move.
+    CreateTrade {
+        trade: Box<Trade>,
+    },
+    UpdateTrade {
+        trade_id: u32,
+        trade: Box<Trade>,
+    },
+    ConfirmTrade {
+        trade_id: u32,
+    },
+    DeleteTrade {
+        trade_id: u32,
+    },
 }
 
 // Response return to the sockets clients as commands response.
@@ -254,6 +272,40 @@ mod tests {
         assert_eq!(delta["roster"]["chosen_forwards"], serde_json::json!([7]));
         assert_eq!(delta["roster"]["chosen_reservists"], serde_json::json!([9]));
         assert_eq!(delta["date_updated"], 42);
+    }
+
+    // The web client sends a trade over the socket while the draft is running,
+    // as the same JSON body the REST endpoint takes. Pin the shape: a rename
+    // here silently drops every draft-day trade on the floor.
+    #[test]
+    fn create_trade_command_parses_the_frame_the_web_client_sends() {
+        let command: Command = serde_json::from_str(
+            r#"{"CreateTrade":{"trade":{"proposed_by":"user-1","ask_to":"user-2","from_items":{"players":[7],"picks":[]},"to_items":{"players":[],"picks":[{"round":1,"from":"user-2"}]},"id":0,"date_created":0,"effective_date":null,"draft_pick_index":null}}}"#,
+        )
+        .expect("the client's trade frame must deserialize");
+
+        let Command::CreateTrade { trade } = command else {
+            panic!("expected a CreateTrade command");
+        };
+        assert_eq!(trade.proposed_by, "user-1");
+        assert_eq!(trade.ask_to, "user-2");
+        assert_eq!(trade.from_items.players, vec![7]);
+        assert_eq!(trade.to_items.picks[0].round, 1);
+        // Server-owned fields: the client sends placeholders, the pool stamps
+        // the real values when it files the trade.
+        assert_eq!(trade.effective_date, None);
+        assert_eq!(trade.draft_pick_index, None);
+    }
+
+    #[test]
+    fn delete_trade_command_parses_the_frame_the_web_client_sends() {
+        let command: Command = serde_json::from_str(r#"{"DeleteTrade":{"trade_id":3}}"#)
+            .expect("the client's delete frame must deserialize");
+
+        match command {
+            Command::DeleteTrade { trade_id } => assert_eq!(trade_id, 3),
+            _ => panic!("expected Command::DeleteTrade"),
+        }
     }
 
     // The web client builds this command as {"ModifyRoster": {...}}, so the
