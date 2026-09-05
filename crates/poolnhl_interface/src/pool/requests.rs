@@ -45,6 +45,21 @@ pub struct CreateTradeRequest {
     pub trade: Trade,
 }
 
+// payload to sent when correcting a trade that is not confirmed yet.
+#[derive(Debug, Deserialize, Clone)]
+pub struct UpdateTradeRequest {
+    pub pool_name: String,
+    pub trade_id: u32,
+    pub trade: Trade,
+}
+
+// payload to sent when signing a trade off, which is what applies it.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ConfirmTradeRequest {
+    pub pool_name: String,
+    pub trade_id: u32,
+}
+
 // payload to sent when cancelling a trade.
 #[derive(Debug, Deserialize, Clone)]
 pub struct DeleteTradeRequest {
@@ -53,12 +68,6 @@ pub struct DeleteTradeRequest {
 }
 
 // payload to sent when responding to a trade.
-#[derive(Debug, Deserialize, Clone)]
-pub struct RespondTradeRequest {
-    pub pool_name: String,
-    pub trade_id: u32,
-    pub is_accepted: bool,
-}
 
 // payload to sent when filling a spot with a reservist.
 #[derive(Debug, Deserialize, Clone)]

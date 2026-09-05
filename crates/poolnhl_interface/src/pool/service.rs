@@ -5,10 +5,10 @@ use async_trait::async_trait;
 use crate::errors::Result;
 use crate::pool::model::{Pool, ProjectedPoolShort};
 use crate::pool::requests::{
-    AddPlayerRequest, CompleteProtectionRequest, CreateTradeRequest, DeleteTradeRequest,
-    FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest, ModifyRosterRequest,
-    PoolCreationRequest, PoolDeletionRequest, ProtectPlayersRequest, RemovePlayerRequest,
-    RespondTradeRequest, UpdatePoolSettingsRequest, UpdatePoolerNameRequest,
+    AddPlayerRequest, CompleteProtectionRequest, ConfirmTradeRequest, CreateTradeRequest,
+    DeleteTradeRequest, FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest,
+    ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest, ProtectPlayersRequest,
+    RemovePlayerRequest, UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
 };
 
 #[async_trait]
@@ -30,8 +30,9 @@ pub trait PoolService {
     async fn add_player(&self, user_id: &str, req: AddPlayerRequest) -> Result<Pool>;
     async fn remove_player(&self, user_id: &str, req: RemovePlayerRequest) -> Result<Pool>;
     async fn create_trade(&self, user_id: &str, req: &mut CreateTradeRequest) -> Result<Pool>;
+    async fn update_trade(&self, user_id: &str, req: UpdateTradeRequest) -> Result<Pool>;
+    async fn confirm_trade(&self, user_id: &str, req: ConfirmTradeRequest) -> Result<Pool>;
     async fn delete_trade(&self, user_id: &str, req: DeleteTradeRequest) -> Result<Pool>;
-    async fn respond_trade(&self, user_id: &str, req: RespondTradeRequest) -> Result<Pool>;
     async fn fill_spot(&self, user_id: &str, req: FillSpotRequest) -> Result<Pool>;
     async fn modify_roster(&self, user_id: &str, req: ModifyRosterRequest) -> Result<Pool>;
     async fn update_pool_settings(

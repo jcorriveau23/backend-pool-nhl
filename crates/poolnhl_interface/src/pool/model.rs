@@ -245,29 +245,261 @@ impl Pool {
         user_id: &str,
         today: NaiveDate,
     ) -> Result<(), AppError> {
-        self.validate_pool_status(&PoolState::InProgress)?;
-        // Create a trade in the pool if it is valid to do so..
-        let trade_deadline_date = NaiveDate::parse_from_str(TRADE_DEADLINE_DATE, "%Y-%m-%d")
-            .map_err(|e| AppError::ParseError { msg: e.to_string() })?;
+        self.validate_pool_status_any(&[
+            PoolState::InProgress,
+            PoolState::Draft,
+            PoolState::Dynasty,
+        ])?;
 
-        if today > trade_deadline_date {
+        // The deadline is a rule of the running season, meant to freeze the
+        // rosters before its end. The protection window and the draft both
+        // happen after it (a pool only reaches Dynasty once today is past the
+        // season end, which is itself after the deadline), so applying it there
+        // would reject every trade of those two phases.
+        if matches!(self.status, PoolState::InProgress) {
+            let trade_deadline_date = NaiveDate::parse_from_str(TRADE_DEADLINE_DATE, "%Y-%m-%d")
+                .map_err(|e| AppError::ParseError { msg: e.to_string() })?;
+
+            if today > trade_deadline_date {
+                return Err(AppError::CustomError {
+                    msg: "Trade cannot be created after the trade deadline.".to_string(),
+                });
+            }
+        }
+
+        // A pooler files their own deals; filing one for somebody else is the
+        // owner's job, the same as editing and confirming them.
+        if user_id != trade.proposed_by {
+            self.has_privileges(user_id)?;
+        }
+
+        let effective_date = self.resolve_effective_date(trade.effective_date.as_deref(), today)?;
+        self.validate_trade_shape(trade)?;
+
+        let trades = self.trades.get_or_insert_with(Vec::new);
+
+        trade.date_created = Utc::now().timestamp_millis();
+        trade.status = TradeStatus::Open;
+        trade.effective_date = effective_date;
+        // Nothing has moved, so the trade is nowhere on the draft timeline yet.
+        trade.draft_pick_index = None;
+        // Above the highest id in the list rather than from its length:
+        // deleting a trade from the middle would otherwise let the next one be
+        // filed with an id a surviving trade already carries.
+        trade.id = trades.iter().map(|t| t.id + 1).max().unwrap_or(0);
+        trades.push(trade.clone());
+
+        Ok(())
+    }
+
+    /// Correct a trade that has not been signed off yet.
+    pub fn update_trade(
+        &mut self,
+        user_id: &str,
+        trade_id: u32,
+        updated: &Trade,
+    ) -> Result<(), AppError> {
+        self.update_trade_at(user_id, trade_id, updated, Local::now().date_naive())
+    }
+
+    pub fn update_trade_at(
+        &mut self,
+        user_id: &str,
+        trade_id: u32,
+        updated: &Trade,
+        today: NaiveDate,
+    ) -> Result<(), AppError> {
+        self.validate_pool_status_any(&[
+            PoolState::InProgress,
+            PoolState::Draft,
+            PoolState::Dynasty,
+        ])?;
+        self.has_privileges(user_id)?;
+
+        // Whether the record can be edited at all comes before what it is being
+        // turned into: a confirmed trade is history, however sound the
+        // correction, and it already moved the items the correction names.
+        let stored_status = self
+            .trades
+            .as_ref()
+            .and_then(|trades| trades.iter().find(|trade| trade.id == trade_id))
+            .map(|trade| trade.status.clone())
+            .ok_or_else(|| AppError::CustomError {
+                msg: "The trade does not exist.".to_string(),
+            })?;
+
+        if !matches!(stored_status, TradeStatus::Open) {
             return Err(AppError::CustomError {
-                msg: "Trade cannot be created after the trade deadline.".to_string(),
+                msg: "A confirmed trade cannot be edited. Delete it and file it again.".to_string(),
             });
         }
 
-        // If the user is not the one who proposed the trade it needs to have privileges.
-        if user_id != trade.proposed_by {
-            self.has_privileges(user_id)?;
+        let effective_date =
+            self.resolve_effective_date(updated.effective_date.as_deref(), today)?;
+        self.validate_trade_shape(updated)?;
+
+        let trade = self
+            .trades
+            .as_mut()
+            .and_then(|trades| trades.iter_mut().find(|trade| trade.id == trade_id))
+            .ok_or_else(|| AppError::CustomError {
+                msg: "The trade does not exist.".to_string(),
+            })?;
+
+        // Only what the deal is made of changes. The id and the day it was
+        // filed identify the record and are not the editor's to rewrite.
+        trade.proposed_by = updated.proposed_by.clone();
+        trade.ask_to = updated.ask_to.clone();
+        trade.from_items = updated.from_items.clone();
+        trade.to_items = updated.to_items.clone();
+        trade.effective_date = effective_date;
+
+        Ok(())
+    }
+
+    /// Sign a trade off: the players and the picks change hands now.
+    pub fn confirm_trade(&mut self, user_id: &str, trade_id: u32) -> Result<(), AppError> {
+        self.confirm_trade_at(user_id, trade_id, Local::now().date_naive())
+    }
+
+    pub fn confirm_trade_at(
+        &mut self,
+        user_id: &str,
+        trade_id: u32,
+        today: NaiveDate,
+    ) -> Result<(), AppError> {
+        self.validate_pool_status_any(&[
+            PoolState::InProgress,
+            PoolState::Draft,
+            PoolState::Dynasty,
+        ])?;
+        self.has_privileges(user_id)?;
+
+        let status = self.status.clone();
+        let draft_order = self.draft_order.clone();
+
+        let trade = self
+            .trades
+            .as_ref()
+            .and_then(|trades| trades.iter().find(|trade| trade.id == trade_id))
+            .cloned()
+            .ok_or_else(|| AppError::CustomError {
+                msg: "The trade does not exist.".to_string(),
+            })?;
+
+        if !matches!(trade.status, TradeStatus::Open) {
+            return Err(AppError::CustomError {
+                msg: "This trade is already confirmed.".to_string(),
+            });
+        }
+
+        // The day it counts from is settled here rather than at filing: the
+        // pool may well have changed state in between (the draft finishing is
+        // what starts scoring days at all).
+        let effective_date = self.resolve_effective_date(trade.effective_date.as_deref(), today)?;
+
+        let context = self.context.as_mut().ok_or_else(|| AppError::CustomError {
+            msg: "pool context does not exist.".to_string(),
+        })?;
+
+        // Re-validated on the way in rather than trusted from filing time: the
+        // rosters move on, and the player a trade names may be long gone.
+        context.trade_roster_items(&trade, &status, draft_order.as_deref())?;
+
+        // A protection list is built against the roster the pooler held when
+        // they made it. Once a trade moves players, both lists may name players
+        // their author no longer owns — and `complete_protection` would hand
+        // those players right back. Clearing both is what puts the two poolers
+        // back in front of the roster they actually have.
+        Self::clear_protections_of(context, &trade.proposed_by, &trade.ask_to, &status);
+
+        // Place the trade on the draft timeline so the undo can walk back past
+        // it. Only a running draft has one.
+        let draft_pick_index =
+            matches!(status, PoolState::Draft).then(|| context.players_name_drafted.len() as u32);
+
+        if let Some(trades) = self.trades.as_mut()
+            && let Some(trade) = trades.iter_mut().find(|trade| trade.id == trade_id)
+        {
+            trade.status = TradeStatus::Confirmed;
+            trade.effective_date = effective_date;
+            trade.draft_pick_index = draft_pick_index;
+        }
+
+        Ok(())
+    }
+
+    /// Take a trade back out of the pool.
+    pub fn delete_trade(&mut self, user_id: &str, trade_id: u32) -> Result<Trade, AppError> {
+        self.validate_pool_status_any(&[
+            PoolState::InProgress,
+            PoolState::Draft,
+            PoolState::Dynasty,
+        ])?;
+
+        // Owner and pool assistant can delete any trade.
+        let priviledge_right =
+            self.has_owner_rights(user_id) || self.has_assistants_rights(user_id);
+
+        let status = self.status.clone();
+        let draft_order = self.draft_order.clone();
+
+        let trades = self.trades.as_ref().ok_or_else(|| AppError::CustomError {
+            msg: "There is no trade to the pool yet.".to_string(),
+        })?;
+
+        let trade_index = trades
+            .iter()
+            .position(|trade| trade.id == trade_id)
+            .ok_or_else(|| AppError::CustomError {
+                msg: "The trade does not exist.".to_string(),
+            })?;
+
+        let trade = trades[trade_index].clone();
+
+        // Either side of a trade can take it back, and so can the owner: both
+        // poolers agreed to it, so neither is a stranger to it.
+        if !priviledge_right && trade.proposed_by != *user_id && trade.ask_to != *user_id {
+            return Err(AppError::CustomError {
+                msg: "Only a pooler involved in the trade can delete it.".to_string(),
+            });
+        }
+
+        // An open trade never moved anything, so there is nothing to put back.
+        if matches!(trade.status, TradeStatus::Confirmed) {
+            let context = self.context.as_mut().ok_or_else(|| AppError::CustomError {
+                msg: "pool context does not exist.".to_string(),
+            })?;
+
+            context.revert_trade(&trade, &status, draft_order.as_deref())?;
+            Self::clear_protections_of(context, &trade.proposed_by, &trade.ask_to, &status);
+        }
+
+        if let Some(trades) = self.trades.as_mut() {
+            trades.remove(trade_index);
+        }
+
+        Ok(trade)
+    }
+
+    /// Check a trade names two poolers of this pool, a sane set of items, and
+    /// items each side actually owns right now.
+    ///
+    /// Possession is re-checked at confirmation too, since the rosters keep
+    /// moving while a trade sits open. Checking it here as well is what stops a
+    /// pooler from filing a deal over players or picks that were never theirs:
+    /// otherwise the trade lives in the pool looking legitimate until somebody
+    /// tries to sign it off.
+    fn validate_trade_shape(&self, trade: &Trade) -> Result<(), AppError> {
+        if trade.proposed_by == trade.ask_to {
+            return Err(AppError::CustomError {
+                msg: "A trade needs two different poolers.".to_string(),
+            });
         }
 
         let context = self.context.as_ref().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),
         })?;
-
-        context.validate_trade(trade)?;
-
-        // does the proposedBy and askTo field are valid
 
         if !context.pooler_roster.contains_key(&trade.proposed_by)
             || !context.pooler_roster.contains_key(&trade.ask_to)
@@ -276,136 +508,88 @@ impl Pool {
                 msg: "The users in the trade are not in the pool.".to_string(),
             });
         }
-        if self.trades.is_none() {
-            self.trades = Some(Vec::new());
-        }
 
-        if let Some(trades) = &mut self.trades {
-            // Make sure that user can only have 1 active trade at a time.
-            //return an error if already one trade active in this pool. (Active trade = NEW )
-            for existing_trade in trades.iter() {
-                if (matches!(existing_trade.status, TradeStatus::NEW))
-                    && (existing_trade.proposed_by == trade.proposed_by)
-                {
-                    return Err(AppError::CustomError {
-                        msg: "User can only have one active trade at a time.".to_string(),
-                    });
-                }
-            }
-
-            trade.date_created = Utc::now().timestamp_millis();
-            trade.status = TradeStatus::NEW;
-            trade.id = trades.len() as u32;
-            trades.push(trade.clone());
-        }
-
-        Ok(())
+        context.validate_trade(trade, &self.status, self.draft_order.as_deref())
     }
 
-    pub fn delete_trade(&mut self, user_id: &str, trade_id: u32) -> Result<(), AppError> {
-        self.validate_pool_status(&PoolState::InProgress)?;
-
-        // Owner and pool assistant can delete any new trade.
-        let priviledge_right =
-            self.has_owner_rights(user_id) || self.has_assistants_rights(user_id);
-
-        let trades = self.trades.as_mut().ok_or_else(|| AppError::CustomError {
-            msg: "There is no trade to the pool yet.".to_string(),
-        })?;
-
-        let trade_index = trades
-            .iter()
-            .position(|trade| trade.id == trade_id)
-            .ok_or_else(|| AppError::CustomError {
-                msg: "The trade does not exist.".to_string(),
-            })?;
-
-        // validate that the status of the trade is NEW
-
-        if !matches!(trades[trade_index].status, TradeStatus::NEW) {
-            return Err(AppError::CustomError {
-                msg: "The trade is not in a valid state to be deleted.".to_string(),
-            });
+    /// The day a trade counts from, for the state the pool is in now.
+    ///
+    /// Only a running pool scores days, so the two between-seasons phases carry
+    /// none. A running pool defaults to the day of the call when the caller
+    /// named no date.
+    fn resolve_effective_date(
+        &self,
+        requested: Option<&str>,
+        today: NaiveDate,
+    ) -> Result<Option<String>, AppError> {
+        if !matches!(self.status, PoolState::InProgress) {
+            return Ok(None);
         }
 
-        // validate that only the one that create the trade or the
-        // owner/assistants can delete it.
+        let requested = requested
+            .map(str::to_string)
+            .unwrap_or_else(|| today.format("%Y-%m-%d").to_string());
 
-        if !priviledge_right && trades[trade_index].proposed_by != *user_id {
-            return Err(AppError::CustomError {
-                msg: "Only the one that created the trade can cancel it.".to_string(),
-            });
-        }
-
-        trades.remove(trade_index);
-        Ok(())
+        self.validate_effective_date(&requested).map(Some)
     }
 
-    pub fn respond_trade(
-        &mut self,
-        user_id: &str,
-        is_accepted: bool,
-        trade_id: u32,
-    ) -> Result<(), AppError> {
-        self.validate_pool_status(&PoolState::InProgress)?;
+    /// Send both poolers of a trade back to an empty protection list.
+    ///
+    /// Only during the protection window: everywhere else there are no
+    /// protections to invalidate.
+    fn clear_protections_of(
+        context: &mut PoolContext,
+        first: &str,
+        second: &str,
+        status: &PoolState,
+    ) {
+        if !matches!(status, PoolState::Dynasty) {
+            return;
+        }
+        let Some(protected_players) = context.protected_players.as_mut() else {
+            return;
+        };
 
-        // Owner and pool assistant can respond any new trade.
-        let priviledge_right =
-            self.has_owner_rights(user_id) || self.has_assistants_rights(user_id);
+        for pooler_user_id in [first, second] {
+            if let Some(protection) = protected_players.get_mut(pooler_user_id) {
+                protection.clear();
+            }
+        }
+    }
 
-        let trades = self.trades.as_mut().ok_or_else(|| AppError::CustomError {
-            msg: "There is no trade to the pool yet.".to_string(),
-        })?;
-
-        let trade_index = trades
-            .iter()
-            .position(|trade| trade.id == trade_id)
-            .ok_or_else(|| AppError::CustomError {
-                msg: "The trade does not exist.".to_string(),
+    /// Check a caller-supplied effective date and return it normalised.
+    ///
+    /// A trade can be backdated to the day the poolers shook on it, but not
+    /// outside the season it belongs to: a date beyond either end would stamp a
+    /// lineup on days this pool never scores.
+    fn validate_effective_date(&self, date: &str) -> Result<String, AppError> {
+        let parsed =
+            NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|_| AppError::CustomError {
+                msg: format!("'{date}' is not a valid date (expected yyyy-MM-dd)."),
             })?;
 
-        // validate that the status of the trade is NEW
+        let season_start = NaiveDate::parse_from_str(&self.season_start, "%Y-%m-%d")
+            .map_err(|e| AppError::ParseError { msg: e.to_string() })?;
+        let season_end = NaiveDate::parse_from_str(&self.season_end, "%Y-%m-%d")
+            .map_err(|e| AppError::ParseError { msg: e.to_string() })?;
 
-        if !matches!(trades[trade_index].status, TradeStatus::NEW) {
+        // A trade filed before opening night has no day of its own to apply to:
+        // it redefines the lineup the pool opens with, the same way a lineup
+        // change made in the preseason does.
+        if parsed < season_start {
+            return Ok(self.season_start.clone());
+        }
+
+        if parsed > season_end {
             return Err(AppError::CustomError {
-                msg: "The trade is not in a valid state to be responded.".to_string(),
+                msg: format!(
+                    "A trade cannot take effect after the end of the season ({}).",
+                    self.season_end
+                ),
             });
         }
 
-        // validate that only the one that was ask for the trade or the owner can accept it.
-
-        if !priviledge_right && trades[trade_index].ask_to != *user_id {
-            return Err(AppError::CustomError {
-                msg: "Only the one that was ask for the trade or the owner can accept it."
-                    .to_string(),
-            });
-        }
-
-        // validate that 24h have been passed since the trade was created.
-        let now = Utc::now().timestamp_millis();
-
-        if !priviledge_right && trades[trade_index].date_created + 86_400_000 > now {
-            return Err(AppError::CustomError {
-                msg: "The trade needs to be active for 24h before being able to accept it."
-                    .to_string(),
-            });
-        }
-        if is_accepted {
-            match &mut self.context {
-                None => Err(AppError::CustomError {
-                    msg: "The pool has no context yet.".to_string(),
-                }),
-                Some(pool_context) => {
-                    pool_context.trade_roster_items(&trades[trade_index])?;
-                    trades[trade_index].status = TradeStatus::ACCEPTED;
-                    trades[trade_index].date_accepted = Utc::now().timestamp_millis();
-                    Ok(())
-                }
-            }
-        } else {
-            trades[trade_index].status = TradeStatus::REFUSED;
-            Ok(())
-        }
+        Ok(parsed.format("%Y-%m-%d").to_string())
     }
 
     pub fn fill_spot(
@@ -1199,24 +1383,61 @@ impl Pool {
         today.to_string()
     }
 
+    /// Undo the last thing that happened in the draft.
+    ///
+    /// Picks are not the only events a running draft produces: a trade
+    /// filed during it moves players and picks between rosters, and a player
+    /// drafted and then traded away is no longer on the roster the pick put
+    /// them on. Undoing the pick first would fail — or, worse, would have to
+    /// take the player off somebody who received them in a trade they had
+    /// agreed to. So the draft is walked backwards in the order things
+    /// happened: any trade that landed after the last pick is reversed and
+    /// dropped first, and the pick itself comes off on the next undo.
+    ///
+    /// This call can only be made by the owner.
     pub fn undo_draft_player(&mut self, user_id: &str) -> Result<UndoOutcome, AppError> {
-        // Undo the last draft selection.
-        // This call can only be made if the user id is the owner.
         self.has_owner_privileges(user_id)?;
         self.validate_pool_status(&PoolState::Draft)?;
+
+        let status = self.status.clone();
+        let draft_order = self
+            .draft_order
+            .clone()
+            .ok_or_else(|| AppError::CustomError {
+                msg: "draft order does not exist.".to_string(),
+            })?;
 
         let context = self.context.as_mut().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),
         })?;
 
-        let draft_order = self
-            .draft_order
-            .as_ref()
-            .ok_or_else(|| AppError::CustomError {
-                msg: "draft order does not exist.".to_string(),
-            })?;
+        // The most recent trade sitting after the last pick, if there is one.
+        // Trades are appended in order, so the last match is the latest.
+        let picks_made = context.players_name_drafted.len() as u32;
+        let latest_trade = self.trades.as_ref().and_then(|trades| {
+            trades
+                .iter()
+                .rposition(|trade| {
+                    matches!(trade.status, TradeStatus::Confirmed)
+                        && trade.draft_pick_index == Some(picks_made)
+                })
+                .map(|index| (index, trades[index].clone()))
+        });
 
-        context.undo_draft_player(draft_order, &self.settings)
+        if let Some((trade_index, trade)) = latest_trade {
+            context.revert_trade(&trade, &status, Some(&draft_order))?;
+
+            // Dropped rather than marked: the trade never happened as far as
+            // the draft is now concerned, and leaving it listed as cancelled
+            // would suggest somebody turned it down.
+            if let Some(trades) = self.trades.as_mut() {
+                trades.remove(trade_index);
+            }
+
+            return Ok(UndoOutcome::TradeReverted { trade_id: trade.id });
+        }
+
+        context.undo_draft_player(&draft_order, &self.settings)
     }
 
     pub fn validate_participant(&self, user_id: &str) -> Result<(), AppError> {
@@ -1325,11 +1546,19 @@ pub struct DraftOutcome {
     pub is_done: bool,
 }
 
-// What an undo reverted, so the caller can broadcast the delta.
+// What an undo reverted, so the caller can broadcast it.
+//
+// Undo walks the draft backwards one event at a time, and a trade filed during
+// the draft is one of those events: it sits between two picks and has to come
+// back off before the pick before it can.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UndoOutcome {
-    pub drafter: String,
-    pub player_id: u32,
+pub enum UndoOutcome {
+    // The last pick was taken back off its drafter's roster.
+    PickUndone { drafter: String, player_id: u32 },
+    // A trade that had been filed after the last pick was reversed and
+    // dropped. Two rosters changed and no pick was consumed, so the caller
+    // republishes the pool rather than a pick delta.
+    TradeReverted { trade_id: u32 },
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)] // Copy
@@ -1877,72 +2106,75 @@ impl PoolContext {
         participants: &[String],
         settings: &PoolSettings,
     ) -> Result<UndoOutcome, AppError> {
-        // validate there is something to undo.
+        // Nothing is mutated until every lookup has succeeded. This used to pop
+        // the pick first and remove the player afterwards, so a removal that
+        // failed left the pick list short of an entry it had not undone.
+        let (pick_index, latest_pick_id) = self
+            .players_name_drafted
+            .iter()
+            .rposition(|player_id| *player_id > 0)
+            .map(|index| (index, self.players_name_drafted[index]))
+            .ok_or_else(|| AppError::CustomError {
+                msg: "Ther is nothing to undo yet.".to_string(),
+            })?;
 
-        let latest_pick_id;
+        let latest_drafter = self.drafter_of_pick(pick_index, participants, settings)?;
 
-        loop {
-            match self.players_name_drafted.pop() {
-                Some(player_id) => {
-                    if player_id > 0 {
-                        latest_pick_id = player_id; // found the last drafted player.
-                        break;
-                    }
-                }
-                None => {
-                    return Err(AppError::CustomError {
-                        msg: "Ther is nothing to undo yet.".to_string(),
-                    });
-                }
-            }
-        }
+        // The player has to still be where the pick put them. When they are
+        // not, a trade moved them and that trade is the thing to undo first —
+        // which is what the caller checks before getting here.
+        self.remove_player_from_roster(latest_pick_id, &latest_drafter)?;
+        self.players.remove(&latest_pick_id.to_string()); // Also remove the player from the pool players list.
 
-        let pick_number = self.players_name_drafted.len();
-        let latest_drafter;
+        // Drop the pick and the skipped-drafter zeros that trailed it.
+        self.players_name_drafted.truncate(pick_index);
 
+        Ok(UndoOutcome::PickUndone {
+            drafter: latest_drafter,
+            player_id: latest_pick_id,
+        })
+    }
+
+    /// Who made the pick at `pick_index`.
+    ///
+    /// The same arithmetic the draft itself uses to name the next drafter, run
+    /// on a past position instead of the current one.
+    pub fn drafter_of_pick(
+        &self,
+        pick_index: usize,
+        participants: &[String],
+        settings: &PoolSettings,
+    ) -> Result<String, AppError> {
         match (&settings.dynasty_settings, &self.past_tradable_picks) {
-            (Some(dynasty_settings), Some(past_tradable_picks)) => {
+            (Some(_), Some(past_tradable_picks)) => {
                 // This comes from a Dynasty draft.
+                let next_drafter = &participants[pick_index % participants.len()];
+                let round = pick_index / participants.len();
 
-                let nb_tradable_picks = dynasty_settings.tradable_picks;
-
-                let index = pick_number % participants.len();
-
-                let next_drafter = &participants[index];
-
-                if pick_number < nb_tradable_picks as usize * participants.len() {
-                    // use the tradable_picks to see who will draft next.
-                    latest_drafter =
-                        past_tradable_picks[pick_number / participants.len()][next_drafter].clone();
-                } else {
-                    // Use the draft order to see who draft next.
-                    latest_drafter = next_drafter.clone();
+                // Within the traded rounds the pick may belong to somebody
+                // else; past them the draft order is what it says it is.
+                match past_tradable_picks.get(round) {
+                    Some(round_owners) => Ok(round_owners
+                        .get(next_drafter)
+                        .unwrap_or(next_drafter)
+                        .clone()),
+                    None => Ok(next_drafter.clone()),
                 }
             }
             _ => {
                 // this comes from a newly created draft.
-
-                let round = pick_number / participants.len();
+                let round = pick_index / participants.len();
 
                 // Snake draft, reverse draft order each round.
                 let index = if round % 2 == 1 {
-                    participants.len() - 1 - (pick_number % participants.len()) // reversed
+                    participants.len() - 1 - (pick_index % participants.len()) // reversed
                 } else {
-                    pick_number % participants.len() // Original
+                    pick_index % participants.len() // Original
                 };
 
-                latest_drafter = participants[index].clone();
+                Ok(participants[index].clone())
             }
         }
-
-        // Remove the player from the player roster.
-
-        self.remove_player_from_roster(latest_pick_id, &latest_drafter)?;
-        self.players.remove(&latest_pick_id.to_string()); // Also remove the player from the pool players list.
-        Ok(UndoOutcome {
-            drafter: latest_drafter,
-            player_id: latest_pick_id,
-        })
     }
 
     pub fn remove_player_from_roster(
@@ -1998,9 +2230,45 @@ impl PoolContext {
         self.add_player_to_reservists(player_id, user_receiver)
     }
 
-    pub fn trade_roster_items(&mut self, trade: &Trade) -> Result<(), AppError> {
+    /// The list of picks a trade moves while the pool is in `status`.
+    pub fn tradable_picks_in(&self, status: &PoolState) -> Option<&Vec<HashMap<String, String>>> {
+        match status {
+            PoolState::Dynasty | PoolState::Draft => self.past_tradable_picks.as_ref(),
+            _ => self.tradable_picks.as_ref(),
+        }
+    }
+
+    fn tradable_picks_in_mut(
+        &mut self,
+        status: &PoolState,
+    ) -> Option<&mut Vec<HashMap<String, String>>> {
+        match status {
+            PoolState::Dynasty | PoolState::Draft => self.past_tradable_picks.as_mut(),
+            _ => self.tradable_picks.as_mut(),
+        }
+    }
+
+    /// Whether a pick has already been played in the draft that is running.
+    pub fn is_pick_used(&self, pick: &Pick, status: &PoolState, draft_order: &[String]) -> bool {
+        if !matches!(status, PoolState::Dynasty | PoolState::Draft) {
+            return false;
+        }
+
+        let Some(rank) = draft_order.iter().position(|user_id| user_id == &pick.from) else {
+            return false;
+        };
+
+        pick.round as usize * draft_order.len() + rank < self.players_name_drafted.len()
+    }
+
+    pub fn trade_roster_items(
+        &mut self,
+        trade: &Trade,
+        status: &PoolState,
+        draft_order: Option<&[String]>,
+    ) -> Result<(), AppError> {
         // Make sure the trade is valid before executing it.
-        self.validate_trade(trade)?;
+        self.validate_trade(trade, status, draft_order)?;
 
         // Migrate players "from" -> "to"
         for player_id in trade.from_items.players.iter() {
@@ -2012,59 +2280,99 @@ impl PoolContext {
             self.trade_roster_player(*player_id, &trade.ask_to, &trade.proposed_by)?;
         }
 
-        // Migrate picks "from" -> "to"
-        for pick in trade.from_items.picks.iter() {
-            if let Some(tradable_picks) = &mut self.tradable_picks
-                && let Some(owner) = tradable_picks[pick.round as usize].get_mut(&pick.from)
-            {
-                *owner = trade.ask_to.clone();
-            }
-        }
-
-        // Migrate picks "to" -> "from"
-        for pick in trade.to_items.picks.iter() {
-            if let Some(tradable_picks) = &mut self.tradable_picks
-                && let Some(owner) = tradable_picks[pick.round as usize].get_mut(&pick.from)
-            {
-                *owner = trade.proposed_by.clone();
+        // Migrate the picks of each side to the other. The validation above
+        // proved every one of them names a round and a pooler the pool has.
+        for (picks, new_owner) in [
+            (&trade.from_items.picks, &trade.ask_to),
+            (&trade.to_items.picks, &trade.proposed_by),
+        ] {
+            for pick in picks {
+                if let Some(tradable_picks) = self.tradable_picks_in_mut(status)
+                    && let Some(owner) = tradable_picks
+                        .get_mut(pick.round as usize)
+                        .and_then(|round| round.get_mut(&pick.from))
+                {
+                    *owner = new_owner.clone();
+                }
             }
         }
 
         Ok(())
+    }
+
+    /// Put back everything a trade moved.
+    pub fn revert_trade(
+        &mut self,
+        trade: &Trade,
+        status: &PoolState,
+        draft_order: Option<&[String]>,
+    ) -> Result<(), AppError> {
+        let reversed = Trade {
+            proposed_by: trade.ask_to.clone(),
+            ask_to: trade.proposed_by.clone(),
+            ..trade.clone()
+        };
+
+        self.trade_roster_items(&reversed, status, draft_order)
     }
 
     pub fn validate_trade_items(
         &self,
         trade_items: &TradeItems,
         user_id: &str,
+        status: &PoolState,
+        draft_order: Option<&[String]>,
     ) -> Result<(), AppError> {
         // Validate that the trade items are valid for a trade side.
-        if let Some(from_pooler_roster) = self.pooler_roster.get(user_id) {
-            for player_id in &trade_items.players {
-                if !from_pooler_roster.validate_player_possession(*player_id) {
-                    return Err(AppError::CustomError {
-                        msg: "ther user does not possess one of the traded player!".to_string(),
-                    });
-                }
+        let pooler_roster =
+            self.pooler_roster
+                .get(user_id)
+                .ok_or_else(|| AppError::CustomError {
+                    msg: "The users in the trade are not in the pool.".to_string(),
+                })?;
+
+        for player_id in &trade_items.players {
+            if !pooler_roster.validate_player_possession(*player_id) {
+                return Err(AppError::CustomError {
+                    msg: "ther user does not possess one of the traded player!".to_string(),
+                });
+            }
+        }
+
+        for pick in &trade_items.picks {
+            // The round and the pooler both come from the request: reaching
+            // into the picks by index and key would panic the handler on a
+            // round the pool does not have.
+            let owner = self
+                .tradable_picks_in(status)
+                .and_then(|rounds| rounds.get(pick.round as usize))
+                .and_then(|round| round.get(&pick.from))
+                .ok_or_else(|| AppError::CustomError {
+                    msg: "This draft pick does not exist in this pool.".to_string(),
+                })?;
+
+            if owner != user_id {
+                return Err(AppError::CustomError {
+                    msg: "ther user does not possess the traded pick!".to_string(),
+                });
             }
 
-            if let Some(tradable_picks) = &self.tradable_picks {
-                for pick in &trade_items.picks {
-                    if tradable_picks[pick.round as usize][&pick.from] != user_id {
-                        return Err(AppError::CustomError {
-                            msg: "ther user does not possess the traded pick!".to_string(),
-                        });
-                    }
-                }
+            // A pick that has been played is already a player on a roster:
+            // there is nothing left in it to hand over.
+            if let Some(draft_order) = draft_order
+                && self.is_pick_used(pick, status, draft_order)
+            {
+                return Err(AppError::CustomError {
+                    msg: "This draft pick has already been used in the draft.".to_string(),
+                });
             }
         }
 
         Ok(())
     }
 
-    pub fn validate_trade(&self, trade: &Trade) -> Result<(), AppError> {
-        // Validate if the full trade is valid
-
+    /// How much a trade is allowed to carry, regardless of who owns what.
+    pub fn validate_trade_size(&self, trade: &Trade) -> Result<(), AppError> {
         // does the the from or to side has items in the trade ?
 
         if (trade.from_items.picks.len() + trade.from_items.players.len()) == 0
@@ -2085,8 +2393,20 @@ impl PoolContext {
             });
         }
 
-        self.validate_trade_items(&trade.from_items, &trade.proposed_by)?;
-        self.validate_trade_items(&trade.to_items, &trade.ask_to)
+        Ok(())
+    }
+
+    pub fn validate_trade(
+        &self,
+        trade: &Trade,
+        status: &PoolState,
+        draft_order: Option<&[String]>,
+    ) -> Result<(), AppError> {
+        // Validate if the full trade is valid
+        self.validate_trade_size(trade)?;
+
+        self.validate_trade_items(&trade.from_items, &trade.proposed_by, status, draft_order)?;
+        self.validate_trade_items(&trade.to_items, &trade.ask_to, status, draft_order)
     }
 
     pub fn get_forwards_count(&self, user_id: &str) -> Result<usize, AppError> {
@@ -2223,30 +2543,50 @@ pub struct Pick {
     pub from: String,
 }
 
+/// Where a trade is between being written down and taking effect.
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
+pub enum TradeStatus {
+    /// Filed by a pooler. Nothing has moved yet, and the owner or an assistant
+    /// can still change it.
+    #[serde(alias = "NEW", alias = "CANCELLED", alias = "REFUSED")]
+    Open,
+    /// Signed off by the owner or an assistant: the players and picks have
+    /// changed hands. Deleting it is what puts them back.
+    ///
+    /// The default so that a trade stored before this field existed — when
+    /// filing one applied it on the spot — is read as what it was.
+    #[default]
+    #[serde(alias = "ACCEPTED")]
+    Confirmed,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Trade {
     pub proposed_by: String,
     pub ask_to: String,
     pub from_items: TradeItems,
     pub to_items: TradeItems,
-    pub status: TradeStatus,
     pub id: u32,
     pub date_created: i64,
-    pub date_accepted: i64,
+
+    /// Whether the trade has been signed off yet. Anybody can write one down;
+    /// only the owner and the assistants turn it into a done deal.
+    #[serde(default)]
+    pub status: TradeStatus,
+
+    /// The day the trade takes effect for scoring (yyyy-MM-dd).
+    #[serde(default)]
+    pub effective_date: Option<String>,
+
+    /// `None` on every trade made outside a running draft.
+    #[serde(default)]
+    pub draft_pick_index: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TradeItems {
     pub players: Vec<u32>, // Id of the player
     pub picks: Vec<Pick>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub enum TradeStatus {
-    NEW,       // trade created by a requester (not yet ACCEPTED/CANCELLED/REFUSED)
-    ACCEPTED,  // trade accepted items were officially traded
-    CANCELLED, // items were not traded cancelled by the requester
-    REFUSED,   // items were not traded cancelled by the one requested for the traded
 }
 
 #[cfg(test)]

@@ -21,8 +21,8 @@ use poolnhl_interface::pool::model::{
     Pool, PoolContext, PoolSettings, PoolState, PoolUser, Trade, TradeItems, TradeStatus,
 };
 use poolnhl_interface::pool::requests::{
-    AddPlayerRequest, PoolCreationRequest, PoolDeletionRequest, RespondTradeRequest,
-    UpdatePoolerNameRequest,
+    AddPlayerRequest, ConfirmTradeRequest, CreateTradeRequest, DeleteTradeRequest,
+    PoolCreationRequest, PoolDeletionRequest, UpdatePoolerNameRequest,
 };
 use poolnhl_interface::pool::scoring::{DailyRosterPoints, Roster};
 use poolnhl_interface::pool::service::PoolService;
@@ -192,49 +192,57 @@ async fn get_pool_by_name_with_range_prunes_the_earlier_days() {
 
 #[tokio::test]
 #[ignore = "requires a running mongo (docker compose up -d mongo)"]
-async fn respond_trade_persists_the_roster_swap() {
+async fn filing_then_confirming_a_trade_persists_the_roster_swap() {
     let (service, collection) = service_and_collection().await;
     let pool_name = unique_pool_name("trade");
-    let mut pool = in_progress_pool(&pool_name);
-    // A pending trade, created more than 24h ago, of reservist 1 for 2.
-    pool.trades = Some(vec![Trade {
-        proposed_by: OWNER.to_string(),
-        ask_to: USER_2.to_string(),
-        from_items: TradeItems {
-            players: vec![1],
-            picks: Vec::new(),
-        },
-        to_items: TradeItems {
-            players: vec![2],
-            picks: Vec::new(),
-        },
-        status: TradeStatus::NEW,
-        id: 0,
-        date_created: 0,
-        date_accepted: 0,
-    }]);
+    let pool = in_progress_pool(&pool_name);
     collection.insert_one(&pool, None).await.unwrap();
 
+    // Filing a trade of reservist 1 for 2 applies it there and then.
+    let mut req = CreateTradeRequest {
+        pool_name: pool_name.clone(),
+        trade: Trade {
+            proposed_by: OWNER.to_string(),
+            ask_to: USER_2.to_string(),
+            from_items: TradeItems {
+                players: vec![1],
+                picks: Vec::new(),
+            },
+            to_items: TradeItems {
+                players: vec![2],
+                picks: Vec::new(),
+            },
+            id: 0,
+            date_created: 0,
+            status: TradeStatus::Open,
+            effective_date: None,
+            draft_pick_index: None,
+        },
+    };
+
+    let filed = service.create_trade(OWNER, &mut req).await.unwrap();
+
+    // Filed but not applied: the rosters are untouched and the trade is open.
+    let roster = &filed.context.as_ref().unwrap().pooler_roster;
+    assert_eq!(roster[OWNER].chosen_reservists, vec![1]);
+    assert_eq!(filed.trades.as_ref().unwrap()[0].status, TradeStatus::Open);
+
+    let trade_id = filed.trades.as_ref().unwrap()[0].id;
     let updated = service
-        .respond_trade(
-            USER_2,
-            RespondTradeRequest {
+        .confirm_trade(
+            OWNER,
+            ConfirmTradeRequest {
                 pool_name: pool_name.clone(),
-                trade_id: 0,
-                is_accepted: true,
+                trade_id,
             },
         )
         .await
         .unwrap();
 
-    // The returned document holds the swapped rosters and the accepted trade.
+    // The returned document holds the swapped rosters.
     let roster = &updated.context.as_ref().unwrap().pooler_roster;
     assert_eq!(roster[OWNER].chosen_reservists, vec![2]);
     assert_eq!(roster[USER_2].chosen_reservists, vec![1]);
-    assert!(matches!(
-        updated.trades.as_ref().unwrap()[0].status,
-        TradeStatus::ACCEPTED
-    ));
     // update_pool projects the heavy score_by_day field out of its response.
     assert!(updated.context.as_ref().unwrap().score_by_day.is_none());
 
@@ -243,6 +251,24 @@ async fn respond_trade_persists_the_roster_swap() {
     let roster = &fetched.context.as_ref().unwrap().pooler_roster;
     assert_eq!(roster[OWNER].chosen_reservists, vec![2]);
     assert_eq!(roster[USER_2].chosen_reservists, vec![1]);
+
+    // Deleting it puts both reservists back, and persists that too.
+    service
+        .delete_trade(
+            OWNER,
+            DeleteTradeRequest {
+                pool_name: pool_name.clone(),
+                trade_id,
+            },
+        )
+        .await
+        .unwrap();
+
+    let fetched = service.get_pool_by_name(&pool_name).await.unwrap();
+    let roster = &fetched.context.as_ref().unwrap().pooler_roster;
+    assert_eq!(roster[OWNER].chosen_reservists, vec![1]);
+    assert_eq!(roster[USER_2].chosen_reservists, vec![2]);
+    assert!(fetched.trades.as_ref().unwrap().is_empty());
 
     cleanup(&collection, &pool_name).await;
 }

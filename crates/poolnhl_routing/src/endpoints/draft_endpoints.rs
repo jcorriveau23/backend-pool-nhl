@@ -55,6 +55,10 @@ fn command_name(command: &Command) -> &'static str {
         Command::DraftPlayer { .. } => "draft_player",
         Command::UndoDraftPlayer => "undo_draft_player",
         Command::ModifyRoster(_) => "modify_roster",
+        Command::CreateTrade { .. } => "create_trade",
+        Command::UpdateTrade { .. } => "update_trade",
+        Command::ConfirmTrade { .. } => "confirm_trade",
+        Command::DeleteTrade { .. } => "delete_trade",
     }
 }
 
@@ -428,6 +432,71 @@ impl DraftRouter {
                                                         &current_pool_name,
                                                         &user.sub,
                                                         &modification,
+                                                    )
+                                                    .await
+                                            {
+                                                timer.failed();
+                                                let _ = send_task_sender
+                                                    .send(Message::Text(e.to_string()))
+                                                    .await;
+                                            }
+                                        }
+                                        Command::CreateTrade { trade } => {
+                                            if let Some(user) = &user
+                                                && let Err(e) = draft_service
+                                                    .create_trade(
+                                                        &current_pool_name,
+                                                        &user.sub,
+                                                        &trade,
+                                                    )
+                                                    .await
+                                            {
+                                                timer.failed();
+                                                let _ = send_task_sender
+                                                    .send(Message::Text(e.to_string()))
+                                                    .await;
+                                            }
+                                        }
+                                        Command::UpdateTrade { trade_id, trade } => {
+                                            if let Some(user) = &user
+                                                && let Err(e) = draft_service
+                                                    .update_trade(
+                                                        &current_pool_name,
+                                                        &user.sub,
+                                                        trade_id,
+                                                        &trade,
+                                                    )
+                                                    .await
+                                            {
+                                                timer.failed();
+                                                let _ = send_task_sender
+                                                    .send(Message::Text(e.to_string()))
+                                                    .await;
+                                            }
+                                        }
+                                        Command::ConfirmTrade { trade_id } => {
+                                            if let Some(user) = &user
+                                                && let Err(e) = draft_service
+                                                    .confirm_trade(
+                                                        &current_pool_name,
+                                                        &user.sub,
+                                                        trade_id,
+                                                    )
+                                                    .await
+                                            {
+                                                timer.failed();
+                                                let _ = send_task_sender
+                                                    .send(Message::Text(e.to_string()))
+                                                    .await;
+                                            }
+                                        }
+                                        Command::DeleteTrade { trade_id } => {
+                                            if let Some(user) = &user
+                                                && let Err(e) = draft_service
+                                                    .delete_trade(
+                                                        &current_pool_name,
+                                                        &user.sub,
+                                                        trade_id,
                                                     )
                                                     .await
                                             {
