@@ -7,6 +7,7 @@ use crate::{
 };
 use chrono::{Duration, Local, NaiveDate, Timelike, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     fmt,
@@ -167,6 +168,73 @@ impl PoolSettings {
     }
 }
 
+pub const MAX_EMAIL_LENGTH: usize = 254;
+
+/// Trim an address and case-fold it, so the same address typed two ways
+/// matches the one the invitee signs in with.
+pub fn normalize_email(email: &str) -> Result<String, AppError> {
+    let email = email.trim().to_lowercase();
+
+    if email.chars().count() > MAX_EMAIL_LENGTH {
+        return Err(AppError::CustomError {
+            msg: format!("An email address cannot be longer than {MAX_EMAIL_LENGTH} characters."),
+        });
+    }
+
+    let (local, domain) = email.split_once('@').ok_or_else(|| AppError::CustomError {
+        msg: format!("'{email}' is not an email address."),
+    })?;
+
+    if local.is_empty() || domain.is_empty() || domain.contains('@') || !domain.contains('.') {
+        return Err(AppError::CustomError {
+            msg: format!("'{email}' is not an email address."),
+        });
+    }
+
+    Ok(email)
+}
+
+/// The SHA-256 of a normalized address, as lowercase hex.
+pub fn hash_email(normalized_email: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(normalized_email.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// A redacted form of an address, for the owner to recognize the invitation
+/// they filed by ("ra***l@example.com").
+pub fn mask_email(normalized_email: &str) -> String {
+    let Some((local, domain)) = normalized_email.split_once('@') else {
+        return "***".to_string();
+    };
+
+    let characters: Vec<char> = local.chars().collect();
+
+    match characters.as_slice() {
+        [first, .., last] if characters.len() > 3 => format!("{first}***{last}@{domain}"),
+        _ => format!("***@{domain}"),
+    }
+}
+
+/// An invitation, filed by the pool owner, for whoever signs in with a given
+/// email address to take one of the poolers of the pool over.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct PendingPoolerLink {
+    /// The pooler being handed over. Still carries its current id.
+    pub pooler_user_id: String,
+
+    /// SHA-256 of the normalized invited address. See [`hash_email`].
+    pub email_hash: String,
+
+    /// Redacted address, for the owner's own UI. See [`mask_email`].
+    pub email_hint: String,
+
+    /// The owner who filed the invitation, kept for the audit trail.
+    pub requested_by: String,
+
+    pub date_requested: i64,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PoolUser {
     pub id: String,
@@ -206,6 +274,11 @@ pub struct Pool {
     // Trade information.
     pub trades: Option<Vec<Trade>>,
 
+    // Invitations waiting on the person they name to sign in and accept them.
+    // Absent on every pool that has never had one filed.
+    #[serde(default)]
+    pub pending_pooler_links: Option<Vec<PendingPoolerLink>>,
+
     // context of the pool.
     pub context: Option<PoolContext>,
     pub date_updated: i64,
@@ -225,6 +298,7 @@ impl Pool {
             final_rank: None,
             draft_order: None,
             trades: None,
+            pending_pooler_links: None,
             context: None,
             date_updated: 0,
             season_start: START_SEASON_DATE.to_string(),
@@ -1263,6 +1337,265 @@ impl Pool {
         participant.name = new_name.to_string();
 
         Ok(())
+    }
+
+    /// Invite whoever signs in with `email` to take the pooler `pooler_user_id`
+    /// over.
+    ///
+    /// Nothing moves here. The pool has no way to turn an address into an
+    /// account — identity lives in Hanko and the app keeps no user directory —
+    /// so the invitation is written down and waits for its target to sign in
+    /// and accept it, which is also what keeps a pooler from being handed to
+    /// somebody who never agreed to take it.
+    ///
+    /// Filing one is the owner's alone, the same as renaming a pooler: it
+    /// decides who ends up holding a roster.
+    pub fn request_pooler_link(
+        &mut self,
+        user_id: &str,
+        pooler_user_id: &str,
+        email: &str,
+    ) -> Result<(), AppError> {
+        self.has_owner_privileges(user_id)?;
+
+        let email = normalize_email(email)?;
+        let email_hash = hash_email(&email);
+
+        if !self
+            .participants
+            .iter()
+            .any(|user| user.id == pooler_user_id)
+        {
+            return Err(AppError::CustomError {
+                msg: format!("User {pooler_user_id} is not a pool participants."),
+            });
+        }
+
+        let link = PendingPoolerLink {
+            pooler_user_id: pooler_user_id.to_string(),
+            email_hash,
+            email_hint: mask_email(&email),
+            requested_by: user_id.to_string(),
+            date_requested: Utc::now().timestamp_millis(),
+        };
+
+        let links = self.pending_pooler_links.get_or_insert_with(Vec::new);
+
+        // One invitation per pooler: filing a second one for the same pooler is
+        // the owner correcting the address they typed, not a second candidate.
+        links.retain(|pending| pending.pooler_user_id != link.pooler_user_id);
+        links.push(link);
+
+        Ok(())
+    }
+
+    /// Withdraw the invitation standing on `pooler_user_id`.
+    pub fn cancel_pooler_link(
+        &mut self,
+        user_id: &str,
+        pooler_user_id: &str,
+    ) -> Result<(), AppError> {
+        self.has_owner_privileges(user_id)?;
+
+        let links = self
+            .pending_pooler_links
+            .as_mut()
+            .ok_or_else(|| AppError::CustomError {
+                msg: "No account link is waiting on this pooler.".to_string(),
+            })?;
+
+        let before = links.len();
+        links.retain(|pending| pending.pooler_user_id != pooler_user_id);
+
+        if links.len() == before {
+            return Err(AppError::CustomError {
+                msg: "No account link is waiting on this pooler.".to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Turn down the invitation standing on `pooler_user_id`.
+    pub fn decline_pooler_link(
+        &mut self,
+        email: &str,
+        pooler_user_id: &str,
+    ) -> Result<(), AppError> {
+        let email_hash = hash_email(&normalize_email(email)?);
+
+        let links = self
+            .pending_pooler_links
+            .as_mut()
+            .ok_or_else(|| AppError::CustomError {
+                msg: "No account link is waiting on you for this pooler.".to_string(),
+            })?;
+
+        let before = links.len();
+        links.retain(|pending| {
+            pending.pooler_user_id != pooler_user_id || pending.email_hash != email_hash
+        });
+
+        if links.len() == before {
+            return Err(AppError::CustomError {
+                msg: "No account link is waiting on you for this pooler.".to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Take the pooler `pooler_user_id` over, as the account `new_user_id`.
+    ///
+    /// `email` is the address Hanko verified and put in the caller's JWT, and
+    /// standing on the pooler as a pending invitation is what authorizes this —
+    /// the caller is otherwise a stranger to the pool.
+    ///
+    /// The pooler's id is what its roster, its trades, its picks, its draft
+    /// position and its scores are keyed by, so taking it over rewrites that id
+    /// everywhere it appears. Nothing else about the pooler moves: it keeps its
+    /// name, its players and its points.
+    pub fn accept_pooler_link(
+        &mut self,
+        new_user_id: &str,
+        email: &str,
+        pooler_user_id: &str,
+    ) -> Result<(), AppError> {
+        let email_hash = hash_email(&normalize_email(email)?);
+
+        let matched = self.pending_pooler_links.as_ref().is_some_and(|links| {
+            links.iter().any(|pending| {
+                pending.pooler_user_id == pooler_user_id && pending.email_hash == email_hash
+            })
+        });
+
+        if !matched {
+            return Err(AppError::CustomError {
+                msg: "No account link is waiting on you for this pooler.".to_string(),
+            });
+        }
+
+        if matches!(self.status, PoolState::Draft) {
+            return Err(AppError::CustomError {
+                msg: "A pooler cannot change hands while the pool is drafting. \
+                      Accept once the draft is over."
+                    .to_string(),
+            });
+        }
+
+        if new_user_id == pooler_user_id {
+            return Err(AppError::CustomError {
+                msg: "This pooler is already your account.".to_string(),
+            });
+        }
+
+        if self.participants.iter().any(|user| user.id == new_user_id) {
+            return Err(AppError::CustomError {
+                msg: "You already play this pool under another pooler.".to_string(),
+            });
+        }
+
+        self.relink_pooler(pooler_user_id, new_user_id);
+
+        if let Some(links) = self.pending_pooler_links.as_mut() {
+            links.retain(|pending| pending.pooler_user_id != pooler_user_id);
+        }
+
+        Ok(())
+    }
+
+    /// Rewrite a pooler's id everywhere the pool keys anything by it.
+    fn relink_pooler(&mut self, old_id: &str, new_id: &str) {
+        fn swap(value: &mut String, old_id: &str, new_id: &str) {
+            if value == old_id {
+                *value = new_id.to_string();
+            }
+        }
+
+        // Rekey a map whose keys are pooler ids, leaving the rest untouched.
+        fn rekey<V>(map: &mut HashMap<String, V>, old_id: &str, new_id: &str) {
+            if let Some(value) = map.remove(old_id) {
+                map.insert(new_id.to_string(), value);
+            }
+        }
+
+        // The pool changes hands along with the pooler when the owner is the one
+        // moving accounts.
+        swap(&mut self.owner, old_id, new_id);
+
+        for participant in self.participants.iter_mut() {
+            if participant.id == old_id {
+                participant.id = new_id.to_string();
+                // Whatever it was before — a placeholder the owner typed in the
+                // draft room, or another account — it is an app account now.
+                participant.is_owned = true;
+            }
+        }
+
+        for assistant in self.settings.assistants.iter_mut() {
+            swap(assistant, old_id, new_id);
+        }
+
+        for order in [self.draft_order.as_mut(), self.final_rank.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            for id in order.iter_mut() {
+                swap(id, old_id, new_id);
+            }
+        }
+
+        for trade in self.trades.iter_mut().flatten() {
+            swap(&mut trade.proposed_by, old_id, new_id);
+            swap(&mut trade.ask_to, old_id, new_id);
+
+            for items in [&mut trade.from_items, &mut trade.to_items] {
+                for pick in items.picks.iter_mut() {
+                    swap(&mut pick.from, old_id, new_id);
+                }
+            }
+        }
+
+        let Some(context) = self.context.as_mut() else {
+            return;
+        };
+
+        rekey(&mut context.pooler_roster, old_id, new_id);
+
+        if let Some(protected_players) = context.protected_players.as_mut() {
+            rekey(protected_players, old_id, new_id);
+        }
+
+        // Legacy per-day roster snapshots, keyed by date and then by pooler.
+        // Pools that predate `lineup_events` still carry them, and they are
+        // what those pools' daily and cumulative tabs read from.
+        if let Some(score_by_day) = context.score_by_day.as_mut() {
+            for day in score_by_day.values_mut() {
+                rekey(day, old_id, new_id);
+            }
+        }
+
+        // Round by round, who a pick was originally dealt to (the key) mapped to
+        // who holds it now (the value). A pooler appears on both sides.
+        for rounds in [
+            context.tradable_picks.as_mut(),
+            context.past_tradable_picks.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for round in rounds.iter_mut() {
+                rekey(round, old_id, new_id);
+
+                for holder in round.values_mut() {
+                    swap(holder, old_id, new_id);
+                }
+            }
+        }
+
+        for event in context.lineup_events.iter_mut().flatten() {
+            swap(&mut event.participant, old_id, new_id);
+        }
     }
 
     pub fn can_update_pool_settings(&self, user_id: &str) -> Result<(), AppError> {

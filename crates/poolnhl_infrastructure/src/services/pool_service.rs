@@ -19,8 +19,9 @@ use poolnhl_interface::pool::model::{
 use poolnhl_interface::pool::requests::{
     AddPlayerRequest, CompleteProtectionRequest, ConfirmTradeRequest, CreateTradeRequest,
     DeleteTradeRequest, FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest,
-    ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest, ProtectPlayersRequest,
-    RemovePlayerRequest, UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
+    ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest, PoolerLinkRequest,
+    ProtectPlayersRequest, RemovePlayerRequest, RequestPoolerLinkRequest,
+    UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
 };
 use poolnhl_interface::pool::service::PoolService;
 
@@ -114,6 +115,21 @@ pub async fn update_pool(
             }),
         },
     }
+}
+
+/// Write back only `pending_pooler_links`.
+async fn update_pending_pooler_links(
+    pool: &Pool,
+    collection: &Collection<Pool>,
+    pool_name: &str,
+) -> Result<Pool> {
+    let updated_fields = doc! {
+        "$set": doc! {
+            "pending_pooler_links": to_bson(&pool.pending_pooler_links).map_err(bson_err)?,
+        }
+    };
+
+    update_pool(updated_fields, collection, pool_name, pool.date_updated).await
 }
 
 pub async fn get_short_pool_by_name(
@@ -539,6 +555,104 @@ impl PoolService for MongoPoolService {
         .await
     }
 
+    async fn request_pooler_link(
+        &self,
+        user_id: &str,
+        req: RequestPoolerLinkRequest,
+    ) -> Result<Pool> {
+        let mut pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
+
+        pool.request_pooler_link(user_id, &req.pooler_user_id, &req.email)?;
+
+        update_pending_pooler_links(&pool, &self.collection, &req.pool_name).await
+    }
+
+    async fn cancel_pooler_link(&self, user_id: &str, req: PoolerLinkRequest) -> Result<Pool> {
+        let mut pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
+
+        pool.cancel_pooler_link(user_id, &req.pooler_user_id)?;
+
+        update_pending_pooler_links(&pool, &self.collection, &req.pool_name).await
+    }
+
+    async fn decline_pooler_link(&self, email: &str, req: PoolerLinkRequest) -> Result<Pool> {
+        let mut pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
+
+        pool.decline_pooler_link(email, &req.pooler_user_id)?;
+
+        update_pending_pooler_links(&pool, &self.collection, &req.pool_name).await
+    }
+
+    async fn accept_pooler_link(
+        &self,
+        user_id: &str,
+        email: &str,
+        req: PoolerLinkRequest,
+    ) -> Result<Pool> {
+        // The whole document, not `get_short_pool_by_name`: taking a pooler over
+        // rewrites its id everywhere, and `context.score_by_day` is one of the
+        // places that holds it. That helper projects the field out, so the
+        // rewrite would read a pool without it and the `$set` below would then
+        // write that absence back over a season of scores.
+        let mut pool = self.get_pool_by_name(&req.pool_name).await?;
+
+        pool.accept_pooler_link(user_id, email, &req.pooler_user_id)?;
+
+        // Everything the rewrite reaches. `context` is set field by field rather
+        // than whole so `context.players` — by far the largest part of it, and
+        // untouched here — stays out of the write.
+        let mut set = doc! {
+            "owner": &pool.owner,
+            "participants": to_bson(&pool.participants).map_err(bson_err)?,
+            "settings.assistants": to_bson(&pool.settings.assistants).map_err(bson_err)?,
+            "draft_order": to_bson(&pool.draft_order).map_err(bson_err)?,
+            "final_rank": to_bson(&pool.final_rank).map_err(bson_err)?,
+            "trades": to_bson(&pool.trades).map_err(bson_err)?,
+            "pending_pooler_links": to_bson(&pool.pending_pooler_links).map_err(bson_err)?,
+        };
+
+        if let Some(context) = pool.context.as_ref() {
+            set.insert(
+                "context.pooler_roster",
+                to_bson(&context.pooler_roster).map_err(bson_err)?,
+            );
+            set.insert(
+                "context.protected_players",
+                to_bson(&context.protected_players).map_err(bson_err)?,
+            );
+            if context
+                .score_by_day
+                .as_ref()
+                .is_some_and(|days| !days.is_empty())
+            {
+                set.insert(
+                    "context.score_by_day",
+                    to_bson(&context.score_by_day).map_err(bson_err)?,
+                );
+            }
+            set.insert(
+                "context.tradable_picks",
+                to_bson(&context.tradable_picks).map_err(bson_err)?,
+            );
+            set.insert(
+                "context.past_tradable_picks",
+                to_bson(&context.past_tradable_picks).map_err(bson_err)?,
+            );
+            set.insert(
+                "context.lineup_events",
+                to_bson(&context.lineup_events).map_err(bson_err)?,
+            );
+        }
+
+        update_pool(
+            doc! { "$set": set },
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
+    }
+
     async fn modify_roster(&self, user_id: &str, req: ModifyRosterRequest) -> Result<Pool> {
         let mut pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
 
@@ -709,6 +823,7 @@ impl PoolService for MongoPoolService {
                 .as_ref()
                 .map(|rank| rank.iter().cloned().rev().collect::<Vec<_>>()), // The default draft order is reverse the final ranking.
             trades: None,
+            pending_pooler_links: None,
             context: Some(PoolContext {
                 pooler_roster: pool_context.pooler_roster.clone(),
                 players_name_drafted: Vec::new(),

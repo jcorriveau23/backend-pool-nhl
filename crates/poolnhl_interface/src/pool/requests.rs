@@ -117,6 +117,24 @@ pub struct UpdatePoolerNameRequest {
     pub new_name: String,
 }
 
+// payload to sent when the owner invites an email address to take one of the
+// poolers of the pool over.
+#[derive(Debug, Deserialize, Clone)]
+pub struct RequestPoolerLinkRequest {
+    pub pool_name: String,
+    pub pooler_user_id: String,
+    pub email: String,
+}
+
+// payload to sent when the owner withdraws a pending account link, and when the
+// invitee accepts or turns one down. The invitee is identified by the address in
+// their JWT, so none of the three carries one.
+#[derive(Debug, Deserialize, Clone)]
+pub struct PoolerLinkRequest {
+    pub pool_name: String,
+    pub pooler_user_id: String,
+}
+
 // payload to sent when marking a pool as final
 #[derive(Debug, Deserialize, Clone)]
 pub struct MarkAsFinalRequest {
