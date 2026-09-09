@@ -554,7 +554,12 @@ impl PoolService for MongoPoolService {
         email: &str,
         req: PoolerLinkRequest,
     ) -> Result<Pool> {
-        let mut pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
+        // The whole document, not `get_short_pool_by_name`: taking a pooler over
+        // rewrites its id everywhere, and `context.score_by_day` is one of the
+        // places that holds it. That helper projects the field out, so the
+        // rewrite would read a pool without it and the `$set` below would then
+        // write that absence back over a season of scores.
+        let mut pool = self.get_pool_by_name(&req.pool_name).await?;
 
         pool.accept_pooler_link(user_id, email, &req.pooler_user_id)?;
 
