@@ -7,9 +7,9 @@ use crate::errors::Result;
 use crate::pool::model::{Pool, ProjectedPoolShort};
 use crate::pool::requests::{
     AddPlayerRequest, CompleteProtectionRequest, ConfirmTradeRequest, CreateTradeRequest,
-    DeleteTradeRequest, FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest,
-    ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest, PoolerLinkRequest,
-    ProtectPlayersRequest, RemovePlayerRequest, RequestPoolerLinkRequest,
+    DeleteTradeRequest, DropAddPlayerRequest, FillSpotRequest, GenerateDynastyRequest,
+    MarkAsFinalRequest, ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest,
+    PoolerLinkRequest, ProtectPlayersRequest, RemovePlayerRequest, RequestPoolerLinkRequest,
     UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
 };
 use crate::pool::scoring::DailyRosterPoints;
@@ -26,6 +26,7 @@ pub trait PoolService {
     // Pool in progress calls
     async fn add_player(&self, user_id: &str, req: AddPlayerRequest) -> Result<Pool>;
     async fn remove_player(&self, user_id: &str, req: RemovePlayerRequest) -> Result<Pool>;
+    async fn drop_add_player(&self, user_id: &str, req: DropAddPlayerRequest) -> Result<Pool>;
     async fn create_trade(&self, user_id: &str, req: &mut CreateTradeRequest) -> Result<Pool>;
     async fn update_trade(&self, user_id: &str, req: UpdateTradeRequest) -> Result<Pool>;
     async fn confirm_trade(&self, user_id: &str, req: ConfirmTradeRequest) -> Result<Pool>;

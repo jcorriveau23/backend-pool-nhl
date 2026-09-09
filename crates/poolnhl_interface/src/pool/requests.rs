@@ -38,6 +38,19 @@ pub struct RemovePlayerRequest {
     pub player_id: u32,
 }
 
+// payload to sent when a pooler swaps a player they hold for an undrafted one.
+// The two halves travel together: free agency is a paired move, so a roster
+// never changes size and the swap costs exactly one unit of the drop budget.
+#[derive(Debug, Deserialize, Clone)]
+pub struct DropAddPlayerRequest {
+    pub pool_name: String,
+    // The pooler the swap is for. A pooler sends their own id; the owner and
+    // the assistants may send anyone's.
+    pub participant_id: String,
+    pub dropped_player_id: u32,
+    pub added_player: PlayerInfo,
+}
+
 // payload to sent when creating a trade.
 #[derive(Debug, Deserialize, Clone)]
 pub struct CreateTradeRequest {
