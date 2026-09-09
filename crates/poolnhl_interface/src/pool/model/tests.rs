@@ -1,5 +1,6 @@
 use super::*;
 use crate::draft::model::RoomUser;
+use crate::pool::lineup::LineupEvent;
 use crate::pool::scoring::{DailyRosterPoints, DayScores, GoalyPoints, Roster, SkaterPoints};
 
 const OWNER: &str = "owner";
@@ -292,6 +293,331 @@ fn only_a_participant_of_the_pool_can_be_renamed() {
     let mut pool = in_progress_pool();
 
     assert!(pool.update_pooler_name(OWNER, "stranger", "Raph").is_err());
+}
+
+// -------------------------------------------------------------------
+// Linking a pooler to another account
+// -------------------------------------------------------------------
+
+const NEW_EMAIL: &str = "Raphael@Example.COM";
+const NEW_ACCOUNT: &str = "hanko-subject-of-raphael";
+
+fn pending_link_on(pool: &Pool, pooler_user_id: &str) -> Option<PendingPoolerLink> {
+    pool.pending_pooler_links
+        .as_ref()?
+        .iter()
+        .find(|pending| pending.pooler_user_id == pooler_user_id)
+        .cloned()
+}
+
+#[test]
+fn an_address_is_normalized_and_checked_for_shape() {
+    assert_eq!(
+        normalize_email("  Raphael@Example.COM ").unwrap(),
+        "raphael@example.com"
+    );
+
+    for rejected in ["", "raphael", "@example.com", "raphael@", "raphael@example"] {
+        assert!(
+            normalize_email(rejected).is_err(),
+            "{rejected} was accepted"
+        );
+    }
+
+    assert!(normalize_email(&format!("{}@example.com", "a".repeat(MAX_EMAIL_LENGTH))).is_err());
+}
+
+#[test]
+fn a_masked_address_keeps_the_domain_and_hides_the_rest() {
+    assert_eq!(mask_email("raphael@example.com"), "r***l@example.com");
+    // Too short to redact anything of: nothing of it is kept.
+    assert_eq!(mask_email("ray@example.com"), "***@example.com");
+    assert_eq!(mask_email("not-an-address"), "***");
+}
+
+#[test]
+fn the_owner_invites_an_address_to_take_a_pooler_over() {
+    let mut pool = in_progress_pool();
+
+    pool.request_pooler_link(OWNER, USER_2, NEW_EMAIL).unwrap();
+
+    let pending = pending_link_on(&pool, USER_2).unwrap();
+    assert_eq!(pending.requested_by, OWNER);
+    assert_eq!(pending.email_hint, "r***l@example.com");
+    // The address itself is nowhere on the document: the pool is readable by
+    // anybody who can read the pool.
+    assert_eq!(pending.email_hash, hash_email("raphael@example.com"));
+    assert!(!pending.email_hash.contains("raphael"));
+
+    // Filing one moves nothing: the pooler is still the account it was.
+    assert!(pool.participants.iter().any(|user| user.id == USER_2));
+}
+
+#[test]
+fn filing_an_account_link_is_the_owner_call_alone() {
+    let mut pool = in_progress_pool();
+    pool.settings.assistants = vec![USER_2.to_string()];
+
+    assert!(pool.request_pooler_link(USER_2, USER_3, NEW_EMAIL).is_err());
+    assert!(pool.request_pooler_link(USER_3, USER_3, NEW_EMAIL).is_err());
+    assert!(pool.request_pooler_link(OWNER, USER_3, NEW_EMAIL).is_ok());
+}
+
+#[test]
+fn only_a_participant_of_the_pool_can_be_linked() {
+    let mut pool = in_progress_pool();
+
+    assert!(
+        pool.request_pooler_link(OWNER, "stranger", NEW_EMAIL)
+            .is_err()
+    );
+}
+
+#[test]
+fn a_second_invitation_on_a_pooler_replaces_the_first() {
+    let mut pool = in_progress_pool();
+
+    pool.request_pooler_link(OWNER, USER_2, "typo@example.com")
+        .unwrap();
+    pool.request_pooler_link(OWNER, USER_2, NEW_EMAIL).unwrap();
+
+    // The owner corrected the address they typed, they did not line a second
+    // candidate up behind the first.
+    assert_eq!(pool.pending_pooler_links.as_ref().unwrap().len(), 1);
+    assert_eq!(
+        pending_link_on(&pool, USER_2).unwrap().email_hash,
+        hash_email("raphael@example.com")
+    );
+}
+
+#[test]
+fn taking_a_pooler_over_needs_an_invitation_waiting_on_that_address() {
+    let mut pool = in_progress_pool();
+
+    // Nothing filed at all.
+    assert!(
+        pool.accept_pooler_link(NEW_ACCOUNT, NEW_EMAIL, USER_2)
+            .is_err()
+    );
+
+    pool.request_pooler_link(OWNER, USER_2, NEW_EMAIL).unwrap();
+
+    // Filed, but naming somebody else's address.
+    assert!(
+        pool.accept_pooler_link(NEW_ACCOUNT, "someone-else@example.com", USER_2)
+            .is_err()
+    );
+    // Filed for this address, but on another pooler.
+    assert!(
+        pool.accept_pooler_link(NEW_ACCOUNT, NEW_EMAIL, USER_3)
+            .is_err()
+    );
+    // The address matches however it was typed.
+    assert!(
+        pool.accept_pooler_link(NEW_ACCOUNT, " raphael@EXAMPLE.com ", USER_2)
+            .is_ok()
+    );
+}
+
+#[test]
+fn a_pooler_cannot_be_taken_over_by_someone_already_in_the_pool() {
+    let mut pool = in_progress_pool();
+
+    pool.request_pooler_link(OWNER, USER_2, NEW_EMAIL).unwrap();
+
+    // USER_3 already holds a roster of this pool; folding the two together
+    // would leave the pool a participant short.
+    assert!(pool.accept_pooler_link(USER_3, NEW_EMAIL, USER_2).is_err());
+    // And the pooler is nobody else's to re-take.
+    assert!(pool.accept_pooler_link(USER_2, NEW_EMAIL, USER_2).is_err());
+
+    assert!(
+        pool.accept_pooler_link(NEW_ACCOUNT, NEW_EMAIL, USER_2)
+            .is_ok()
+    );
+}
+
+#[test]
+fn taking_a_pooler_over_moves_its_id_everywhere_the_pool_keys_by_it() {
+    let mut pool = in_progress_pool();
+
+    // USER_2 appears in every field of the pool that holds a pooler id.
+    pool.settings.assistants = vec![USER_2.to_string()];
+    pool.draft_order = Some(vec![
+        OWNER.to_string(),
+        USER_2.to_string(),
+        USER_3.to_string(),
+    ]);
+    pool.final_rank = Some(vec![
+        USER_2.to_string(),
+        OWNER.to_string(),
+        USER_3.to_string(),
+    ]);
+    pool.trades = Some(vec![Trade {
+        from_items: TradeItems {
+            players: vec![201],
+            picks: vec![Pick {
+                round: 1,
+                from: USER_2.to_string(),
+            }],
+        },
+        to_items: TradeItems {
+            players: vec![301],
+            picks: vec![Pick {
+                round: 2,
+                from: USER_3.to_string(),
+            }],
+        },
+        ..trade(USER_2, USER_3, vec![201], vec![301])
+    }]);
+
+    let context = pool.context.as_mut().unwrap();
+    context.protected_players = Some(HashMap::from([(USER_2.to_string(), vec![201, 202])]));
+    context.score_by_day = Some(HashMap::from([(
+        "2026-10-10".to_string(),
+        HashMap::from([(USER_2.to_string(), skater_day(&[(201, 1, 2)]))]),
+    )]));
+    context.tradable_picks = Some(vec![HashMap::from([
+        // USER_2 on both sides: the pick they were dealt, and the one they now
+        // hold of somebody else's.
+        (USER_2.to_string(), USER_3.to_string()),
+        (USER_3.to_string(), USER_2.to_string()),
+    ])]);
+    context.past_tradable_picks = Some(vec![HashMap::from([(
+        USER_2.to_string(),
+        USER_2.to_string(),
+    )])]);
+    context.lineup_events = Some(vec![LineupEvent {
+        participant: USER_2.to_string(),
+        effective_date: "2026-10-10".to_string(),
+        forwards: vec![201, 202],
+        defense: vec![211],
+        goalies: vec![221],
+    }]);
+
+    pool.request_pooler_link(OWNER, USER_2, NEW_EMAIL).unwrap();
+    pool.accept_pooler_link(NEW_ACCOUNT, NEW_EMAIL, USER_2)
+        .unwrap();
+
+    // The pooler keeps its name and is now backed by an app account.
+    let participant = pool
+        .participants
+        .iter()
+        .find(|user| user.id == NEW_ACCOUNT)
+        .unwrap();
+    assert_eq!(participant.name, USER_2);
+    assert!(participant.is_owned);
+    assert!(!pool.participants.iter().any(|user| user.id == USER_2));
+
+    assert_eq!(pool.settings.assistants, vec![NEW_ACCOUNT.to_string()]);
+    assert_eq!(pool.draft_order.as_ref().unwrap()[1], NEW_ACCOUNT);
+    assert_eq!(pool.final_rank.as_ref().unwrap()[0], NEW_ACCOUNT);
+
+    let trade = &pool.trades.as_ref().unwrap()[0];
+    assert_eq!(trade.proposed_by, NEW_ACCOUNT);
+    assert_eq!(trade.ask_to, USER_3);
+    assert_eq!(trade.from_items.picks[0].from, NEW_ACCOUNT);
+    assert_eq!(trade.to_items.picks[0].from, USER_3);
+
+    let context = pool.context.as_ref().unwrap();
+    // The roster moved across whole, not just its key.
+    assert_eq!(
+        context.pooler_roster[NEW_ACCOUNT].chosen_forwards,
+        vec![201, 202]
+    );
+    assert!(!context.pooler_roster.contains_key(USER_2));
+    assert!(context.protected_players.as_ref().unwrap()[NEW_ACCOUNT] == vec![201, 202]);
+    assert!(context.score_by_day.as_ref().unwrap()["2026-10-10"].contains_key(NEW_ACCOUNT));
+
+    // Both sides of the pick map.
+    let round = &context.tradable_picks.as_ref().unwrap()[0];
+    assert_eq!(round[NEW_ACCOUNT], USER_3);
+    assert_eq!(round[USER_3], NEW_ACCOUNT);
+    assert_eq!(
+        context.past_tradable_picks.as_ref().unwrap()[0][NEW_ACCOUNT],
+        NEW_ACCOUNT
+    );
+
+    assert_eq!(
+        context.lineup_events.as_ref().unwrap()[0].participant,
+        NEW_ACCOUNT
+    );
+
+    // The invitation is spent.
+    assert!(pending_link_on(&pool, USER_2).is_none());
+
+    // Untouched throughout: the pool is still owned by the account that owned it.
+    assert_eq!(pool.owner, OWNER);
+}
+
+#[test]
+fn the_owner_moving_accounts_takes_the_pool_with_them() {
+    let mut pool = in_progress_pool();
+
+    pool.request_pooler_link(OWNER, OWNER, NEW_EMAIL).unwrap();
+    pool.accept_pooler_link(NEW_ACCOUNT, NEW_EMAIL, OWNER)
+        .unwrap();
+
+    // Otherwise the pool would be left with nobody able to administer it.
+    assert_eq!(pool.owner, NEW_ACCOUNT);
+    assert!(pool.has_owner_privileges(NEW_ACCOUNT).is_ok());
+    assert!(pool.has_owner_privileges(OWNER).is_err());
+}
+
+#[test]
+fn a_pooler_does_not_change_hands_mid_draft() {
+    let mut pool = in_progress_pool();
+    pool.request_pooler_link(OWNER, USER_2, NEW_EMAIL).unwrap();
+
+    // The draft room lives outside the pool and is keyed by the ids the
+    // acceptance rewrites, so it would be left naming a drafter that is gone.
+    pool.status = PoolState::Draft;
+    assert!(
+        pool.accept_pooler_link(NEW_ACCOUNT, NEW_EMAIL, USER_2)
+            .is_err()
+    );
+
+    // The invitation is not spent by the refusal, it just waits.
+    pool.status = PoolState::InProgress;
+    assert!(
+        pool.accept_pooler_link(NEW_ACCOUNT, NEW_EMAIL, USER_2)
+            .is_ok()
+    );
+}
+
+#[test]
+fn the_owner_withdraws_an_invitation() {
+    let mut pool = in_progress_pool();
+
+    pool.request_pooler_link(OWNER, USER_2, NEW_EMAIL).unwrap();
+
+    assert!(pool.cancel_pooler_link(USER_3, USER_2).is_err());
+    assert!(pool.cancel_pooler_link(OWNER, USER_2).is_ok());
+    // Withdrawn, so there is nothing left to accept.
+    assert!(
+        pool.accept_pooler_link(NEW_ACCOUNT, NEW_EMAIL, USER_2)
+            .is_err()
+    );
+    // And nothing left to withdraw either.
+    assert!(pool.cancel_pooler_link(OWNER, USER_2).is_err());
+}
+
+#[test]
+fn the_invitee_turns_an_invitation_down() {
+    let mut pool = in_progress_pool();
+
+    pool.request_pooler_link(OWNER, USER_2, NEW_EMAIL).unwrap();
+
+    // Turning down somebody else's invitation is not on offer.
+    assert!(
+        pool.decline_pooler_link("someone-else@example.com", USER_2)
+            .is_err()
+    );
+    assert!(pool.decline_pooler_link(NEW_EMAIL, USER_2).is_ok());
+    assert!(
+        pool.accept_pooler_link(NEW_ACCOUNT, NEW_EMAIL, USER_2)
+            .is_err()
+    );
 }
 
 // -------------------------------------------------------------------

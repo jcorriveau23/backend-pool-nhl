@@ -7,8 +7,9 @@ use crate::pool::model::{Pool, ProjectedPoolShort};
 use crate::pool::requests::{
     AddPlayerRequest, CompleteProtectionRequest, ConfirmTradeRequest, CreateTradeRequest,
     DeleteTradeRequest, FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest,
-    ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest, ProtectPlayersRequest,
-    RemovePlayerRequest, UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
+    ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest, PoolerLinkRequest,
+    ProtectPlayersRequest, RemovePlayerRequest, RequestPoolerLinkRequest,
+    UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
 };
 
 #[async_trait]
@@ -42,6 +43,19 @@ pub trait PoolService {
     ) -> Result<Pool>;
     async fn update_pooler_name(&self, user_id: &str, req: UpdatePoolerNameRequest)
     -> Result<Pool>;
+    async fn request_pooler_link(
+        &self,
+        user_id: &str,
+        req: RequestPoolerLinkRequest,
+    ) -> Result<Pool>;
+    async fn cancel_pooler_link(&self, user_id: &str, req: PoolerLinkRequest) -> Result<Pool>;
+    async fn accept_pooler_link(
+        &self,
+        user_id: &str,
+        email: &str,
+        req: PoolerLinkRequest,
+    ) -> Result<Pool>;
+    async fn decline_pooler_link(&self, email: &str, req: PoolerLinkRequest) -> Result<Pool>;
     // Dynasty call
     async fn protect_players(&self, user_id: &str, req: ProtectPlayersRequest) -> Result<Pool>;
     async fn complete_protection(

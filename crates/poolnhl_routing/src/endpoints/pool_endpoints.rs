@@ -11,8 +11,9 @@ use poolnhl_interface::pool::model::{Pool, ProjectedPoolShort, SeasonInfo};
 use poolnhl_interface::pool::requests::{
     AddPlayerRequest, CompleteProtectionRequest, ConfirmTradeRequest, CreateTradeRequest,
     DeleteTradeRequest, FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest,
-    ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest, ProtectPlayersRequest,
-    RemovePlayerRequest, UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
+    ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest, PoolerLinkRequest,
+    ProtectPlayersRequest, RemovePlayerRequest, RequestPoolerLinkRequest,
+    UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
 };
 use poolnhl_interface::pool::scoring::DailyRosterPoints;
 use poolnhl_interface::pool::service::PoolServiceHandle;
@@ -55,6 +56,10 @@ impl PoolRouter {
             .route("/modify-roster", post(Self::modify_roster))
             .route("/update-pool-settings", post(Self::update_pool_settings))
             .route("/update-pooler-name", post(Self::update_pooler_name))
+            .route("/request-pooler-link", post(Self::request_pooler_link))
+            .route("/cancel-pooler-link", post(Self::cancel_pooler_link))
+            .route("/accept-pooler-link", post(Self::accept_pooler_link))
+            .route("/decline-pooler-link", post(Self::decline_pooler_link))
             .route("/mark-as-final", post(Self::mark_as_final))
             .route("/generate-dynasty", post(Self::generate_dynasty))
             .with_state(service_registry)
@@ -235,6 +240,53 @@ impl PoolRouter {
     ) -> Result<Json<Pool>> {
         pool_service
             .update_pooler_name(&token.sub, body)
+            .await
+            .map(Json)
+    }
+
+    async fn request_pooler_link(
+        token: UserEmailJwtPayload,
+        State(pool_service): State<PoolServiceHandle>,
+        Json(body): Json<RequestPoolerLinkRequest>,
+    ) -> Result<Json<Pool>> {
+        pool_service
+            .request_pooler_link(&token.sub, body)
+            .await
+            .map(Json)
+    }
+
+    async fn cancel_pooler_link(
+        token: UserEmailJwtPayload,
+        State(pool_service): State<PoolServiceHandle>,
+        Json(body): Json<PoolerLinkRequest>,
+    ) -> Result<Json<Pool>> {
+        pool_service
+            .cancel_pooler_link(&token.sub, body)
+            .await
+            .map(Json)
+    }
+
+    /// Take a pooler over. The address comes from the JWT, never from the body:
+    /// it is what the pending invitation is matched against, so a caller that
+    /// could name their own address could claim any pooler of any pool.
+    async fn accept_pooler_link(
+        token: UserEmailJwtPayload,
+        State(pool_service): State<PoolServiceHandle>,
+        Json(body): Json<PoolerLinkRequest>,
+    ) -> Result<Json<Pool>> {
+        pool_service
+            .accept_pooler_link(&token.sub, &token.email.address, body)
+            .await
+            .map(Json)
+    }
+
+    async fn decline_pooler_link(
+        token: UserEmailJwtPayload,
+        State(pool_service): State<PoolServiceHandle>,
+        Json(body): Json<PoolerLinkRequest>,
+    ) -> Result<Json<Pool>> {
+        pool_service
+            .decline_pooler_link(&token.email.address, body)
             .await
             .map(Json)
     }
