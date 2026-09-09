@@ -10,9 +10,9 @@ use poolnhl_interface::errors::Result;
 use poolnhl_interface::pool::model::{Pool, ProjectedPoolShort, SeasonInfo};
 use poolnhl_interface::pool::requests::{
     AddPlayerRequest, CompleteProtectionRequest, ConfirmTradeRequest, CreateTradeRequest,
-    DeleteTradeRequest, FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest,
-    ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest, PoolerLinkRequest,
-    ProtectPlayersRequest, RemovePlayerRequest, RequestPoolerLinkRequest,
+    DeleteTradeRequest, DropAddPlayerRequest, FillSpotRequest, GenerateDynastyRequest,
+    MarkAsFinalRequest, ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest,
+    PoolerLinkRequest, ProtectPlayersRequest, RemovePlayerRequest, RequestPoolerLinkRequest,
     UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
 };
 use poolnhl_interface::pool::scoring::DailyRosterPoints;
@@ -42,6 +42,7 @@ impl PoolRouter {
             .route("/delete-pool", post(Self::delete_pool))
             .route("/add-player", post(Self::add_player))
             .route("/remove-player", post(Self::remove_player))
+            .route("/drop-add-player", post(Self::drop_add_player))
             .route("/create-trade", post(Self::create_trade))
             .route("/update-trade", post(Self::update_trade))
             .route("/confirm-trade", post(Self::confirm_trade))
@@ -134,6 +135,22 @@ impl PoolRouter {
         Json(body): Json<RemovePlayerRequest>,
     ) -> Result<Json<Pool>> {
         pool_service.remove_player(&token.sub, body).await.map(Json)
+    }
+
+    /// Swap a player a pooler holds for one nobody in the pool does.
+    ///
+    /// Unlike `/add-player` and `/remove-player`, which are the owner's tools,
+    /// a pooler runs this on their own roster — within the drop budget the
+    /// owner set in the pool settings.
+    async fn drop_add_player(
+        token: UserEmailJwtPayload,
+        State(pool_service): State<PoolServiceHandle>,
+        Json(body): Json<DropAddPlayerRequest>,
+    ) -> Result<Json<Pool>> {
+        pool_service
+            .drop_add_player(&token.sub, body)
+            .await
+            .map(Json)
     }
 
     async fn create_trade(

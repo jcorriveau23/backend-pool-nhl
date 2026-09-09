@@ -18,9 +18,9 @@ use poolnhl_interface::pool::model::{
 };
 use poolnhl_interface::pool::requests::{
     AddPlayerRequest, CompleteProtectionRequest, ConfirmTradeRequest, CreateTradeRequest,
-    DeleteTradeRequest, FillSpotRequest, GenerateDynastyRequest, MarkAsFinalRequest,
-    ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest, PoolerLinkRequest,
-    ProtectPlayersRequest, RemovePlayerRequest, RequestPoolerLinkRequest,
+    DeleteTradeRequest, DropAddPlayerRequest, FillSpotRequest, GenerateDynastyRequest,
+    MarkAsFinalRequest, ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest,
+    PoolerLinkRequest, ProtectPlayersRequest, RemovePlayerRequest, RequestPoolerLinkRequest,
     UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
 };
 use poolnhl_interface::pool::scoring::DailyRosterPoints;
@@ -471,6 +471,43 @@ impl PoolService for MongoPoolService {
         .await
     }
 
+    async fn drop_add_player(&self, user_id: &str, req: DropAddPlayerRequest) -> Result<Pool> {
+        let mut pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
+
+        // One paired move: the dropped player leaves the roster and the picked
+        // up one takes the freed spot. The model also records the transaction
+        // (what the drop budget is counted against) and the lineup event the
+        // scoring derives the new lineup from.
+        pool.drop_add_player(
+            user_id,
+            &req.participant_id,
+            req.dropped_player_id,
+            &req.added_player,
+            Utc::now().timestamp_millis(),
+        )?;
+
+        let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
+            msg: "pool context does not exist.".to_string(),
+        })?;
+
+        let updated_fields = doc! {
+            "$set": doc!{
+                "context.pooler_roster": to_bson(&context.pooler_roster).map_err(bson_err)?,
+                "context.players": to_bson(&context.players).map_err(bson_err)?,
+                "context.lineup_events": to_bson(&context.lineup_events).map_err(bson_err)?,
+                "context.roster_transactions": to_bson(&context.roster_transactions).map_err(bson_err)?,
+            }
+        };
+
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
+    }
+
     async fn update_pool_settings(
         &self,
         user_id: &str,
@@ -792,6 +829,7 @@ impl PoolService for MongoPoolService {
                 protected_players: Some(protected_players),
                 players: pool_context.players.clone(),
                 lineup_events: Some(Vec::new()),
+                roster_transactions: Some(Vec::new()),
             }),
             date_updated: 0,
             season_start: START_SEASON_DATE.to_string(),

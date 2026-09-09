@@ -2,6 +2,7 @@ use super::*;
 use crate::draft::model::RoomUser;
 use crate::pool::lineup::LineupEvent;
 use crate::pool::scoring::{DailyRosterPoints, DayScores, GoalyPoints, Roster, SkaterPoints};
+use crate::pool::transactions::DropPeriod;
 
 const OWNER: &str = "owner";
 const USER_2: &str = "user-2";
@@ -2626,4 +2627,288 @@ fn a_failed_undo_leaves_the_pick_list_untouched() {
         vec![1],
         "a failed undo must not consume the pick"
     );
+}
+
+// -------------------------------------------------------------------
+// Free agency (drop / add)
+// -------------------------------------------------------------------
+
+fn day(date: &str) -> NaiveDate {
+    NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap()
+}
+
+// An InProgress pool whose owner allows `max_drops` swaps per `period`.
+fn pool_with_free_agency(max_drops: u8, period: DropPeriod) -> Pool {
+    let mut pool = in_progress_pool();
+    pool.settings.player_drop_settings = Some(PlayerDropSettings { max_drops, period });
+    pool
+}
+
+fn transactions(pool: &Pool) -> &[RosterTransaction] {
+    pool.context
+        .as_ref()
+        .unwrap()
+        .roster_transactions
+        .as_deref()
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_swap_moves_one_player_out_and_one_in_and_logs_it() {
+    let mut pool = pool_with_free_agency(2, DropPeriod::Season);
+    let free_agent = player(900, Position::F, Some(1_000_000.0));
+
+    let effective_date = pool
+        .drop_add_player_at(OWNER, OWNER, 101, &free_agent, day("2026-12-01"), 42)
+        .unwrap();
+
+    assert_eq!(effective_date, "2026-12-01");
+    assert!(!possesses(&pool, OWNER, 101));
+    assert!(possesses(&pool, OWNER, 900));
+    // The freed forward spot is the one the incoming forward takes, so the
+    // roster keeps its shape rather than growing a bench player.
+    assert_eq!(
+        pool.context.as_ref().unwrap().pooler_roster[OWNER].chosen_forwards,
+        vec![102, 900]
+    );
+    // The picked up player has to be known to the pool, or nothing can score
+    // him.
+    assert!(pool.context.as_ref().unwrap().players.contains_key("900"));
+
+    assert_eq!(
+        transactions(&pool),
+        [RosterTransaction {
+            participant: OWNER.to_string(),
+            effective_date: "2026-12-01".to_string(),
+            dropped_player_id: 101,
+            added_player_id: 900,
+            date_created: 42,
+        }]
+    );
+
+    // The swap changed the starting lineup, so the scoring has an event to
+    // derive the new lineup from on that day.
+    let events = pool
+        .context
+        .as_ref()
+        .unwrap()
+        .lineup_events
+        .as_ref()
+        .unwrap();
+    let event = events
+        .iter()
+        .find(|event| event.participant == OWNER && event.effective_date == "2026-12-01")
+        .expect("the swap records a lineup event");
+    assert!(event.forwards.contains(&900));
+    assert!(!event.forwards.contains(&101));
+}
+
+#[test]
+fn a_pool_without_free_agency_refuses_every_swap() {
+    let mut pool = in_progress_pool();
+    let free_agent = player(900, Position::F, Some(1_000_000.0));
+
+    assert!(
+        pool.drop_add_player_at(OWNER, OWNER, 101, &free_agent, day("2026-12-01"), 0)
+            .is_err()
+    );
+    assert!(possesses(&pool, OWNER, 101));
+}
+
+#[test]
+fn the_season_budget_runs_out_and_never_refills() {
+    let mut pool = pool_with_free_agency(2, DropPeriod::Season);
+
+    for (dropped, added) in [(101, 900), (102, 901)] {
+        pool.drop_add_player_at(
+            OWNER,
+            OWNER,
+            dropped,
+            &player(added, Position::F, Some(1_000_000.0)),
+            day("2026-12-01"),
+            0,
+        )
+        .unwrap();
+    }
+
+    // A later month does not bring the season budget back.
+    let third = player(902, Position::F, Some(1_000_000.0));
+    assert!(
+        pool.drop_add_player_at(OWNER, OWNER, 900, &third, day("2027-01-15"), 0)
+            .is_err()
+    );
+    assert_eq!(transactions(&pool).len(), 2);
+
+    // The budget is each pooler's own.
+    assert!(
+        pool.drop_add_player_at(USER_2, USER_2, 201, &third, day("2027-01-15"), 0)
+            .is_ok()
+    );
+}
+
+#[test]
+fn the_monthly_budget_refills_on_the_next_month() {
+    let mut pool = pool_with_free_agency(1, DropPeriod::Month);
+
+    pool.drop_add_player_at(
+        OWNER,
+        OWNER,
+        101,
+        &player(900, Position::F, Some(1_000_000.0)),
+        day("2026-12-01"),
+        0,
+    )
+    .unwrap();
+
+    // Same month: spent.
+    assert!(
+        pool.drop_add_player_at(
+            OWNER,
+            OWNER,
+            102,
+            &player(901, Position::F, Some(1_000_000.0)),
+            day("2026-12-24"),
+            0,
+        )
+        .is_err()
+    );
+
+    // Next month: refilled.
+    assert!(
+        pool.drop_add_player_at(
+            OWNER,
+            OWNER,
+            102,
+            &player(901, Position::F, Some(1_000_000.0)),
+            day("2027-01-03"),
+            0,
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn only_a_player_nobody_holds_can_be_picked_up() {
+    let mut pool = pool_with_free_agency(2, DropPeriod::Season);
+
+    // 201 belongs to another pooler.
+    let owned = pool.context.as_ref().unwrap().players["201"].clone();
+    assert!(
+        pool.drop_add_player_at(OWNER, OWNER, 101, &owned, day("2026-12-01"), 0)
+            .is_err()
+    );
+
+    // And a pooler cannot re-pick somebody they already hold, which is what
+    // swapping a player for himself would be.
+    let own = pool.context.as_ref().unwrap().players["101"].clone();
+    assert!(
+        pool.drop_add_player_at(OWNER, OWNER, 101, &own, day("2026-12-01"), 0)
+            .is_err()
+    );
+
+    assert!(possesses(&pool, OWNER, 101));
+    assert!(transactions(&pool).is_empty());
+}
+
+#[test]
+fn only_a_player_the_pooler_holds_can_be_dropped() {
+    let mut pool = pool_with_free_agency(2, DropPeriod::Season);
+    let free_agent = player(900, Position::F, Some(1_000_000.0));
+
+    // 201 is on another pooler's roster.
+    assert!(
+        pool.drop_add_player_at(OWNER, OWNER, 201, &free_agent, day("2026-12-01"), 0)
+            .is_err()
+    );
+    assert!(possesses(&pool, USER_2, 201));
+    assert!(transactions(&pool).is_empty());
+}
+
+#[test]
+fn swapping_for_another_pooler_needs_privileges() {
+    let mut pool = pool_with_free_agency(2, DropPeriod::Season);
+    let free_agent = player(900, Position::F, Some(1_000_000.0));
+
+    // USER_2 has no say over USER_3's roster.
+    assert!(
+        pool.drop_add_player_at(USER_2, USER_3, 301, &free_agent, day("2026-12-01"), 0)
+            .is_err()
+    );
+
+    // The owner does, and the swap is counted against the pooler it is for.
+    pool.drop_add_player_at(OWNER, USER_3, 301, &free_agent, day("2026-12-01"), 0)
+        .unwrap();
+    assert!(possesses(&pool, USER_3, 900));
+    assert_eq!(transactions(&pool)[0].participant, USER_3);
+}
+
+#[test]
+fn a_swap_effective_after_the_season_is_refused() {
+    let mut pool = pool_with_free_agency(2, DropPeriod::Season);
+    let free_agent = player(900, Position::F, Some(1_000_000.0));
+
+    assert!(
+        pool.drop_add_player_at(OWNER, OWNER, 101, &free_agent, day("2027-05-01"), 0)
+            .is_err()
+    );
+    assert!(transactions(&pool).is_empty());
+}
+
+#[test]
+fn a_swap_before_the_season_starts_lands_on_the_opening_day() {
+    let mut pool = pool_with_free_agency(2, DropPeriod::Season);
+    let free_agent = player(900, Position::F, Some(1_000_000.0));
+
+    let effective_date = pool
+        .drop_add_player_at(OWNER, OWNER, 101, &free_agent, day("2026-09-01"), 0)
+        .unwrap();
+
+    // Nothing has been scored yet, so the swap redefines the lineup the pool
+    // opens with rather than sitting on a day that will never be scored.
+    assert_eq!(effective_date, pool.season_start);
+    assert_eq!(transactions(&pool)[0].effective_date, pool.season_start);
+}
+
+#[test]
+fn a_swap_only_happens_while_the_pool_is_running() {
+    let mut pool = pool_with_free_agency(2, DropPeriod::Season);
+    pool.status = PoolState::Draft;
+    let free_agent = player(900, Position::F, Some(1_000_000.0));
+
+    assert!(
+        pool.drop_add_player_at(OWNER, OWNER, 101, &free_agent, day("2026-12-01"), 0)
+            .is_err()
+    );
+}
+
+#[test]
+fn a_swap_that_cannot_fit_the_incoming_player_is_refused() {
+    let mut pool = pool_with_free_agency(2, DropPeriod::Season);
+    // The fixture's bench holds its single reservist, and the single goalie
+    // spot is taken, so an incoming goalie has nowhere to go once a forward is
+    // dropped.
+    let goalie = player(900, Position::G, Some(1_000_000.0));
+
+    assert!(
+        pool.drop_add_player_at(OWNER, OWNER, 101, &goalie, day("2026-12-01"), 0)
+            .is_err()
+    );
+    // A refused swap costs nothing and takes nobody off the roster.
+    assert!(possesses(&pool, OWNER, 101));
+    assert!(transactions(&pool).is_empty());
+}
+
+#[test]
+fn an_incoming_player_the_lineup_has_no_room_for_goes_to_the_bench() {
+    let mut pool = pool_with_free_agency(2, DropPeriod::Season);
+    // Dropping the reservist frees the bench, so the goalie can be picked up
+    // even though the single goalie spot stays taken.
+    let goalie = player(900, Position::G, Some(1_000_000.0));
+
+    pool.drop_add_player_at(OWNER, OWNER, 131, &goalie, day("2026-12-01"), 0)
+        .unwrap();
+
+    let roster = &pool.context.as_ref().unwrap().pooler_roster[OWNER];
+    assert_eq!(roster.chosen_reservists, vec![900]);
+    assert_eq!(roster.chosen_goalies, vec![121]);
 }

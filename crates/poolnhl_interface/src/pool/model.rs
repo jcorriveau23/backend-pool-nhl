@@ -4,6 +4,7 @@ use crate::{
     players::model::{PlayerInfo, Position},
     pool::lineup::LineupEvent,
     pool::scoring::DailyRosterPoints,
+    pool::transactions::{PlayerDropSettings, RosterTransaction, drops_used_in_period},
 };
 use chrono::{Duration, Local, NaiveDate, Timelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,10 @@ pub const START_SEASON_DATE: &str = "2026-09-29";
 pub const END_SEASON_DATE: &str = "2027-04-10";
 pub const POOL_CREATION_SEASON: u32 = 20262027;
 pub const TRADE_DEADLINE_DATE: &str = "2027-03-01";
+
+// Past this hour a roster change is counted for the next day: the day's games
+// are already under way, so it is too late to change what is being scored.
+pub const ROSTER_CHANGE_CUTOFF_HOUR: u32 = 12;
 
 // Pooler names are displayed in every ranking, table and chart of the pool, a
 // name longer than this would be cut with an ellipsis everywhere it appears.
@@ -123,6 +128,9 @@ pub struct PoolSettings {
 
     pub ignore_x_worst_players: Option<PlayerTypeSettings>,
     pub dynasty_settings: Option<DynastySettings>,
+
+    #[serde(default)]
+    pub player_drop_settings: Option<PlayerDropSettings>,
 }
 
 impl Default for PoolSettings {
@@ -164,6 +172,7 @@ impl PoolSettings {
             },
             ignore_x_worst_players: None,
             dynasty_settings: None,
+            player_drop_settings: None,
         }
     }
 }
@@ -838,6 +847,150 @@ impl Pool {
         Ok(())
     }
 
+    /// Swap a player the pooler holds for one nobody in the pool does.
+    ///
+    /// Free agency is a paired move by design: exactly one player leaves the
+    /// roster and exactly one joins it, so a roster never changes size and the
+    /// budget the owner sets counts swaps rather than two half-transactions
+    /// that could be left unbalanced.
+    ///
+    /// A pooler runs this on their own roster; the owner and the assistants may
+    /// run it on anyone's. Either way the budget applies — it is the pool's
+    /// rule, not a permission.
+    pub fn drop_add_player(
+        &mut self,
+        user_id: &str,
+        participant_id: &str,
+        dropped_player_id: u32,
+        added_player: &PlayerInfo,
+        now: i64,
+    ) -> Result<String, AppError> {
+        // Past noon a swap is counted for the next day, the same cutoff a
+        // lineup change uses: the day's games are already under way.
+        let mut today = Local::now().date_naive();
+        if Local::now().time().hour() >= ROSTER_CHANGE_CUTOFF_HOUR {
+            today += Duration::days(1);
+        }
+
+        self.drop_add_player_at(
+            user_id,
+            participant_id,
+            dropped_player_id,
+            added_player,
+            today,
+            now,
+        )
+    }
+
+    /// Same as [`Pool::drop_add_player`], with the day injected so the budget
+    /// and season-range rules can be exercised in tests. Returns the date the
+    /// swap takes effect.
+    pub fn drop_add_player_at(
+        &mut self,
+        user_id: &str,
+        participant_id: &str,
+        dropped_player_id: u32,
+        added_player: &PlayerInfo,
+        today: NaiveDate,
+        now: i64,
+    ) -> Result<String, AppError> {
+        self.validate_pool_status(&PoolState::InProgress)?;
+        self.validate_participant(participant_id)?;
+
+        if user_id != participant_id {
+            // Acting on somebody else's roster is the owner's and the
+            // assistants' to do.
+            self.has_privileges(user_id)?;
+        }
+
+        let drop_settings =
+            self.settings
+                .player_drop_settings
+                .ok_or_else(|| AppError::CustomError {
+                    msg: "This pool does not allow dropping players.".to_string(),
+                })?;
+
+        let effective_date = self.lineup_effective_date(&today.format("%Y-%m-%d").to_string());
+
+        // A swap effective past the last day of the season would never be
+        // applied to a scored day, it would only spend a budget for nothing.
+        if effective_date > self.season_end {
+            return Err(AppError::CustomError {
+                msg: "The season is over, players cannot be dropped anymore.".to_string(),
+            });
+        }
+
+        let context = self.context.as_mut().ok_or_else(|| AppError::CustomError {
+            msg: "Pool context does not exist.".to_string(),
+        })?;
+
+        let drops_used = drops_used_in_period(
+            context.roster_transactions.as_deref().unwrap_or_default(),
+            participant_id,
+            &drop_settings,
+            &effective_date,
+        );
+
+        if drops_used >= drop_settings.max_drops as usize {
+            return Err(AppError::CustomError {
+                msg: format!(
+                    "No drop left: {} of {} already used.",
+                    drops_used, drop_settings.max_drops
+                ),
+            });
+        }
+
+        // The player picked up has to be a free agent — held by nobody, this
+        // pooler included, which also rules out swapping a player for himself.
+        for participant in self.participants.iter() {
+            if context.pooler_roster[&participant.id].validate_player_possession(added_player.id) {
+                return Err(AppError::CustomError {
+                    msg: format!("{} is already picked.", added_player.name),
+                });
+            }
+        }
+
+        if !context.pooler_roster[participant_id].validate_player_possession(dropped_player_id) {
+            return Err(AppError::CustomError {
+                msg: "The dropped player is not owned by this pooler.".to_string(),
+            });
+        }
+
+        // The swap is staged on a copy of the roster and only committed once
+        // both halves work out: the placement can still fail (no lineup spot
+        // and a full bench), and a refused swap must not leave the pooler one
+        // player short of the roster they had.
+        let mut roster = context.pooler_roster[participant_id].clone();
+        // Dropped first, so the freed roster spot and the freed salary are the
+        // ones the incoming player is measured against.
+        roster.remove_player(dropped_player_id);
+        context.add_free_agent(&mut roster, added_player, &self.settings)?;
+        context
+            .pooler_roster
+            .insert(participant_id.to_string(), roster);
+
+        context
+            .players
+            .insert(added_player.id.to_string(), added_player.clone());
+
+        context
+            .roster_transactions
+            .get_or_insert_with(Vec::new)
+            .push(RosterTransaction {
+                participant: participant_id.to_string(),
+                effective_date: effective_date.clone(),
+                dropped_player_id,
+                added_player_id: added_player.id,
+                date_created: now,
+            });
+
+        // The swap moves the starting lineup, so the scoring picks it up the
+        // way it picks up any other lineup change.
+        context.record_lineup_change(participant_id, &effective_date);
+
+        Ok(effective_date)
+    }
+
     pub fn modify_roster(
         &mut self,
         user_id: &str,
@@ -854,7 +1007,7 @@ impl Pool {
         let mut today = Local::now().date_naive();
 
         // At 12PM we start to count the action for the next day.
-        if Local::now().time().hour() >= 12 {
+        if Local::now().time().hour() >= ROSTER_CHANGE_CUTOFF_HOUR {
             today += Duration::days(1);
         }
 
@@ -1912,6 +2065,10 @@ pub struct PoolContext {
     // daily points are derived from the shared day_leaders.
     #[serde(default)]
     pub lineup_events: Option<Vec<LineupEvent>>,
+    // Free-agent swaps, one entry per drop/add pair. What the drop budget of
+    // `PoolSettings::player_drop_settings` is counted against.
+    #[serde(default)]
+    pub roster_transactions: Option<Vec<RosterTransaction>>,
 }
 
 impl PoolContext {
@@ -1931,6 +2088,7 @@ impl PoolContext {
             protected_players: None,
             players: HashMap::new(),
             lineup_events: Some(Vec::new()),
+            roster_transactions: Some(Vec::new()),
         }
     }
 
@@ -2223,6 +2381,58 @@ impl PoolContext {
                 pooler_roster.chosen_reservists.push(player.id);
             }
         }
+        Ok(())
+    }
+
+    /// Place a picked up free agent on `roster`: the spot the drop freed in
+    /// their position when there is one, the bench otherwise.
+    ///
+    /// `roster` is the caller's copy, already stripped of the dropped player,
+    /// so the freed spot and the freed salary are what the incoming player is
+    /// measured against — and a refused placement leaves the pool untouched.
+    ///
+    /// Unlike [`PoolContext::add_drafted_player`], the bench limit is enforced.
+    /// The draft stops on its own once every roster is full, so it can push to
+    /// the reservists without counting them; free agency never stops, and a
+    /// swap that overfilled the bench would leave a roster the pool's own
+    /// settings say is impossible.
+    pub fn add_free_agent(
+        &self,
+        roster: &mut PoolerRoster,
+        player: &PlayerInfo,
+        settings: &PoolSettings,
+    ) -> Result<(), AppError> {
+        // A player with no contract can never start in a pool that counts the
+        // cap, the same rule the draft applies.
+        let fits_under_cap = match settings.salary_cap {
+            Some(team_salary_cap) => match player.salary_cap {
+                Some(player_salary_cap) => {
+                    self.calculate_cumulated_salary_cap(roster, &self.players)? + player_salary_cap
+                        <= team_salary_cap
+                }
+                None => false,
+            },
+            None => true,
+        };
+
+        let (lineup, limit) = match player.position {
+            Position::F => (&mut roster.chosen_forwards, settings.number_forwards),
+            Position::D => (&mut roster.chosen_defenders, settings.number_defenders),
+            Position::G => (&mut roster.chosen_goalies, settings.number_goalies),
+        };
+
+        if fits_under_cap && (lineup.len() as u8) < limit {
+            lineup.push(player.id);
+            return Ok(());
+        }
+
+        if (roster.chosen_reservists.len() as u8) >= settings.number_reservists {
+            return Err(AppError::CustomError {
+                msg: format!("There is no space for {} in the roster.", player.name),
+            });
+        }
+
+        roster.chosen_reservists.push(player.id);
         Ok(())
     }
 
@@ -2801,6 +3011,15 @@ impl PoolerRoster {
             chosen_goalies: Vec::new(),
             chosen_reservists: Vec::new(),
         }
+    }
+
+    /// Take a player off wherever they sit on this roster. Returns whether
+    /// they were on it at all.
+    pub fn remove_player(&mut self, player_id: u32) -> bool {
+        self.remove_forward(player_id)
+            || self.remove_defender(player_id)
+            || self.remove_goalie(player_id)
+            || self.remove_reservist(player_id)
     }
 
     pub fn remove_forward(&mut self, player_id: u32) -> bool {
