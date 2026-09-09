@@ -1,6 +1,5 @@
 //! End-to-end test of the derive path: the pool's embedded lineup events +
-//! shared day_leaders -> per-participant scoring, matching what `score_by_day`
-//! stored.
+//! shared day_leaders -> per-participant scoring.
 //!
 //! Needs mongo + redis:
 //!   docker compose up -d mongo redis

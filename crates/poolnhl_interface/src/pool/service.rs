@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -11,18 +12,13 @@ use crate::pool::requests::{
     ProtectPlayersRequest, RemovePlayerRequest, RequestPoolerLinkRequest,
     UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
 };
+use crate::pool::scoring::DailyRosterPoints;
 
 #[async_trait]
 pub trait PoolService {
     // Get pool info calls
     async fn init_indexes(&self) -> Result<()>;
     async fn get_pool_by_name(&self, name: &str) -> Result<Pool>;
-    async fn get_pool_by_name_with_range(
-        &self,
-        name: &str,
-        start_season_date: &str,
-        from_date: &str,
-    ) -> Result<Pool>;
     async fn list_pools(&self, season: u32) -> Result<Vec<ProjectedPoolShort>>;
     // Pool creation/deletion calls
     async fn create_pool(&self, user_id: &str, req: PoolCreationRequest) -> Result<Pool>;
@@ -63,7 +59,14 @@ pub trait PoolService {
         user_id: &str,
         req: CompleteProtectionRequest,
     ) -> Result<Pool>;
-    async fn mark_as_final(&self, user_id: &str, req: MarkAsFinalRequest) -> Result<Pool>;
+    /// `scores` is the season's derived days: the ranking is computed from the
+    /// shared day leaders, which the pool itself no longer keeps a copy of.
+    async fn mark_as_final(
+        &self,
+        user_id: &str,
+        req: MarkAsFinalRequest,
+        scores: &HashMap<String, HashMap<String, DailyRosterPoints>>,
+    ) -> Result<Pool>;
     async fn generate_dynasty(&self, user_id: &str, req: GenerateDynastyRequest) -> Result<Pool>;
 }
 

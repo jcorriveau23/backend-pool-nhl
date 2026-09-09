@@ -1216,13 +1216,27 @@ impl Pool {
         Ok(())
     }
 
-    pub fn mark_as_final(&mut self, user_id: &str) -> Result<(), AppError> {
-        self.mark_as_final_at(user_id, Local::now().date_naive())
+    /// Close a pool and record its final ranking.
+    ///
+    /// `scores` is the season's derived days, which the caller fetches: the
+    /// ranking is computed from the shared day leaders now, and the pool no
+    /// longer carries a copy of them to rank itself from.
+    pub fn mark_as_final(
+        &mut self,
+        user_id: &str,
+        scores: &HashMap<String, HashMap<String, DailyRosterPoints>>,
+    ) -> Result<(), AppError> {
+        self.mark_as_final_at(user_id, Local::now().date_naive(), scores)
     }
 
     // Same as mark_as_final, with the current date injected so the
     // end-of-season rule can be exercised in tests.
-    pub fn mark_as_final_at(&mut self, user_id: &str, today: NaiveDate) -> Result<(), AppError> {
+    pub fn mark_as_final_at(
+        &mut self,
+        user_id: &str,
+        today: NaiveDate,
+        scores: &HashMap<String, HashMap<String, DailyRosterPoints>>,
+    ) -> Result<(), AppError> {
         self.has_privileges(user_id)?;
         self.validate_pool_status(&PoolState::InProgress)?;
 
@@ -1241,7 +1255,7 @@ impl Pool {
         }
 
         // Get the final ranking of the pool. For dynasty pool, this will be use as draft order for the next season.
-        self.final_rank = Some(context.get_final_rank(&self.settings)?);
+        self.final_rank = Some(context.get_final_rank(&self.settings, scores)?);
         self.status = PoolState::Final;
 
         Ok(())
@@ -1564,15 +1578,6 @@ impl Pool {
 
         if let Some(protected_players) = context.protected_players.as_mut() {
             rekey(protected_players, old_id, new_id);
-        }
-
-        // Legacy per-day roster snapshots, keyed by date and then by pooler.
-        // Pools that predate `lineup_events` still carry them, and they are
-        // what those pools' daily and cumulative tabs read from.
-        if let Some(score_by_day) = context.score_by_day.as_mut() {
-            for day in score_by_day.values_mut() {
-                rekey(day, old_id, new_id);
-            }
         }
 
         // Round by round, who a pick was originally dealt to (the key) mapped to
@@ -1898,15 +1903,13 @@ pub enum UndoOutcome {
 pub struct PoolContext {
     pub pooler_roster: HashMap<String, PoolerRoster>,
     pub players_name_drafted: Vec<u32>,
-    pub score_by_day: Option<HashMap<String, HashMap<String, DailyRosterPoints>>>,
     pub tradable_picks: Option<Vec<HashMap<String, String>>>,
     pub past_tradable_picks: Option<Vec<HashMap<String, String>>>,
     pub protected_players: Option<HashMap<String, Vec<u32>>>,
     pub players: HashMap<String, PlayerInfo>,
     // Sparse lineup events: one entry per starting-lineup change per
     // participant. The lineup on any date is the latest event on or before it;
-    // daily points are derived from the shared day_leaders. Replaces the per-day
-    // roster snapshots that lived in `score_by_day`.
+    // daily points are derived from the shared day_leaders.
     #[serde(default)]
     pub lineup_events: Option<Vec<LineupEvent>>,
 }
@@ -1922,7 +1925,6 @@ impl PoolContext {
 
         Self {
             pooler_roster,
-            score_by_day: Some(HashMap::new()),
             tradable_picks: Some(Vec::new()),
             past_tradable_picks: Some(Vec::new()),
             players_name_drafted: Vec::new(),
@@ -1977,13 +1979,18 @@ impl PoolContext {
         true
     }
 
-    pub fn get_final_rank(&self, pool_settings: &PoolSettings) -> Result<Vec<String>, AppError> {
-        let Some(score_by_day) = &self.score_by_day else {
-            return Err(AppError::CustomError {
-                msg: "No score is being recorded in this pool yet.".to_string(),
-            });
-        };
-
+    /// Rank the participants on a season's worth of scoring.
+    ///
+    /// `scores` is every day of the season keyed by date, as
+    /// [`PoolScoringService::derive_range`] produces it. The pool used to carry
+    /// its own per-day copy of this and rank from that; the days are derived on
+    /// demand now, from the sparse lineup events and the shared day leaders, so
+    /// the caller brings them.
+    pub fn get_final_rank(
+        &self,
+        pool_settings: &PoolSettings,
+        scores: &HashMap<String, HashMap<String, DailyRosterPoints>>,
+    ) -> Result<Vec<String>, AppError> {
         // Per-user season tally: (total points, total number of games, then for
         // each player type a map of player id -> (total points, total games)).
         type UserSeasonTally = (
@@ -1998,7 +2005,7 @@ impl PoolContext {
         // and for each player type, a hashmap of the player id with their corresponding total number of points, total number of games.
         let mut user_total_points: HashMap<String, UserSeasonTally> = HashMap::new();
 
-        for (date, daily_roster_points) in score_by_day {
+        for daily_roster_points in scores.values() {
             for (participant, roster_daily_points) in daily_roster_points {
                 // Initialize the participant with 0 points and 0 games and no players.
                 if !user_total_points.contains_key(participant) {
@@ -2006,24 +2013,6 @@ impl PoolContext {
                         participant.clone(),
                         (0, 0, HashMap::new(), HashMap::new(), HashMap::new()),
                     );
-                }
-
-                // Ranking a pool on data that is still being written would give
-                // a wrong final order, so a day that has not been cumulated
-                // blocks the ranking.
-                //
-                // A day with no scoring line at all is exempt: it contributes
-                // zero to every tally whatever happens to it later. That covers
-                // the league's off days (all-star and olympic breaks, playoff
-                // gaps), which the ingest leaves uncumulated because there were
-                // simply no games to cumulate — those must not make a pool
-                // impossible to finalize.
-                if !roster_daily_points.is_cumulated && !roster_daily_points.is_scoreless() {
-                    return Err(AppError::CustomError {
-                        msg: format!(
-                            "There are no cumulative data on the {date} for the user {participant}"
-                        ),
-                    });
                 }
 
                 if let Some((

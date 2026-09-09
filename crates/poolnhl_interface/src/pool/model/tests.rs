@@ -473,10 +473,6 @@ fn taking_a_pooler_over_moves_its_id_everywhere_the_pool_keys_by_it() {
 
     let context = pool.context.as_mut().unwrap();
     context.protected_players = Some(HashMap::from([(USER_2.to_string(), vec![201, 202])]));
-    context.score_by_day = Some(HashMap::from([(
-        "2026-10-10".to_string(),
-        HashMap::from([(USER_2.to_string(), skater_day(&[(201, 1, 2)]))]),
-    )]));
     context.tradable_picks = Some(vec![HashMap::from([
         // USER_2 on both sides: the pick they were dealt, and the one they now
         // hold of somebody else's.
@@ -527,7 +523,6 @@ fn taking_a_pooler_over_moves_its_id_everywhere_the_pool_keys_by_it() {
     );
     assert!(!context.pooler_roster.contains_key(USER_2));
     assert!(context.protected_players.as_ref().unwrap()[NEW_ACCOUNT] == vec![201, 202]);
-    assert!(context.score_by_day.as_ref().unwrap()["2026-10-10"].contains_key(NEW_ACCOUNT));
 
     // Both sides of the pick map.
     let round = &context.tradable_picks.as_ref().unwrap()[0];
@@ -2178,63 +2173,37 @@ fn skater_day(scores: &[(u32, u8, u8)]) -> DailyRosterPoints {
     }
 }
 
-// One cumulated day: user-2 leads with 4 points, the owner and user-3 are
+// One day of scoring: user-2 leads with 4 points, the owner and user-3 are
 // tied at 2 points but the owner played fewer games.
-fn pool_with_scores() -> Pool {
-    let mut pool = in_progress_pool();
+fn season_scores() -> HashMap<String, HashMap<String, DailyRosterPoints>> {
     let mut day = HashMap::new();
     day.insert(OWNER.to_string(), skater_day(&[(101, 1, 0)]));
     day.insert(USER_2.to_string(), skater_day(&[(201, 2, 0)]));
     day.insert(USER_3.to_string(), skater_day(&[(301, 0, 1), (302, 0, 1)]));
-    pool.context.as_mut().unwrap().score_by_day =
-        Some(HashMap::from([("2025-12-01".to_string(), day)]));
-    pool
+    HashMap::from([("2025-12-01".to_string(), day)])
 }
 
 #[test]
 fn final_rank_orders_by_points_then_fewer_games() {
-    let pool = pool_with_scores();
+    let pool = in_progress_pool();
 
     let rank = pool
         .context
         .as_ref()
         .unwrap()
-        .get_final_rank(&pool.settings)
+        .get_final_rank(&pool.settings, &season_scores())
         .unwrap();
 
     assert_eq!(rank, vec![USER_2, OWNER, USER_3]);
 }
 
-// A day that scored but was not cumulated is still being written: ranking on it
-// would produce the wrong final order.
+// A day nobody played (the league's off days: all-star and olympic breaks,
+// playoff gaps) contributes nothing to any tally, and must not disturb the
+// order or make the pool impossible to finalize.
 #[test]
-fn final_rank_requires_every_scoring_day_to_be_cumulated() {
-    let mut pool = pool_with_scores();
-    let context = pool.context.as_mut().unwrap();
-    context
-        .score_by_day
-        .as_mut()
-        .unwrap()
-        .get_mut("2025-12-01")
-        .unwrap()
-        .get_mut(OWNER)
-        .unwrap()
-        .is_cumulated = false;
+fn a_day_without_games_does_not_change_the_final_rank() {
+    let mut scores = season_scores();
 
-    assert!(context.get_final_rank(&pool.settings).is_err());
-}
-
-// The league's off days (all-star / olympic breaks, playoff gaps) are left
-// uncumulated by the ingest because there are no games to cumulate. They add
-// nothing to any tally, so they must not make the pool impossible to finalize.
-#[test]
-fn a_day_without_games_does_not_block_the_final_rank() {
-    let mut pool = pool_with_scores();
-    let context = pool.context.as_mut().unwrap();
-    let score_by_day = context.score_by_day.as_mut().unwrap();
-
-    // An olympic-break day: every participant is rostered, nobody played, and
-    // the ingest never flipped it to cumulated.
     let mut break_day = HashMap::new();
     for participant in PARTICIPANTS {
         let mut scoreless = skater_day(&[]);
@@ -2242,14 +2211,18 @@ fn a_day_without_games_does_not_block_the_final_rank() {
             .roster
             .F
             .insert(101.to_string(), Option::<SkaterPoints>::None);
-        scoreless.is_cumulated = false;
         break_day.insert(participant.to_string(), scoreless);
     }
-    score_by_day.insert("2026-02-21".to_string(), break_day);
+    scores.insert("2026-02-21".to_string(), break_day);
 
-    let rank = context.get_final_rank(&pool.settings).unwrap();
+    let pool = in_progress_pool();
+    let rank = pool
+        .context
+        .as_ref()
+        .unwrap()
+        .get_final_rank(&pool.settings, &scores)
+        .unwrap();
 
-    // The ranking is unchanged: the empty day contributed nothing.
     assert_eq!(rank, vec![USER_2, OWNER, USER_3]);
 }
 
@@ -2369,13 +2342,16 @@ fn record_lineup_change_appends_only_on_change() {
 
 #[test]
 fn mark_as_final_waits_for_the_season_to_end() {
-    let mut pool = pool_with_scores();
+    let mut pool = in_progress_pool();
     let end_of_season = NaiveDate::parse_from_str(END_SEASON_DATE, "%Y-%m-%d").unwrap();
 
     // Cannot be finalized during the season.
-    assert!(pool.mark_as_final_at(OWNER, end_of_season).is_err());
+    assert!(
+        pool.mark_as_final_at(OWNER, end_of_season, &season_scores())
+            .is_err()
+    );
 
-    pool.mark_as_final_at(OWNER, end_of_season + Duration::days(1))
+    pool.mark_as_final_at(OWNER, end_of_season + Duration::days(1), &season_scores())
         .unwrap();
 
     assert_eq!(pool.status, PoolState::Final);
