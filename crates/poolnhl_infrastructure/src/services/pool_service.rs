@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use chrono::{Duration, Local, NaiveDate, Utc};
+use chrono::{Local, Utc};
 use futures::stream::TryStreamExt;
 use mongodb::bson::doc;
 use mongodb::bson::{Document, to_bson};
@@ -23,6 +23,7 @@ use poolnhl_interface::pool::requests::{
     ProtectPlayersRequest, RemovePlayerRequest, RequestPoolerLinkRequest,
     UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
 };
+use poolnhl_interface::pool::scoring::DailyRosterPoints;
 use poolnhl_interface::pool::service::PoolService;
 
 use crate::database_connection::DatabaseConnection;
@@ -37,6 +38,11 @@ pub async fn get_optional_short_pool_by_name(
     collection: &Collection<Pool>,
     _name: &str,
 ) -> Result<Option<Pool>> {
+    // `context.score_by_day` is gone from the model, so it deserializes away on
+    // its own — but mongo would still put it on the wire, and on the pools that
+    // predate the refactor that is most of the document. The projection keeps it
+    // out until `scripts/drop-score-by-day.js` has run everywhere; once no
+    // document carries the field it does nothing and can go.
     let find_option = FindOneOptions::builder()
         .projection(doc! {"context.score_by_day": 0})
         .build();
@@ -86,6 +92,7 @@ pub async fn update_pool(
         .insert("date_updated", next_version(expected_version));
 
     // Update the fields in the mongoDB pool document.
+    // Same transitional exclusion as in `get_optional_short_pool_by_name`.
     let find_one_and_update_options = FindOneAndUpdateOptions::builder()
         .return_document(ReturnDocument::After)
         .projection(doc! {"context.score_by_day": 0})
@@ -136,7 +143,6 @@ pub async fn get_short_pool_by_name(
     collection: &Collection<Pool>,
     pool_name: &str,
 ) -> Result<Pool> {
-    // Return the pool information without the score_by_day member
     get_optional_short_pool_by_name(collection, pool_name)
         .await?
         .ok_or(AppError::NotFound {
@@ -219,47 +225,6 @@ impl PoolService for MongoPoolService {
         let pool = self
             .collection
             .find_one(doc! {"name": name}, None)
-            .await
-            .map_err(mongo_err)?;
-
-        pool.ok_or(AppError::NotFound {
-            msg: format!("no pool found with name '{}'", name),
-        })
-    }
-
-    async fn get_pool_by_name_with_range(
-        &self,
-        name: &str,
-        start_season_date: &str,
-        from_date_str: &str,
-    ) -> Result<Pool> {
-        let from_date = NaiveDate::parse_from_str(from_date_str, "%Y-%m-%d")
-            .map_err(|e| AppError::ParseError { msg: e.to_string() })?;
-
-        let mut start_date = NaiveDate::parse_from_str(start_season_date, "%Y-%m-%d")
-            .map_err(|e| AppError::ParseError { msg: e.to_string() })?;
-
-        // Projection will allow to filter all the date that the user did not want
-        // (All the date before the from date received will be ignore).
-        //
-        // The loop compares dates, not their string forms: a caller-supplied
-        // `from` that chrono accepts but that does not round-trip to the same
-        // string (e.g. "2026-1-5") would otherwise never match the break
-        // condition and spin forever.
-        let mut projection = doc! {};
-        while start_date < from_date {
-            projection.insert(
-                format!("context.score_by_day.{}", start_date.format("%Y-%m-%d")),
-                0,
-            );
-            start_date += Duration::days(1);
-        }
-
-        let find_option = FindOneOptions::builder().projection(projection).build();
-        let pool = self
-            .collection
-            .clone_with_type::<Pool>()
-            .find_one(doc! {"name": &name}, find_option)
             .await
             .map_err(mongo_err)?;
 
@@ -620,16 +585,6 @@ impl PoolService for MongoPoolService {
                 "context.protected_players",
                 to_bson(&context.protected_players).map_err(bson_err)?,
             );
-            if context
-                .score_by_day
-                .as_ref()
-                .is_some_and(|days| !days.is_empty())
-            {
-                set.insert(
-                    "context.score_by_day",
-                    to_bson(&context.score_by_day).map_err(bson_err)?,
-                );
-            }
             set.insert(
                 "context.tradable_picks",
                 to_bson(&context.tradable_picks).map_err(bson_err)?,
@@ -757,10 +712,15 @@ impl PoolService for MongoPoolService {
         .await
     }
 
-    async fn mark_as_final(&self, user_id: &str, req: MarkAsFinalRequest) -> Result<Pool> {
-        let mut pool = self.get_pool_by_name(&req.pool_name).await?;
+    async fn mark_as_final(
+        &self,
+        user_id: &str,
+        req: MarkAsFinalRequest,
+        scores: &HashMap<String, HashMap<String, DailyRosterPoints>>,
+    ) -> Result<Pool> {
+        let mut pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
 
-        pool.mark_as_final(user_id)?;
+        pool.mark_as_final(user_id, scores)?;
 
         let updated_fields = doc! {
             "$set": doc!{
@@ -827,7 +787,6 @@ impl PoolService for MongoPoolService {
             context: Some(PoolContext {
                 pooler_roster: pool_context.pooler_roster.clone(),
                 players_name_drafted: Vec::new(),
-                score_by_day: Some(HashMap::new()),
                 tradable_picks: Some(Vec::new()),
                 past_tradable_picks: pool_context.tradable_picks.clone(),
                 protected_players: Some(protected_players),

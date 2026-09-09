@@ -158,10 +158,9 @@ impl GoalyPoints {
 }
 
 /// Per-player scoring lines for a single date, derived from the shared
-/// `day_leaders` collection. This is the compact, scoring-only projection that
-/// replaces the per-player breakdown previously duplicated in every pool's
-/// `score_by_day`: points are computed on demand from here instead of being
-/// stored per pool. See the pool score redesign.
+/// `day_leaders` collection. One compact, scoring-only projection for the whole
+/// league, rather than a per-player breakdown duplicated inside every pool:
+/// points are computed on demand from here instead of being stored per pool.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct DayScores {
     pub skaters: HashMap<u32, SkaterPoints>,
@@ -225,10 +224,9 @@ impl DayScores {
     /// Build a participant's per-day [`Roster`] for the given lineup, sourcing
     /// each player's points from these day scores. A rostered player that did
     /// not play maps to `None`; one that played without registering a stat maps
-    /// to an all-zero line, matching the shape the legacy `score_by_day`
-    /// produced so the existing scoring and ranking logic
+    /// to an all-zero line. The scoring and ranking logic
     /// ([`DailyRosterPoints::get_total_points`], [`PoolContext::get_final_rank`])
-    /// can be reused verbatim. That distinction is what makes games played add
+    /// reads this shape. That distinction is what makes games played add
     /// up: a scoreless game still counts as a game.
     pub fn roster_for(&self, forwards: &[u32], defense: &[u32], goalies: &[u32]) -> Roster {
         Roster {

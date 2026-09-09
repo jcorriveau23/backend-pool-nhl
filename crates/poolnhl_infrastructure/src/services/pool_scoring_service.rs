@@ -1,10 +1,10 @@
 //! Derives pool scores on demand from the shared `day_leaders` and the pool's
-//! embedded sparse lineup events, instead of the per-pool `score_by_day` blob.
+//! embedded sparse lineup events.
 //!
 //! The lineup a participant iced on a given day is reconstructed from the pool's
 //! `lineup_events` ([`lineup_as_of`]); the points those players scored come from
-//! [`DayLeadersCache`]. Building the familiar `DailyRosterPoints` shape lets the
-//! frontend consume the same structure it did from `score_by_day`.
+//! [`DayLeadersCache`]. The result is the `DailyRosterPoints` shape the ranking
+//! and the frontend both read.
 
 use std::collections::HashMap;
 

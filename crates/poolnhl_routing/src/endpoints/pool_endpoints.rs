@@ -25,10 +25,6 @@ impl PoolRouter {
     pub fn router(service_registry: ServiceRegistry) -> Router {
         Router::new()
             .route("/pool/:name", get(Self::get_pool_by_name))
-            .route(
-                "/pool/:name/:start_date/:from",
-                get(Self::get_pool_by_name_with_range),
-            )
             // Scores derived on demand from the shared day_leaders. A distinct
             // prefix avoids a matchit 0.7 static-vs-param conflict with the
             // `/pool/:name/:start_date/:from` route above.
@@ -72,18 +68,8 @@ impl PoolRouter {
         pool_service.get_pool_by_name(&name).await.map(Json)
     }
 
-    async fn get_pool_by_name_with_range(
-        Path((name, start_date, from)): Path<(String, String, String)>,
-        State(pool_service): State<PoolServiceHandle>,
-    ) -> Result<Json<Pool>> {
-        pool_service
-            .get_pool_by_name_with_range(&name, &start_date, &from)
-            .await
-            .map(Json)
-    }
-
     /// Per-participant scoring breakdown for a single day, derived from the
-    /// shared day_leaders. Same shape as one day of `score_by_day`.
+    /// shared day_leaders.
     async fn get_pool_daily_scores(
         Path((name, date)): Path<(String, String)>,
         State(pool_service): State<PoolServiceHandle>,
@@ -291,12 +277,26 @@ impl PoolRouter {
             .map(Json)
     }
 
+    /// Close a pool and record its final ranking.
+    ///
+    /// The ranking is computed from the season's scoring, which is derived here
+    /// from the shared day leaders — the pool used to carry a per-day copy to
+    /// rank itself from, and no longer does.
     async fn mark_as_final(
         token: UserEmailJwtPayload,
         State(pool_service): State<PoolServiceHandle>,
+        State(scoring): State<PoolScoringService>,
         Json(body): Json<MarkAsFinalRequest>,
     ) -> Result<Json<Pool>> {
-        pool_service.mark_as_final(&token.sub, body).await.map(Json)
+        let pool = pool_service.get_pool_by_name(&body.pool_name).await?;
+        let scores = scoring
+            .derive_range(&pool, &pool.season_start, &pool.season_end)
+            .await?;
+
+        pool_service
+            .mark_as_final(&token.sub, body, &scores)
+            .await
+            .map(Json)
     }
     async fn generate_dynasty(
         token: UserEmailJwtPayload,

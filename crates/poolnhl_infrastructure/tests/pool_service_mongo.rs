@@ -8,7 +8,6 @@
 //! seeded `hockeypool` one) and each test uses a uniquely-named pool, so
 //! tests can run in parallel and leave the dev data untouched.
 
-use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mongodb::Collection;
@@ -24,7 +23,6 @@ use poolnhl_interface::pool::requests::{
     AddPlayerRequest, ConfirmTradeRequest, CreateTradeRequest, DeleteTradeRequest,
     PoolCreationRequest, PoolDeletionRequest, UpdatePoolerNameRequest,
 };
-use poolnhl_interface::pool::scoring::{DailyRosterPoints, Roster};
 use poolnhl_interface::pool::service::PoolService;
 
 const TEST_DATABASE: &str = "hockeypooltest";
@@ -80,19 +78,8 @@ fn player(id: u32) -> PlayerInfo {
     }
 }
 
-fn empty_day() -> DailyRosterPoints {
-    DailyRosterPoints {
-        roster: Roster {
-            F: HashMap::new(),
-            D: HashMap::new(),
-            G: HashMap::new(),
-        },
-        is_cumulated: true,
-    }
-}
-
 // An InProgress two-user pool where each participant owns one reservist
-// (owner: player 1, user-2: player 2) and three days of scores are recorded.
+// (owner: player 1, user-2: player 2).
 fn in_progress_pool(name: &str) -> Pool {
     let mut pool = Pool::new(name, OWNER, &PoolSettings::new());
     pool.status = PoolState::InProgress;
@@ -119,15 +106,6 @@ fn in_progress_pool(name: &str) -> Pool {
         .chosen_reservists = vec![2];
     context.players.insert("1".to_string(), player(1));
     context.players.insert("2".to_string(), player(2));
-
-    let mut score_by_day = HashMap::new();
-    for date in ["2025-12-01", "2025-12-02", "2025-12-03"] {
-        let mut day = HashMap::new();
-        day.insert(OWNER.to_string(), empty_day());
-        day.insert(USER_2.to_string(), empty_day());
-        score_by_day.insert(date.to_string(), day);
-    }
-    context.score_by_day = Some(score_by_day);
 
     pool.context = Some(context);
     pool
@@ -162,30 +140,6 @@ async fn create_pool_roundtrip_and_unique_name_index() {
     // The unique index on the name rejects a second pool with the same name.
     let duplicate = service.create_pool(USER_2, request).await;
     assert!(matches!(duplicate, Err(AppError::MongoError { .. })));
-
-    cleanup(&collection, &pool_name).await;
-}
-
-#[tokio::test]
-#[ignore = "requires a running mongo (docker compose up -d mongo)"]
-async fn get_pool_by_name_with_range_prunes_the_earlier_days() {
-    let (service, collection) = service_and_collection().await;
-    let pool_name = unique_pool_name("range");
-    collection
-        .insert_one(&in_progress_pool(&pool_name), None)
-        .await
-        .unwrap();
-
-    let fetched = service
-        .get_pool_by_name_with_range(&pool_name, "2025-12-01", "2025-12-02")
-        .await
-        .unwrap();
-
-    // Days before the requested from-date are projected out, the rest stay.
-    let score_by_day = fetched.context.unwrap().score_by_day.unwrap();
-    assert!(!score_by_day.contains_key("2025-12-01"));
-    assert!(score_by_day.contains_key("2025-12-02"));
-    assert!(score_by_day.contains_key("2025-12-03"));
 
     cleanup(&collection, &pool_name).await;
 }
@@ -243,8 +197,6 @@ async fn filing_then_confirming_a_trade_persists_the_roster_swap() {
     let roster = &updated.context.as_ref().unwrap().pooler_roster;
     assert_eq!(roster[OWNER].chosen_reservists, vec![2]);
     assert_eq!(roster[USER_2].chosen_reservists, vec![1]);
-    // update_pool projects the heavy score_by_day field out of its response.
-    assert!(updated.context.as_ref().unwrap().score_by_day.is_none());
 
     // The swap survived a full round-trip to the database.
     let fetched = service.get_pool_by_name(&pool_name).await.unwrap();
