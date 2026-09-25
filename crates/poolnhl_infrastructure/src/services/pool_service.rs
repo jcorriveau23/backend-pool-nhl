@@ -157,9 +157,9 @@ impl MongoPoolService {
     }
 }
 
-// Today's date, used as the effective date of a lineup change. There is no
-// noon-lock / 12PM rule anymore: a change takes effect the day it is made, and
-// `roster_modification_date` still governs when changes are permitted.
+// Today's date, the fallback effective date of a trade that does not carry one.
+// A lineup move is not dated here: the model dates those itself, with
+// `roster_change_day`, which is where the noon cutoff rule lives.
 fn today() -> String {
     Local::now().date_naive().format("%Y-%m-%d").to_string()
 }
@@ -379,15 +379,9 @@ impl PoolService for MongoPoolService {
     async fn fill_spot(&self, user_id: &str, req: FillSpotRequest) -> Result<Pool> {
         let mut pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
 
-        // Fill the player into the starting roster.
+        // Fill the player into the starting roster. The model records the
+        // lineup event the scoring derives the new lineup from.
         pool.fill_spot(user_id, &req.filled_spot_user_id, req.player_id)?;
-
-        // Update fields with the filled spot
-
-        let effective_date = pool.lineup_effective_date(&today());
-        if let Some(context) = pool.context.as_mut() {
-            context.record_lineup_change(&req.filled_spot_user_id, &effective_date);
-        }
 
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),
@@ -441,13 +435,9 @@ impl PoolService for MongoPoolService {
     async fn remove_player(&self, user_id: &str, req: RemovePlayerRequest) -> Result<Pool> {
         let mut pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
 
-        // Remove the player from the roster.
+        // Remove the player from the roster. The model records the lineup
+        // event a removed starter leaves behind.
         pool.remove_player(user_id, &req.removed_player_user_id, req.player_id)?;
-
-        // updated fields.
-        if let Some(context) = pool.context.as_mut() {
-            context.record_lineup_change(&req.removed_player_user_id, &today());
-        }
 
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),
@@ -657,11 +647,6 @@ impl PoolService for MongoPoolService {
             &req.reserv_list,
         )?;
         // Modify the all the pooler_roster (we could update only the pooler_roster[userId] if necessary)
-
-        let effective_date = pool.lineup_effective_date(&today());
-        if let Some(context) = pool.context.as_mut() {
-            context.record_lineup_change(&req.roster_modified_user_id, &effective_date);
-        }
 
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
             msg: "pool context does not exist.".to_string(),

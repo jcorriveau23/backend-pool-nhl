@@ -131,6 +131,24 @@ fn possesses(pool: &Pool, user_id: &str, player_id: u32) -> bool {
     pool.context.as_ref().unwrap().pooler_roster[user_id].validate_player_possession(player_id)
 }
 
+fn lineup_events(pool: &Pool) -> &[LineupEvent] {
+    pool.context
+        .as_ref()
+        .unwrap()
+        .lineup_events
+        .as_deref()
+        .unwrap_or_default()
+}
+
+// The one event `participant` has on `date`, which is what the scoring reads
+// to know the lineup that applies from that day on.
+fn lineup_event_on<'a>(pool: &'a Pool, participant: &str, date: &str) -> &'a LineupEvent {
+    lineup_events(pool)
+        .iter()
+        .find(|event| event.participant == participant && event.effective_date == date)
+        .unwrap_or_else(|| panic!("no lineup event for {participant} on {date}"))
+}
+
 // -------------------------------------------------------------------
 // Pool status validation
 // -------------------------------------------------------------------
@@ -1481,6 +1499,28 @@ fn fill_spot_enforces_the_salary_cap() {
     assert!(result.unwrap_err().to_string().contains("salary cap"));
 }
 
+// Filling a spot is not tied to the modification dates, but the lineup it
+// leaves behind still has to be dated with the day it counts for, or the
+// scoring keeps applying the short lineup.
+#[test]
+fn fill_spot_records_the_lineup_change() {
+    let mut pool = in_progress_pool();
+    pool.context
+        .as_mut()
+        .unwrap()
+        .pooler_roster
+        .get_mut(OWNER)
+        .unwrap()
+        .chosen_forwards
+        .pop();
+
+    pool.fill_spot_at(OWNER, OWNER, 131, day("2026-12-01"))
+        .unwrap();
+
+    let event = lineup_event_on(&pool, OWNER, "2026-12-01");
+    assert_eq!(event.forwards, vec![101, 131]);
+}
+
 #[test]
 fn add_player_requires_privileges() {
     let mut pool = in_progress_pool();
@@ -1523,6 +1563,44 @@ fn remove_player_requires_privileges_and_possession() {
     // The owner removes an owned player.
     pool.remove_player(OWNER, USER_2, 231).unwrap();
     assert!(!possesses(&pool, USER_2, 231));
+}
+
+// A player landing on the bench changes no lineup, so there is nothing for the
+// scoring to re-derive and no event to record.
+#[test]
+fn add_player_records_no_lineup_change() {
+    let mut pool = in_progress_pool();
+
+    pool.add_player(OWNER, USER_2, &player(999, Position::F, None))
+        .unwrap();
+
+    assert!(lineup_events(&pool).is_empty());
+}
+
+// A removed starter leaves the lineup a player short from the day the removal
+// counts for. Dating the event with the plain day instead would put it before
+// the season on a pre-season removal, where it would never be applied.
+#[test]
+fn remove_player_records_the_lineup_change() {
+    let mut pool = in_progress_pool();
+
+    pool.remove_player_at(OWNER, USER_2, 201, day("2026-12-01"))
+        .unwrap();
+
+    let event = lineup_event_on(&pool, USER_2, "2026-12-01");
+    assert_eq!(event.forwards, vec![202]);
+}
+
+#[test]
+fn a_pre_season_removal_lands_on_the_season_start() {
+    let mut pool = in_progress_pool();
+
+    pool.remove_player_at(OWNER, USER_2, 201, day("2026-09-01"))
+        .unwrap();
+
+    let season_start = pool.season_start.clone();
+    let event = lineup_event_on(&pool, USER_2, &season_start);
+    assert_eq!(event.forwards, vec![202]);
 }
 
 // -------------------------------------------------------------------
@@ -1643,6 +1721,29 @@ fn a_lineup_change_during_the_season_keeps_its_own_date() {
     pool.season_start = "2025-09-29".to_string();
 
     assert_eq!(pool.lineup_effective_date("2025-12-01"), "2025-12-01");
+}
+
+// The lineup event is dated with the day the edit counts for — the same day the
+// allowed-dates rule was checked against — so an edit filed after the cutoff
+// applies to the day it was accepted for and not to games already played.
+#[test]
+fn modify_roster_records_the_lineup_change_on_the_day_it_counts_for() {
+    let mut pool = in_progress_pool();
+    pool.settings.roster_modification_date = vec!["2026-12-01".to_string()];
+
+    pool.modify_roster_at(
+        OWNER,
+        OWNER,
+        &[102, 131],
+        &[111],
+        &[121],
+        &[101],
+        day("2026-12-01"),
+    )
+    .unwrap();
+
+    let event = lineup_event_on(&pool, OWNER, "2026-12-01");
+    assert_eq!(event.forwards, vec![102, 131]);
 }
 
 #[test]
