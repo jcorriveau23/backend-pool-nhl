@@ -121,6 +121,19 @@ pub struct ModifyRosterRequest {
     pub effective_date: Option<String>,
 }
 
+// payload to sent when re-dating or dropping one recorded lineup change.
+#[derive(Debug, Deserialize, Clone)]
+pub struct UpdateLineupEventRequest {
+    pub pool_name: String,
+    pub participant_id: String,
+    // The day the event is recorded on now, yyyy-MM-dd.
+    pub from_date: String,
+    // The day to move it to. Absent drops the event, and its days fall back on
+    // the event before it.
+    #[serde(default)]
+    pub to_date: Option<String>,
+}
+
 // payload to sent when protecting the list of players for dynasty draft.
 #[derive(Debug, Deserialize, Clone)]
 pub struct ProtectPlayersRequest {

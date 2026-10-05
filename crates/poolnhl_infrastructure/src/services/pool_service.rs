@@ -21,7 +21,8 @@ use poolnhl_interface::pool::requests::{
     DeleteTradeRequest, DropAddPlayerRequest, FillSpotRequest, GenerateDynastyRequest,
     MarkAsFinalRequest, ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest,
     PoolerLinkRequest, ProtectPlayersRequest, RemovePlayerRequest, RequestPoolerLinkRequest,
-    UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
+    UpdateLineupEventRequest, UpdatePoolSettingsRequest, UpdatePoolerNameRequest,
+    UpdateTradeRequest,
 };
 use poolnhl_interface::pool::scoring::DailyRosterPoints;
 use poolnhl_interface::pool::service::PoolService;
@@ -478,6 +479,42 @@ impl PoolService for MongoPoolService {
         };
 
         // Update the fields in the mongoDB pool document.
+
+        update_pool(
+            updated_fields,
+            &self.collection,
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
+    }
+
+    async fn update_lineup_event(
+        &self,
+        user_id: &str,
+        req: UpdateLineupEventRequest,
+    ) -> Result<Pool> {
+        let mut pool = get_short_pool_by_name(&self.collection, &req.pool_name).await?;
+
+        // Only the events move: the rosters are what they are, this is about
+        // which days they were in force on.
+        pool.update_lineup_event(
+            user_id,
+            &req.participant_id,
+            &req.from_date,
+            req.to_date.as_deref(),
+            &today(),
+        )?;
+
+        let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
+            msg: "pool context does not exist.".to_string(),
+        })?;
+
+        let updated_fields = doc! {
+            "$set": doc!{
+                "context.lineup_events": to_bson(&context.lineup_events).map_err(bson_err)?,
+            }
+        };
 
         update_pool(
             updated_fields,

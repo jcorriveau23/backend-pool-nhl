@@ -1053,6 +1053,102 @@ impl Pool {
         Ok(effective_date)
     }
 
+    /// Re-date or drop one of a participant's recorded lineup events.
+    ///
+    /// The events *are* the scoring history: the lineup on any day is the
+    /// latest event on or before it. So a correction filed on the wrong day is
+    /// not a cosmetic mistake — every day between the one it should have
+    /// counted from and the one it was filed on goes on scoring the roster it
+    /// was meant to replace. Re-dating the event is how that is put right after
+    /// the fact. Dropping it is the other half: an event filed by mistake is
+    /// taken back, and its days fall back on the event before it.
+    ///
+    /// The owner's and the assistants' to do, since it rewrites days already
+    /// scored.
+    ///
+    /// An event moved onto a day the participant already has one on replaces
+    /// it. Two lineups for one pooler on one day have no meaning, and the one
+    /// being moved is the one the caller is asking for.
+    ///
+    /// Whatever the edit, a participant who had an event covering opening night
+    /// keeps one. Without it `lineup_as_of` finds nothing for the first days of
+    /// the season and the pooler scores zero until their next event, which is
+    /// never what re-dating a lineup is meant to do. A pool whose events never
+    /// covered opening night is left alone rather than frozen: the edit cannot
+    /// make it worse than it already is.
+    pub fn update_lineup_event(
+        &mut self,
+        user_id: &str,
+        participant_id: &str,
+        from_date: &str,
+        to_date: Option<&str>,
+        today: &str,
+    ) -> Result<(), AppError> {
+        self.validate_pool_status(&PoolState::InProgress)?;
+        self.has_privileges(user_id)?;
+        self.validate_participant(participant_id)?;
+
+        // Checked before anything is touched, and by the same rule a move filed
+        // today goes through: not past today, and nothing outside the season.
+        let to_date = match to_date {
+            Some(date) => Some(self.validate_roster_move_date(user_id, Some(date), today)?),
+            None => None,
+        };
+
+        if to_date.as_deref() == Some(from_date) {
+            return Ok(());
+        }
+
+        let season_start = self.season_start.clone();
+
+        let context = self.context.as_mut().ok_or_else(|| AppError::CustomError {
+            msg: "Pool context does not exist.".to_string(),
+        })?;
+        let events = context.lineup_events.get_or_insert_with(Vec::new);
+
+        let Some(index) = events.iter().position(|event| {
+            event.participant == participant_id && event.effective_date == from_date
+        }) else {
+            return Err(AppError::CustomError {
+                msg: format!("No lineup change is recorded for that pooler on {from_date}."),
+            });
+        };
+
+        let covers_opening_night = |events: &[LineupEvent]| {
+            events.iter().any(|event| {
+                event.participant == participant_id
+                    && event.effective_date.as_str() <= season_start.as_str()
+            })
+        };
+        let covered_before = covers_opening_night(events);
+
+        // Staged on a copy: a refused edit must leave the history exactly as it
+        // was rather than half-applied.
+        let mut updated = events.clone();
+        let moved = updated.remove(index);
+
+        if let Some(to_date) = to_date.as_deref() {
+            updated.retain(|event| {
+                !(event.participant == participant_id && event.effective_date == to_date)
+            });
+            updated.push(LineupEvent {
+                effective_date: to_date.to_string(),
+                ..moved
+            });
+        }
+
+        if covered_before && !covers_opening_night(&updated) {
+            return Err(AppError::CustomError {
+                msg: format!(
+                    "That would leave this pooler without a lineup on opening night ({season_start}), so they would score nothing until their next lineup change."
+                ),
+            });
+        }
+
+        *events = updated;
+        Ok(())
+    }
+
     pub fn modify_roster(
         &mut self,
         user_id: &str,

@@ -3115,3 +3115,149 @@ fn a_pooler_cannot_backdate_a_swap_on_their_own_roster() {
     assert!(possesses(&pool, USER_2, 201));
     assert!(transactions(&pool).is_empty());
 }
+
+// --- Re-dating and dropping a recorded lineup event ---------------------------
+
+fn event_dates(pool: &Pool, participant: &str) -> Vec<String> {
+    let mut dates: Vec<String> = pool
+        .context
+        .as_ref()
+        .unwrap()
+        .lineup_events
+        .as_ref()
+        .unwrap()
+        .iter()
+        .filter(|event| event.participant == participant)
+        .map(|event| event.effective_date.clone())
+        .collect();
+    dates.sort();
+    dates
+}
+
+// A pool whose owner has an opening lineup and one later change, which is the
+// shape every correction is filed against.
+fn pool_with_events() -> Pool {
+    let mut pool = in_progress_pool();
+    given_event(&mut pool, OWNER, "2026-09-29", &[101, 102]);
+    given_event(&mut pool, OWNER, "2026-11-01", &[102]);
+    pool
+}
+
+#[test]
+fn an_event_can_be_re_dated_to_the_day_it_should_have_counted_from() {
+    let mut pool = pool_with_events();
+
+    pool.update_lineup_event(OWNER, OWNER, "2026-11-01", Some("2026-10-15"), "2026-12-01")
+        .unwrap();
+
+    assert_eq!(event_dates(&pool, OWNER), ["2026-09-29", "2026-10-15"]);
+    // The lineup travels with the event: only the day it applies from changed.
+    assert_eq!(forwards_on(&pool, OWNER, "2026-10-15"), vec![102]);
+}
+
+#[test]
+fn a_re_dated_event_replaces_one_already_standing_on_that_day() {
+    let mut pool = pool_with_events();
+    given_event(&mut pool, OWNER, "2026-10-15", &[101]);
+
+    pool.update_lineup_event(OWNER, OWNER, "2026-11-01", Some("2026-10-15"), "2026-12-01")
+        .unwrap();
+
+    // Two lineups for one pooler on one day have no meaning, and the one being
+    // moved is the one the caller asked for.
+    assert_eq!(event_dates(&pool, OWNER), ["2026-09-29", "2026-10-15"]);
+    assert_eq!(forwards_on(&pool, OWNER, "2026-10-15"), vec![102]);
+}
+
+#[test]
+fn a_dropped_event_hands_its_days_back_to_the_one_before_it() {
+    let mut pool = pool_with_events();
+
+    pool.update_lineup_event(OWNER, OWNER, "2026-11-01", None, "2026-12-01")
+        .unwrap();
+
+    assert_eq!(event_dates(&pool, OWNER), ["2026-09-29"]);
+    assert_eq!(forwards_on(&pool, OWNER, "2026-09-29"), vec![101, 102]);
+}
+
+#[test]
+fn an_event_cannot_be_edited_away_from_opening_night() {
+    let mut pool = pool_with_events();
+
+    // Dropping the opening event, or moving it off opening night, would leave
+    // the pooler scoring nothing until their next change.
+    assert!(
+        pool.update_lineup_event(OWNER, OWNER, "2026-09-29", None, "2026-12-01")
+            .is_err()
+    );
+    assert!(
+        pool.update_lineup_event(OWNER, OWNER, "2026-09-29", Some("2026-10-15"), "2026-12-01")
+            .is_err()
+    );
+    // A refused edit leaves the history exactly as it was.
+    assert_eq!(event_dates(&pool, OWNER), ["2026-09-29", "2026-11-01"]);
+}
+
+#[test]
+fn an_event_of_a_pool_that_never_covered_opening_night_can_still_be_edited() {
+    let mut pool = in_progress_pool();
+    given_event(&mut pool, OWNER, "2026-10-15", &[101, 102]);
+
+    // The guard protects an invariant that holds; it does not freeze a history
+    // where it never did.
+    pool.update_lineup_event(OWNER, OWNER, "2026-10-15", Some("2026-10-20"), "2026-12-01")
+        .unwrap();
+
+    assert_eq!(event_dates(&pool, OWNER), ["2026-10-20"]);
+}
+
+#[test]
+fn editing_an_event_is_the_owners_and_the_assistants_to_do() {
+    let mut pool = pool_with_events();
+
+    assert!(
+        pool.update_lineup_event(USER_2, OWNER, "2026-11-01", None, "2026-12-01")
+            .is_err()
+    );
+
+    pool.settings.assistants = vec![USER_2.to_string()];
+    assert!(
+        pool.update_lineup_event(USER_2, OWNER, "2026-11-01", None, "2026-12-01")
+            .is_ok()
+    );
+}
+
+#[test]
+fn an_event_cannot_be_re_dated_into_the_future_or_past_the_season() {
+    let mut pool = pool_with_events();
+
+    assert!(
+        pool.update_lineup_event(OWNER, OWNER, "2026-11-01", Some("2026-12-02"), "2026-12-01")
+            .is_err()
+    );
+    assert!(
+        pool.update_lineup_event(OWNER, OWNER, "2026-11-01", Some("2027-09-01"), "2026-12-01")
+            .is_err()
+    );
+    assert_eq!(event_dates(&pool, OWNER), ["2026-09-29", "2026-11-01"]);
+}
+
+#[test]
+fn editing_a_day_with_no_event_on_it_is_refused() {
+    let mut pool = pool_with_events();
+
+    assert!(
+        pool.update_lineup_event(OWNER, OWNER, "2026-10-15", None, "2026-12-01")
+            .is_err()
+    );
+}
+
+#[test]
+fn re_dating_an_event_onto_its_own_day_changes_nothing() {
+    let mut pool = pool_with_events();
+
+    pool.update_lineup_event(OWNER, OWNER, "2026-11-01", Some("2026-11-01"), "2026-12-01")
+        .unwrap();
+
+    assert_eq!(event_dates(&pool, OWNER), ["2026-09-29", "2026-11-01"]);
+}
