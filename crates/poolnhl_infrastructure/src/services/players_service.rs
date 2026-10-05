@@ -175,7 +175,7 @@ impl PlayersService for MongoPlayersService {
             "name",
             doc! { "$regex": escape_regex(name), "$options": "i" },
         );
-        let limit = 5;
+        let limit = 10;
 
         let find_options = FindOptions::builder().limit(limit).build();
 
