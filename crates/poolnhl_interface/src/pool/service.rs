@@ -10,7 +10,8 @@ use crate::pool::requests::{
     DeleteTradeRequest, DropAddPlayerRequest, FillSpotRequest, GenerateDynastyRequest,
     MarkAsFinalRequest, ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest,
     PoolerLinkRequest, ProtectPlayersRequest, RemovePlayerRequest, RequestPoolerLinkRequest,
-    UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
+    UpdateLineupEventRequest, UpdatePoolSettingsRequest, UpdatePoolerNameRequest,
+    UpdateTradeRequest,
 };
 use crate::pool::scoring::DailyRosterPoints;
 
@@ -26,6 +27,11 @@ pub trait PoolService {
     // Pool in progress calls
     async fn add_player(&self, user_id: &str, req: AddPlayerRequest) -> Result<Pool>;
     async fn remove_player(&self, user_id: &str, req: RemovePlayerRequest) -> Result<Pool>;
+    async fn update_lineup_event(
+        &self,
+        user_id: &str,
+        req: UpdateLineupEventRequest,
+    ) -> Result<Pool>;
     async fn drop_add_player(&self, user_id: &str, req: DropAddPlayerRequest) -> Result<Pool>;
     async fn create_trade(&self, user_id: &str, req: &mut CreateTradeRequest) -> Result<Pool>;
     async fn update_trade(&self, user_id: &str, req: UpdateTradeRequest) -> Result<Pool>;

@@ -13,7 +13,8 @@ use poolnhl_interface::pool::requests::{
     DeleteTradeRequest, DropAddPlayerRequest, FillSpotRequest, GenerateDynastyRequest,
     MarkAsFinalRequest, ModifyRosterRequest, PoolCreationRequest, PoolDeletionRequest,
     PoolerLinkRequest, ProtectPlayersRequest, RemovePlayerRequest, RequestPoolerLinkRequest,
-    UpdatePoolSettingsRequest, UpdatePoolerNameRequest, UpdateTradeRequest,
+    UpdateLineupEventRequest, UpdatePoolSettingsRequest, UpdatePoolerNameRequest,
+    UpdateTradeRequest,
 };
 use poolnhl_interface::pool::scoring::DailyRosterPoints;
 use poolnhl_interface::pool::service::PoolServiceHandle;
@@ -42,6 +43,7 @@ impl PoolRouter {
             .route("/delete-pool", post(Self::delete_pool))
             .route("/add-player", post(Self::add_player))
             .route("/remove-player", post(Self::remove_player))
+            .route("/update-lineup-event", post(Self::update_lineup_event))
             .route("/drop-add-player", post(Self::drop_add_player))
             .route("/create-trade", post(Self::create_trade))
             .route("/update-trade", post(Self::update_trade))
@@ -135,6 +137,22 @@ impl PoolRouter {
         Json(body): Json<RemovePlayerRequest>,
     ) -> Result<Json<Pool>> {
         pool_service.remove_player(&token.sub, body).await.map(Json)
+    }
+
+    /// Re-date or drop one recorded lineup change.
+    ///
+    /// The owner's tool for a correction filed on the wrong day: the days
+    /// between the one it should have counted from and the one it was filed on
+    /// are still scoring the roster it was meant to replace.
+    async fn update_lineup_event(
+        token: UserEmailJwtPayload,
+        State(pool_service): State<PoolServiceHandle>,
+        Json(body): Json<UpdateLineupEventRequest>,
+    ) -> Result<Json<Pool>> {
+        pool_service
+            .update_lineup_event(&token.sub, body)
+            .await
+            .map(Json)
     }
 
     /// Swap a player a pooler holds for one nobody in the pool does.
