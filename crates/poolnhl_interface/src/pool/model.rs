@@ -642,9 +642,10 @@ impl Pool {
 
     /// Check a caller-supplied effective date and return it normalised.
     ///
-    /// A trade can be backdated to the day the poolers shook on it, but not
-    /// outside the season it belongs to: a date beyond either end would stamp a
-    /// lineup on days this pool never scores.
+    /// A move can be backdated to the day it should have counted from — the
+    /// day the poolers shook on a trade, the opening night a draft mistake goes
+    /// back to — but not outside the season it belongs to: a date beyond either
+    /// end would stamp a lineup on days this pool never scores.
     fn validate_effective_date(&self, date: &str) -> Result<String, AppError> {
         let parsed =
             NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|_| AppError::CustomError {
@@ -656,7 +657,7 @@ impl Pool {
         let season_end = NaiveDate::parse_from_str(&self.season_end, "%Y-%m-%d")
             .map_err(|e| AppError::ParseError { msg: e.to_string() })?;
 
-        // A trade filed before opening night has no day of its own to apply to:
+        // A move filed before opening night has no day of its own to apply to:
         // it redefines the lineup the pool opens with, the same way a lineup
         // change made in the preseason does.
         if parsed < season_start {
@@ -666,13 +667,54 @@ impl Pool {
         if parsed > season_end {
             return Err(AppError::CustomError {
                 msg: format!(
-                    "A trade cannot take effect after the end of the season ({}).",
+                    "Nothing can take effect after the end of the season ({}).",
                     self.season_end
                 ),
             });
         }
 
         Ok(parsed.format("%Y-%m-%d").to_string())
+    }
+
+    /// The day a roster move counts from, checked against who is asking.
+    ///
+    /// `None` means today, which is what every move did before a date could be
+    /// named and needs no permission: today has not been scored yet.
+    ///
+    /// An earlier day does need it. Backdating rewrites days already counted,
+    /// so it is the owner's and the assistants' to do — a pooler free to
+    /// backdate their own lineup could wait to see which of their players
+    /// scored and then date them into the lineup for those days.
+    ///
+    /// A later day is refused outright, for anyone. The roster itself changes
+    /// the moment the move is filed, so dating the event forward would score
+    /// the old lineup off a roster that no longer holds those players, and the
+    /// two would disagree until the date came around.
+    pub fn validate_roster_move_date(
+        &self,
+        user_id: &str,
+        requested: Option<&str>,
+        today: &str,
+    ) -> Result<String, AppError> {
+        let default = self.lineup_effective_date(today);
+
+        let Some(requested) = requested else {
+            return Ok(default);
+        };
+
+        let requested = self.validate_effective_date(requested)?;
+
+        if requested > default {
+            return Err(AppError::CustomError {
+                msg: format!("A roster move cannot be dated after today ({default})."),
+            });
+        }
+
+        if requested < default {
+            self.has_privileges(user_id)?;
+        }
+
+        Ok(requested)
     }
 
     pub fn fill_spot(
@@ -864,6 +906,7 @@ impl Pool {
         dropped_player_id: u32,
         added_player: &PlayerInfo,
         now: i64,
+        requested_date: Option<&str>,
     ) -> Result<String, AppError> {
         // Past noon a swap is counted for the next day, the same cutoff a
         // lineup change uses: the day's games are already under way.
@@ -879,12 +922,20 @@ impl Pool {
             added_player,
             today,
             now,
+            requested_date,
         )
     }
 
     /// Same as [`Pool::drop_add_player`], with the day injected so the budget
     /// and season-range rules can be exercised in tests. Returns the date the
     /// swap takes effect.
+    ///
+    /// `requested_date` backdates the swap to the day it should have counted
+    /// from — the owner's to set, and checked by
+    /// [`Pool::validate_roster_move_date`]. The drop budget is counted in the
+    /// period that day falls in, not the period it was filed in: a swap that
+    /// counts for November is a November swap.
+    #[allow(clippy::too_many_arguments)]
     pub fn drop_add_player_at(
         &mut self,
         user_id: &str,
@@ -893,6 +944,7 @@ impl Pool {
         added_player: &PlayerInfo,
         today: NaiveDate,
         now: i64,
+        requested_date: Option<&str>,
     ) -> Result<String, AppError> {
         self.validate_pool_status(&PoolState::InProgress)?;
         self.validate_participant(participant_id)?;
@@ -910,7 +962,11 @@ impl Pool {
                     msg: "This pool does not allow dropping players.".to_string(),
                 })?;
 
-        let effective_date = self.lineup_effective_date(&today.format("%Y-%m-%d").to_string());
+        let effective_date = self.validate_roster_move_date(
+            user_id,
+            requested_date,
+            &today.format("%Y-%m-%d").to_string(),
+        )?;
 
         // A swap effective past the last day of the season would never be
         // applied to a scored day, it would only spend a budget for nothing.
@@ -986,7 +1042,13 @@ impl Pool {
 
         // The swap moves the starting lineup, so the scoring picks it up the
         // way it picks up any other lineup change.
-        context.record_lineup_change(participant_id, &effective_date);
+        context.record_lineup_change_from(
+            participant_id,
+            &effective_date,
+            &[dropped_player_id],
+            &[added_player.id],
+            &self.settings,
+        );
 
         Ok(effective_date)
     }
@@ -2126,6 +2188,114 @@ impl PoolContext {
             return false;
         }
 
+        events.retain(|event| !(event.participant == participant && event.effective_date == date));
+        events.push(LineupEvent {
+            participant: participant.to_string(),
+            effective_date: date.to_string(),
+            forwards,
+            defense,
+            goalies,
+        });
+        true
+    }
+
+    /// Record a lineup change effective `date`, carrying the roster delta
+    /// through every later event of that participant.
+    ///
+    /// [`PoolContext::record_lineup_change`] writes the one event at `date`,
+    /// which is all a change made today needs: nothing is recorded after it, so
+    /// it is the latest event on or before every day left in the season. A
+    /// backdated change is not so lucky. The events already standing on later
+    /// days are still the latest ones there, and `lineup_as_of` would go on
+    /// scoring the roster the correction was meant to replace from the first of
+    /// them on — the correction would hold for a few days and then evaporate.
+    /// So the move is applied to those events too: `removed` leaves their
+    /// lineups and `added` joins them.
+    ///
+    /// A player joins a later day's lineup only where his position still has
+    /// room on that day. The alternative is a lineup longer than the pool
+    /// allows, scoring more players than everybody else; he sits that day out
+    /// instead, which is the same thing that happens to a player with no spot
+    /// on the day he is picked up.
+    pub fn record_lineup_change_from(
+        &mut self,
+        participant: &str,
+        date: &str,
+        removed: &[u32],
+        added: &[u32],
+        settings: &PoolSettings,
+    ) -> bool {
+        let has_later =
+            self.lineup_events.iter().flatten().any(|event| {
+                event.participant == participant && event.effective_date.as_str() > date
+            });
+
+        // Nothing stands after this date, so there is no delta to carry and the
+        // sparse recording is the right one: it leaves the events untouched
+        // when the lineup did not actually move.
+        if !has_later {
+            return self.record_lineup_change(participant, date);
+        }
+
+        // The positions have to be read off `players` before the events are
+        // borrowed mutably, and a player the context does not know cannot be
+        // placed in any of the three lists anyway.
+        let added: Vec<(u32, Position)> = added
+            .iter()
+            .filter_map(|player_id| {
+                self.players
+                    .get(&player_id.to_string())
+                    .map(|player| (*player_id, player.position.clone()))
+            })
+            .collect();
+
+        let events = self.lineup_events.get_or_insert_with(Vec::new);
+
+        for event in events.iter_mut() {
+            if event.participant != participant || event.effective_date.as_str() <= date {
+                continue;
+            }
+
+            for list in [&mut event.forwards, &mut event.defense, &mut event.goalies] {
+                list.retain(|player_id| !removed.contains(player_id));
+            }
+
+            for (player_id, position) in added.iter() {
+                let (list, capacity) = match position {
+                    Position::F => (&mut event.forwards, settings.number_forwards),
+                    Position::D => (&mut event.defense, settings.number_defenders),
+                    Position::G => (&mut event.goalies, settings.number_goalies),
+                };
+
+                if !list.contains(player_id) && list.len() < capacity as usize {
+                    list.push(*player_id);
+                }
+                list.sort_unstable();
+            }
+        }
+
+        self.put_lineup_event(participant, date)
+    }
+
+    /// Write the participant's current starting roster as the event at `date`,
+    /// replacing any event already standing there.
+    ///
+    /// Unconditional, unlike [`PoolContext::record_lineup_change`]: a backdated
+    /// change has already rewritten the events after `date`, so comparing
+    /// against the latest of them would find nothing left to do and skip the
+    /// one write that actually matters — the day the correction starts from.
+    fn put_lineup_event(&mut self, participant: &str, date: &str) -> bool {
+        let Some(roster) = self.pooler_roster.get(participant) else {
+            return false;
+        };
+        let mut forwards = roster.chosen_forwards.clone();
+        let mut defense = roster.chosen_defenders.clone();
+        let mut goalies = roster.chosen_goalies.clone();
+        forwards.sort_unstable();
+        defense.sort_unstable();
+        goalies.sort_unstable();
+
+        let events = self.lineup_events.get_or_insert_with(Vec::new);
         events.retain(|event| !(event.participant == participant && event.effective_date == date));
         events.push(LineupEvent {
             participant: participant.to_string(),

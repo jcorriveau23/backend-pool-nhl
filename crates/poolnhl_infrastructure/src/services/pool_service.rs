@@ -384,9 +384,17 @@ impl PoolService for MongoPoolService {
 
         // Update fields with the filled spot
 
-        let effective_date = pool.lineup_effective_date(&today());
+        let effective_date =
+            pool.validate_roster_move_date(user_id, req.effective_date.as_deref(), &today())?;
+        let settings = pool.settings.clone();
         if let Some(context) = pool.context.as_mut() {
-            context.record_lineup_change(&req.filled_spot_user_id, &effective_date);
+            context.record_lineup_change_from(
+                &req.filled_spot_user_id,
+                &effective_date,
+                &[],
+                &[req.player_id],
+                &settings,
+            );
         }
 
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
@@ -445,8 +453,17 @@ impl PoolService for MongoPoolService {
         pool.remove_player(user_id, &req.removed_player_user_id, req.player_id)?;
 
         // updated fields.
+        let effective_date =
+            pool.validate_roster_move_date(user_id, req.effective_date.as_deref(), &today())?;
+        let settings = pool.settings.clone();
         if let Some(context) = pool.context.as_mut() {
-            context.record_lineup_change(&req.removed_player_user_id, &today());
+            context.record_lineup_change_from(
+                &req.removed_player_user_id,
+                &effective_date,
+                &[req.player_id],
+                &[],
+                &settings,
+            );
         }
 
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
@@ -484,6 +501,7 @@ impl PoolService for MongoPoolService {
             req.dropped_player_id,
             &req.added_player,
             Utc::now().timestamp_millis(),
+            req.effective_date.as_deref(),
         )?;
 
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {
@@ -658,9 +676,21 @@ impl PoolService for MongoPoolService {
         )?;
         // Modify the all the pooler_roster (we could update only the pooler_roster[userId] if necessary)
 
-        let effective_date = pool.lineup_effective_date(&today());
+        let effective_date =
+            pool.validate_roster_move_date(user_id, req.effective_date.as_deref(), &today())?;
+        let settings = pool.settings.clone();
         if let Some(context) = pool.context.as_mut() {
-            context.record_lineup_change(&req.roster_modified_user_id, &effective_date);
+            // No delta: a lineup edit replaces who starts rather than who is
+            // held, so a backdated one governs only the days up to the next
+            // event. Those later events are the pooler's own later choices and
+            // are left exactly as they are.
+            context.record_lineup_change_from(
+                &req.roster_modified_user_id,
+                &effective_date,
+                &[],
+                &[],
+                &settings,
+            );
         }
 
         let context = pool.context.as_ref().ok_or_else(|| AppError::CustomError {

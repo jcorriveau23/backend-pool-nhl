@@ -36,6 +36,11 @@ pub struct RemovePlayerRequest {
     pub pool_name: String,
     pub removed_player_user_id: String,
     pub player_id: u32,
+    // The day the move counts from, yyyy-MM-dd. Absent means today, which is
+    // what every move did before this field existed. An earlier day is the
+    // owner's and the assistants' to set: it rewrites days already scored.
+    #[serde(default)]
+    pub effective_date: Option<String>,
 }
 
 // payload to sent when a pooler swaps a player they hold for an undrafted one.
@@ -49,6 +54,11 @@ pub struct DropAddPlayerRequest {
     pub participant_id: String,
     pub dropped_player_id: u32,
     pub added_player: PlayerInfo,
+    // The day the move counts from, yyyy-MM-dd. Absent means today, which is
+    // what every move did before this field existed. An earlier day is the
+    // owner's and the assistants' to set: it rewrites days already scored.
+    #[serde(default)]
+    pub effective_date: Option<String>,
 }
 
 // payload to sent when creating a trade.
@@ -88,6 +98,11 @@ pub struct FillSpotRequest {
     pub pool_name: String,
     pub filled_spot_user_id: String,
     pub player_id: u32,
+    // The day the move counts from, yyyy-MM-dd. Absent means today, which is
+    // what every move did before this field existed. An earlier day is the
+    // owner's and the assistants' to set: it rewrites days already scored.
+    #[serde(default)]
+    pub effective_date: Option<String>,
 }
 
 // payload to sent when modifying roster of a pooler
@@ -99,6 +114,11 @@ pub struct ModifyRosterRequest {
     pub def_list: Vec<u32>,
     pub goal_list: Vec<u32>,
     pub reserv_list: Vec<u32>,
+    // The day the move counts from, yyyy-MM-dd. Absent means today, which is
+    // what every move did before this field existed. An earlier day is the
+    // owner's and the assistants' to set: it rewrites days already scored.
+    #[serde(default)]
+    pub effective_date: Option<String>,
 }
 
 // payload to sent when protecting the list of players for dynasty draft.
