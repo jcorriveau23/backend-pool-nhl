@@ -16,10 +16,77 @@ use std::{
 // Date for season
 //
 
-pub const START_SEASON_DATE: &str = "2026-09-29";
-pub const END_SEASON_DATE: &str = "2027-04-10";
-pub const POOL_CREATION_SEASON: u32 = 20262027;
-pub const TRADE_DEADLINE_DATE: &str = "2027-03-01";
+/// One season's dates, as a compile-time entry of [`SEASONS`].
+///
+/// [`SeasonInfo`] is the owned shape the api serves; this is the const one the
+/// table is written in, so the dates stay `&'static str` and the current
+/// season's constants below can be read straight out of the last entry.
+#[derive(Debug, Clone, Copy)]
+pub struct Season {
+    pub start_season_date: &'static str,
+    pub end_season_date: &'static str,
+    pub season: u32,
+    pub trade_deadline_date: &'static str,
+}
+
+impl Season {
+    pub fn info(&self) -> SeasonInfo {
+        SeasonInfo {
+            start_season_date: self.start_season_date.to_string(),
+            end_season_date: self.end_season_date.to_string(),
+            season: self.season,
+            trade_deadline_date: self.trade_deadline_date.to_string(),
+        }
+    }
+}
+
+/// Every season the pool holds data for, oldest first.
+///
+/// Rolling the season over means appending an entry, not editing one: the past
+/// entries are what lets a season's totals be re-cumulated from `day_leaders`,
+/// which keeps every day of every season. A draft held after opening day reads
+/// the previous entry's numbers, so an edit here silently changes the board of
+/// a pool that has already drafted.
+pub const SEASONS: [Season; 5] = [
+    Season {
+        start_season_date: "2022-10-07",
+        end_season_date: "2023-04-13",
+        season: 20222023,
+        trade_deadline_date: "2023-03-03",
+    },
+    Season {
+        start_season_date: "2023-10-10",
+        end_season_date: "2024-04-18",
+        season: 20232024,
+        trade_deadline_date: "2024-03-08",
+    },
+    Season {
+        start_season_date: "2024-10-08",
+        end_season_date: "2025-04-17",
+        season: 20242025,
+        trade_deadline_date: "2025-03-07",
+    },
+    Season {
+        start_season_date: "2025-10-07",
+        end_season_date: "2026-04-16",
+        season: 20252026,
+        trade_deadline_date: "2026-03-07",
+    },
+    Season {
+        start_season_date: "2026-09-29",
+        end_season_date: "2027-04-10",
+        season: 20262027,
+        trade_deadline_date: "2027-03-01",
+    },
+];
+
+/// The season the pool is currently running: the last entry of [`SEASONS`].
+pub const CURRENT_SEASON: Season = SEASONS[SEASONS.len() - 1];
+
+pub const START_SEASON_DATE: &str = CURRENT_SEASON.start_season_date;
+pub const END_SEASON_DATE: &str = CURRENT_SEASON.end_season_date;
+pub const POOL_CREATION_SEASON: u32 = CURRENT_SEASON.season;
+pub const TRADE_DEADLINE_DATE: &str = CURRENT_SEASON.trade_deadline_date;
 
 // Past this hour a roster change is counted for the next day: the day's games
 // are already under way, so it is too late to change what is being scored.
@@ -40,12 +107,13 @@ pub struct SeasonInfo {
 
 impl SeasonInfo {
     pub fn current() -> Self {
-        Self {
-            start_season_date: START_SEASON_DATE.to_string(),
-            end_season_date: END_SEASON_DATE.to_string(),
-            season: POOL_CREATION_SEASON,
-            trade_deadline_date: TRADE_DEADLINE_DATE.to_string(),
-        }
+        CURRENT_SEASON.info()
+    }
+
+    /// Every season, oldest first, for a client that has to offer a choice of
+    /// them -- a draft board showing the season that just ended, say.
+    pub fn all() -> Vec<Self> {
+        SEASONS.iter().map(Season::info).collect()
     }
 }
 

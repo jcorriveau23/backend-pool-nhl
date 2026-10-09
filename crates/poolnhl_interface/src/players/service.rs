@@ -9,7 +9,11 @@ use crate::players::model::{GetPlayerQuery, PlayerInfo};
 pub trait PlayersService {
     async fn init_indexes(&self) -> Result<()>;
     async fn get_players(&self, date: GetPlayerQuery) -> Result<Vec<PlayerInfo>>;
-    async fn get_players_with_name(&self, name: &str) -> Result<Vec<PlayerInfo>>;
+    async fn get_players_with_name(
+        &self,
+        name: &str,
+        season: Option<u32>,
+    ) -> Result<Vec<PlayerInfo>>;
     async fn get_player_with_id(&self, id: i64) -> Result<PlayerInfo>;
 }
 
