@@ -3261,3 +3261,80 @@ fn re_dating_an_event_onto_its_own_day_changes_nothing() {
 
     assert_eq!(event_dates(&pool, OWNER), ["2026-09-29", "2026-11-01"]);
 }
+
+// --- Season registry -------------------------------------------------------
+//
+// The table is hand-written once a year and read by the scraper to decide which
+// days to cumulate, so a typo in it is a wrong set of stats rather than a
+// failure. These pin the shape it has to keep.
+
+fn parse(date: &str) -> NaiveDate {
+    NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .unwrap_or_else(|_| panic!("{date} is not a YYYY-MM-DD date"))
+}
+
+#[test]
+fn every_season_runs_forward_and_holds_its_deadline() {
+    for season in SEASONS {
+        let start = parse(season.start_season_date);
+        let end = parse(season.end_season_date);
+        let deadline = parse(season.trade_deadline_date);
+
+        assert!(start < end, "season {} starts after it ends", season.season);
+        assert!(
+            start < deadline && deadline < end,
+            "season {} has a trade deadline outside its own dates",
+            season.season
+        );
+    }
+}
+
+#[test]
+fn seasons_are_oldest_first_and_do_not_overlap() {
+    for pair in SEASONS.windows(2) {
+        let (earlier, later) = (pair[0], pair[1]);
+
+        assert!(
+            earlier.season < later.season,
+            "SEASONS is not ordered oldest first at {}",
+            later.season
+        );
+        // The cumulator walks one season's range at a time, so an overlap would
+        // count the same day's games into two seasons.
+        assert!(
+            parse(earlier.end_season_date) < parse(later.start_season_date),
+            "season {} starts before {} is over",
+            later.season,
+            earlier.season
+        );
+    }
+}
+
+#[test]
+fn a_season_id_is_its_two_calendar_years() {
+    for season in SEASONS {
+        let start = parse(season.start_season_date);
+        let end = parse(season.end_season_date);
+
+        assert_eq!(
+            season.season,
+            start.format("%Y").to_string().parse::<u32>().unwrap() * 10000
+                + end.format("%Y").to_string().parse::<u32>().unwrap(),
+            "season id {} does not match its dates",
+            season.season
+        );
+    }
+}
+
+#[test]
+fn the_current_season_is_the_last_entry() {
+    let current = SeasonInfo::current();
+    let all = SeasonInfo::all();
+
+    assert_eq!(all.len(), SEASONS.len());
+    assert_eq!(all.last().unwrap().season, current.season);
+    assert_eq!(current.season, POOL_CREATION_SEASON);
+    assert_eq!(current.start_season_date, START_SEASON_DATE);
+    assert_eq!(current.end_season_date, END_SEASON_DATE);
+    assert_eq!(current.trade_deadline_date, TRADE_DEADLINE_DATE);
+}

@@ -5,7 +5,7 @@ use axum::routing::get;
 use poolnhl_infrastructure::services::ServiceRegistry;
 
 use poolnhl_interface::errors::Result;
-use poolnhl_interface::players::model::{GetPlayerQuery, PlayerInfo};
+use poolnhl_interface::players::model::{GetPlayerQuery, PlayerInfo, SearchPlayerQuery};
 use poolnhl_interface::players::service::PlayersServiceHandle;
 
 pub struct PlayersRouter;
@@ -28,7 +28,11 @@ impl PlayersRouter {
     async fn get_players_with_name(
         State(players_service): State<PlayersServiceHandle>,
         Path(name): Path<String>,
+        Query(params): Query<SearchPlayerQuery>,
     ) -> Result<Json<Vec<PlayerInfo>>> {
-        players_service.get_players_with_name(&name).await.map(Json)
+        players_service
+            .get_players_with_name(&name, params.season)
+            .await
+            .map(Json)
     }
 }
