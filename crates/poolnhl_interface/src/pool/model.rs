@@ -25,6 +25,21 @@ pub const TRADE_DEADLINE_DATE: &str = "2027-03-01";
 // are already under way, so it is too late to change what is being scored.
 pub const ROSTER_CHANGE_CUTOFF_HOUR: u32 = 12;
 
+/// The day a roster change filed right now counts for.
+///
+/// Every move that can shift a starting lineup — a lineup edit, a reservist
+/// filled into a free spot, a free-agent swap, a removal by the owner — is
+/// dated with this, so the one cutoff rule is applied in one place instead of
+/// being re-derived at each call site.
+pub fn roster_change_day() -> NaiveDate {
+    let now = Local::now();
+    let mut today = now.date_naive();
+    if now.time().hour() >= ROSTER_CHANGE_CUTOFF_HOUR {
+        today += Duration::days(1);
+    }
+    today
+}
+
 // Pooler names are displayed in every ranking, table and chart of the pool, a
 // name longer than this would be cut with an ellipsis everywhere it appears.
 pub const MAX_POOLER_NAME_LENGTH: usize = 32;
@@ -723,11 +738,25 @@ impl Pool {
         filled_spot_user_id: &str,
         player_id: u32,
     ) -> Result<(), AppError> {
+        self.fill_spot_at(user_id, filled_spot_user_id, player_id, roster_change_day())
+    }
+
+    /// Same as [`Pool::fill_spot`], with the day injected so the lineup event
+    /// it records can be exercised in tests.
+    pub fn fill_spot_at(
+        &mut self,
+        user_id: &str,
+        filled_spot_user_id: &str,
+        player_id: u32,
+        today: NaiveDate,
+    ) -> Result<(), AppError> {
         self.validate_pool_status(&PoolState::InProgress)?;
         self.validate_participant(filled_spot_user_id)?;
         if user_id != filled_spot_user_id {
             self.has_privileges(user_id)?;
         }
+
+        let effective_date = self.lineup_effective_date(&today.format("%Y-%m-%d").to_string());
 
         let context = self.context.as_mut().ok_or_else(|| AppError::CustomError {
             msg: "Pool context does not exist.".to_string(),
@@ -819,8 +848,18 @@ impl Pool {
                 .retain(|player_id| player_id != &player.id);
         }
 
+        // The promotion moves the starting lineup, so the scoring picks it up
+        // the way it picks up any other lineup change.
+        context.record_lineup_change(filled_spot_user_id, &effective_date);
+
         Ok(())
     }
+
+    /// Put a player nobody in the pool holds into a pooler's reservists.
+    ///
+    /// The owner's tool, and the counterpart of [`Pool::remove_player`]. The
+    /// player lands on the bench, never in the lineup, so it records no lineup
+    /// event: filling a spot is a separate, deliberate move.
     pub fn add_player(
         &mut self,
         user_id: &str,
@@ -860,14 +899,33 @@ impl Pool {
         Ok(())
     }
 
+    /// Take a player off a pooler's roster, wherever they sit on it.
+    ///
+    /// The owner's tool, and the counterpart of [`Pool::add_player`]. Unlike
+    /// [`Pool::drop_add_player`] nothing comes back in return, which is why it
+    /// is not something a pooler may run on their own roster.
     pub fn remove_player(
         &mut self,
         user_id: &str,
         removed_to_user_id: &str,
         player_id: u32,
     ) -> Result<(), AppError> {
+        self.remove_player_at(user_id, removed_to_user_id, player_id, roster_change_day())
+    }
+
+    /// Same as [`Pool::remove_player`], with the day injected so the lineup
+    /// event it records can be exercised in tests.
+    pub fn remove_player_at(
+        &mut self,
+        user_id: &str,
+        removed_to_user_id: &str,
+        player_id: u32,
+        today: NaiveDate,
+    ) -> Result<(), AppError> {
         self.validate_pool_status(&PoolState::InProgress)?;
         self.has_privileges(user_id)?;
+
+        let effective_date = self.lineup_effective_date(&today.format("%Y-%m-%d").to_string());
 
         let context = self.context.as_mut().ok_or_else(|| AppError::CustomError {
             msg: "Pool context does not exist.".to_string(),
@@ -886,6 +944,11 @@ impl Pool {
             });
         }
         context.remove_player_from_roster(player_id, removed_to_user_id)?;
+
+        // Taking a starter off leaves the lineup a player short, and the
+        // scoring has to see that from the day the removal counts for.
+        context.record_lineup_change(removed_to_user_id, &effective_date);
+
         Ok(())
     }
 
@@ -908,19 +971,12 @@ impl Pool {
         now: i64,
         requested_date: Option<&str>,
     ) -> Result<String, AppError> {
-        // Past noon a swap is counted for the next day, the same cutoff a
-        // lineup change uses: the day's games are already under way.
-        let mut today = Local::now().date_naive();
-        if Local::now().time().hour() >= ROSTER_CHANGE_CUTOFF_HOUR {
-            today += Duration::days(1);
-        }
-
         self.drop_add_player_at(
             user_id,
             participant_id,
             dropped_player_id,
             added_player,
-            today,
+            roster_change_day(),
             now,
             requested_date,
         )
@@ -1162,13 +1218,6 @@ impl Pool {
         // end season on the days that the users are allowed to make roster modifications.
         // This is being hold in the variable self.settings.roster_modification_date
 
-        let mut today = Local::now().date_naive();
-
-        // At 12PM we start to count the action for the next day.
-        if Local::now().time().hour() >= ROSTER_CHANGE_CUTOFF_HOUR {
-            today += Duration::days(1);
-        }
-
         self.modify_roster_at(
             user_id,
             roster_modified_user_id,
@@ -1176,7 +1225,7 @@ impl Pool {
             def_list,
             goal_list,
             reserv_list,
-            today,
+            roster_change_day(),
         )
     }
 
@@ -1228,6 +1277,8 @@ impl Pool {
                 });
             }
         }
+
+        let effective_date = self.lineup_effective_date(&today.format("%Y-%m-%d").to_string());
 
         let context = self.context.as_mut().ok_or_else(|| AppError::CustomError {
             msg: "Pool context does not exist.".to_string(),
@@ -1360,6 +1411,12 @@ impl Pool {
         roster.chosen_defenders = def_list.to_vec();
         roster.chosen_goalies = goal_list.to_vec();
         roster.chosen_reservists = reserv_list.to_vec();
+
+        // Dated with the day the edit counts for, not with the day it was
+        // filed: an edit made after the cutoff applies to tomorrow, and the
+        // event the scoring reads has to say so.
+        context.record_lineup_change(roster_modified_user_id, &effective_date);
+
         Ok(())
     }
 
