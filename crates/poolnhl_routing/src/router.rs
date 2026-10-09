@@ -21,6 +21,7 @@ use crate::endpoints::daily_leaders_endpoints::DailyLeadersRouter;
 use crate::endpoints::draft_endpoints::DraftRouter;
 use crate::endpoints::players_endpoints::PlayersRouter;
 use crate::endpoints::pool_endpoints::PoolRouter;
+use crate::endpoints::survivor_endpoints::SurvivorRouter;
 use crate::endpoints::version_endpoints::VersionRouter;
 
 pub struct ApplicationController;
@@ -90,6 +91,7 @@ impl ApplicationController {
                 "/api-rust",
                 Router::new()
                     .merge(PoolRouter::router(service_registry.clone()))
+                    .merge(SurvivorRouter::router(service_registry.clone()))
                     .merge(DraftRouter::router(service_registry.clone()))
                     .merge(DailyLeadersRouter::router(service_registry.clone()))
                     .merge(PlayersRouter::router(service_registry.clone()))

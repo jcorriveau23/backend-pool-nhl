@@ -9,22 +9,27 @@ use poolnhl_interface::draft::service::DraftServiceHandle;
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::players::service::PlayersServiceHandle;
 use poolnhl_interface::pool::service::PoolServiceHandle;
+use poolnhl_interface::survivor::service::SurvivorServiceHandle;
 
 pub mod daily_leaders_service;
 pub mod day_leaders_cache;
 pub mod draft_service;
 pub mod draft_state;
+pub mod nhl_schedule_service;
 pub mod players_service;
 pub mod pool_scoring_service;
 pub mod pool_service;
+pub mod survivor_service;
 
 use daily_leaders_service::MongoDailyLeadersService;
 use day_leaders_cache::DayLeadersCache;
 use draft_service::MongoDraftService;
 use draft_state::{DraftServerState, LocalRooms, spawn_heartbeat};
+use nhl_schedule_service::NhlScheduleService;
 use players_service::MongoPlayersService;
 use pool_scoring_service::PoolScoringService;
 use pool_service::MongoPoolService;
+use survivor_service::MongoSurvivorService;
 #[derive(FromRef, Clone)]
 pub struct ServiceRegistry {
     pub pool_service: PoolServiceHandle,
@@ -32,6 +37,7 @@ pub struct ServiceRegistry {
     pub draft_service: DraftServiceHandle,
     pub daily_leaders_service: DailyLeadersServiceHandle,
     pub pool_scoring_service: PoolScoringService,
+    pub survivor_service: SurvivorServiceHandle,
 
     pub cached_keys: Arc<CachedJwks>,
 }
@@ -58,6 +64,12 @@ impl ServiceRegistry {
 
         let pool_service = Arc::new(MongoPoolService::new(db.clone()));
         let players_service = Arc::new(MongoPlayersService::new(db.clone()));
+        // The league's own scoreboard. A survivor pool eliminates people, so
+        // who won is read here rather than taken from a client.
+        let survivor_service = Arc::new(MongoSurvivorService::new(
+            db.clone(),
+            NhlScheduleService::new(),
+        ));
         let draft_service = Arc::new(MongoDraftService::new(
             db.clone(),
             cached_jwks.clone(),
@@ -71,6 +83,7 @@ impl ServiceRegistry {
             draft_service,
             daily_leaders_service,
             pool_scoring_service,
+            survivor_service,
             cached_keys: cached_jwks.clone(),
         })
     }

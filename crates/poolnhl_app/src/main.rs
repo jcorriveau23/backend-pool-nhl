@@ -45,6 +45,15 @@ async fn main() {
         .init_indexes()
         .await
         .expect("could not initialize indexes for players service.");
+    // Two of these are unique indexes the survivor pool enforces its rules
+    // with — one pick per date, and no reusing a team — rather than checking
+    // for them in code a concurrent pick could race. The pool is unsafe to run
+    // without them, so failing to build them stops the application.
+    services
+        .survivor_service
+        .init_indexes()
+        .await
+        .expect("could not initialize indexes for survivor service.");
 
     // Run the application.
     ApplicationController::run(settings, services).await;
