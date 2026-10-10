@@ -26,8 +26,8 @@ use poolnhl_interface::survivor::model::{
     ParticipantStatus, PickOutcome, SurvivorPool, SurvivorSettings, SurvivorState, WeekStatus,
 };
 use poolnhl_interface::survivor::requests::{
-    JoinSurvivorRequest, MakePickRequest, SettleWeekRequest, SurvivorCreationRequest,
-    SurvivorDeletionRequest,
+    AddSurvivorParticipantRequest, JoinSurvivorRequest, MakePickRequest, SettleWeekRequest,
+    SurvivorCreationRequest, SurvivorDeletionRequest,
 };
 use poolnhl_interface::survivor::service::SurvivorService;
 
@@ -223,6 +223,144 @@ async fn the_season_listing_carries_each_pools_participant_count() {
     cleanup(&service, &pool.name).await;
 }
 
+// --------------------------------------- spots kept on somebody's behalf
+
+/// The pool of a few friends: one organiser enters everybody and files their
+/// picks, because nobody else has an account. The counterpart to the
+/// self-serve joining the rest of this file exercises.
+#[tokio::test]
+#[ignore = "needs a running mongo"]
+async fn an_organiser_runs_a_pool_of_spots_they_keep() {
+    let (service, schedule) = service().await;
+    let pool = pool_with_schedule(&service, &schedule, "managed", 10, &[10, 6], &[8]).await;
+
+    let with_five = service
+        .add_participant(
+            OWNER,
+            AddSurvivorParticipantRequest {
+                pool_name: pool.name.clone(),
+                participant_name: "Francis".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(with_five.participants.len(), 2);
+    let francis = with_five
+        .participants
+        .iter()
+        .find(|p| p.name == "Francis")
+        .expect("the spot should be in the pool");
+    assert!(!francis.is_owned, "it is kept on somebody's behalf");
+    // The id is generated, never named by the caller.
+    assert_ne!(francis.id, "Francis");
+    assert!(!francis.id.is_empty());
+
+    // The organiser files its pick, which it could not file for itself.
+    let options = service
+        .make_pick(
+            OWNER,
+            MakePickRequest {
+                pool_name: pool.name.clone(),
+                participant_id: Some(francis.id.clone()),
+                week: 1,
+                team_id: 6,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(options.current_pick, Some(6));
+
+    // And it lands against that spot, not against the organiser's own.
+    service
+        .lock_week(
+            OWNER,
+            SettleWeekRequest {
+                pool_name: pool.name.clone(),
+                week: 1,
+            },
+        )
+        .await
+        .unwrap();
+
+    let picks = service.get_week_picks(OWNER, &pool.name, 1).await.unwrap();
+    assert_eq!(picks.len(), 1);
+    assert_eq!(picks[0].participant_id, francis.id);
+    assert_eq!(picks[0].team_id, 6);
+
+    cleanup(&service, &pool.name).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a running mongo"]
+async fn a_participant_cannot_file_somebody_elses_pick() {
+    let (service, schedule) = service().await;
+    let pool = pool_with_schedule(&service, &schedule, "not-yours", 10, &[10, 6], &[8]).await;
+
+    service
+        .join_pool(
+            "rival",
+            JoinSurvivorRequest {
+                pool_name: pool.name.clone(),
+                participant_name: "rival".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let refused = service
+        .make_pick(
+            "rival",
+            MakePickRequest {
+                pool_name: pool.name.clone(),
+                participant_id: Some(OWNER.to_string()),
+                week: 1,
+                team_id: 10,
+            },
+        )
+        .await;
+
+    assert!(
+        refused.is_err(),
+        "only the organiser files for somebody else"
+    );
+
+    // Nothing was written against the organiser.
+    let theirs = service.get_my_picks(OWNER, &pool.name).await.unwrap();
+    assert!(theirs.is_empty());
+
+    cleanup(&service, &pool.name).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a running mongo"]
+async fn a_pick_with_no_participant_named_is_the_callers_own() {
+    let (service, schedule) = service().await;
+    let pool = pool_with_schedule(&service, &schedule, "own-pick", 10, &[10, 6], &[8]).await;
+
+    // What every existing client sends: no participant_id at all.
+    service
+        .make_pick(
+            OWNER,
+            MakePickRequest {
+                pool_name: pool.name.clone(),
+                participant_id: None,
+                week: 1,
+                team_id: 10,
+            },
+        )
+        .await
+        .unwrap();
+
+    let theirs = service.get_my_picks(OWNER, &pool.name).await.unwrap();
+    assert_eq!(theirs.len(), 1);
+    assert_eq!(theirs[0].participant_id, OWNER);
+    assert_eq!(theirs[0].team_id, 10);
+
+    cleanup(&service, &pool.name).await;
+}
+
 // ------------------------------------------------- one pick per participant
 
 #[tokio::test]
@@ -237,6 +375,7 @@ async fn submitting_a_pick_twice_changes_it_rather_than_adding_one() {
                 OWNER,
                 MakePickRequest {
                     pool_name: pool.name.clone(),
+                    participant_id: None,
                     week: 1,
                     team_id,
                 },
@@ -262,6 +401,7 @@ async fn changing_a_pick_does_not_count_its_own_team_as_already_used() {
 
     let request = |team_id| MakePickRequest {
         pool_name: pool.name.clone(),
+        participant_id: None,
         week: 1,
         team_id,
     };
@@ -295,6 +435,7 @@ async fn a_team_already_used_is_closed_on_a_later_date() {
             OWNER,
             MakePickRequest {
                 pool_name: pool.name.clone(),
+                participant_id: None,
                 week: 1,
                 team_id: 10,
             },
@@ -307,6 +448,7 @@ async fn a_team_already_used_is_closed_on_a_later_date() {
             OWNER,
             MakePickRequest {
                 pool_name: pool.name.clone(),
+                participant_id: None,
                 week: 2,
                 team_id: 10,
             },
@@ -321,6 +463,7 @@ async fn a_team_already_used_is_closed_on_a_later_date() {
             OWNER,
             MakePickRequest {
                 pool_name: pool.name.clone(),
+                participant_id: None,
                 week: 2,
                 team_id: 6,
             },
@@ -352,6 +495,7 @@ async fn two_picks_racing_for_the_same_team_leave_exactly_one() {
                     OWNER,
                     MakePickRequest {
                         pool_name,
+                        participant_id: None,
                         week: 1,
                         team_id: 10,
                     },
@@ -368,6 +512,7 @@ async fn two_picks_racing_for_the_same_team_leave_exactly_one() {
                     OWNER,
                     MakePickRequest {
                         pool_name,
+                        participant_id: None,
                         week: 2,
                         team_id: 10,
                     },
@@ -428,6 +573,7 @@ async fn two_hundred_participants_pick_at_once_and_every_pick_lands() {
                     &format!("picker-{index}"),
                     MakePickRequest {
                         pool_name,
+                        participant_id: None,
                         week: 1,
                         // They crowd onto the same few teams, the way a real
                         // field does behind the favourites.
@@ -504,6 +650,7 @@ async fn an_open_dates_picks_are_the_callers_own_and_nobody_elses() {
                 user,
                 MakePickRequest {
                     pool_name: pool.name.clone(),
+                    participant_id: None,
                     week: 1,
                     team_id,
                 },
@@ -558,6 +705,7 @@ async fn a_locked_date_takes_no_more_picks() {
             OWNER,
             MakePickRequest {
                 pool_name: pool.name.clone(),
+                participant_id: None,
                 week: 1,
                 team_id: 10,
             },
@@ -596,6 +744,7 @@ async fn settling_a_date_eliminates_whoever_backed_a_loser() {
                 user,
                 MakePickRequest {
                     pool_name: pool.name.clone(),
+                    participant_id: None,
                     week: 1,
                     team_id,
                 },
@@ -673,6 +822,7 @@ async fn settling_the_same_date_twice_changes_nothing() {
                 user,
                 MakePickRequest {
                     pool_name: pool.name.clone(),
+                    participant_id: None,
                     week: 1,
                     team_id,
                 },
@@ -775,6 +925,7 @@ async fn the_standings_count_the_field_and_hide_an_open_dates_picks() {
                 user,
                 MakePickRequest {
                     pool_name: pool.name.clone(),
+                    participant_id: None,
                     week: 1,
                     team_id,
                 },
@@ -864,6 +1015,7 @@ async fn deleting_a_pool_takes_its_picks_with_it() {
             OWNER,
             MakePickRequest {
                 pool_name: pool.name.clone(),
+                participant_id: None,
                 week: 1,
                 team_id: 10,
             },

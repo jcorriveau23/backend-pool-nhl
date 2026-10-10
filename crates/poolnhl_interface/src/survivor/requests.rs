@@ -43,8 +43,23 @@ pub struct LeaveSurvivorRequest {
 #[derive(Debug, Deserialize, Clone)]
 pub struct MakePickRequest {
     pub pool_name: String,
+    /// Whose pick this is. Absent means the caller's own, which is what a
+    /// participant sends; the owner and the assistants may name anybody, which
+    /// is the only way the spots they keep on somebody's behalf get played.
+    #[serde(default)]
+    pub participant_id: Option<String>,
     pub week: u16,
     pub team_id: u32,
+}
+
+/// The organiser adding a spot they keep on somebody's behalf.
+///
+/// No id: one is generated, so a pool cannot be attached to an account the
+/// organiser merely names.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AddSurvivorParticipantRequest {
+    pub pool_name: String,
+    pub participant_name: String,
 }
 
 /// Closing a pick date and applying what the games did.
@@ -62,4 +77,15 @@ pub struct SettleWeekRequest {
 pub struct UpdateSurvivorSettingsRequest {
     pub pool_name: String,
     pub settings: SurvivorSettings,
+}
+
+/// Whose pick screen to build, as the query string carries it.
+///
+/// Absent means the caller's own. Only the owner and the assistants may name
+/// somebody else — the screen carries `current_pick`, so a date still open
+/// would otherwise leak.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PickOptionsQuery {
+    #[serde(default)]
+    pub participant_id: Option<String>,
 }

@@ -24,6 +24,7 @@ use futures::stream::TryStreamExt;
 use mongodb::bson::{Document, doc, to_bson};
 use mongodb::options::{FindOneAndUpdateOptions, IndexOptions, ReturnDocument};
 use mongodb::{Collection, IndexModel};
+use uuid::Uuid;
 
 use poolnhl_interface::errors::{AppError, Result};
 use poolnhl_interface::survivor::model::{
@@ -33,8 +34,9 @@ use poolnhl_interface::survivor::model::{
 };
 use poolnhl_interface::survivor::picks::{SurvivorPick, SurvivorPickOptions, SurvivorPickView};
 use poolnhl_interface::survivor::requests::{
-    JoinSurvivorRequest, LeaveSurvivorRequest, MakePickRequest, SettleWeekRequest,
-    SurvivorCreationRequest, SurvivorDeletionRequest, UpdateSurvivorSettingsRequest,
+    AddSurvivorParticipantRequest, JoinSurvivorRequest, LeaveSurvivorRequest, MakePickRequest,
+    SettleWeekRequest, SurvivorCreationRequest, SurvivorDeletionRequest,
+    UpdateSurvivorSettingsRequest,
 };
 use poolnhl_interface::survivor::service::SurvivorService;
 
@@ -502,6 +504,32 @@ impl SurvivorService for MongoSurvivorService {
         .await
     }
 
+    async fn add_participant(
+        &self,
+        user_id: &str,
+        req: AddSurvivorParticipantRequest,
+    ) -> Result<SurvivorPool> {
+        let mut pool = self.pool_by_name(&req.pool_name).await?;
+
+        // Generated here, never taken from the request: an id the organiser
+        // could name would let them attach a pool to somebody else's account.
+        let id = Uuid::new_v4().to_string();
+
+        pool.add_managed_participant(
+            user_id,
+            &id,
+            &req.participant_name,
+            Utc::now().timestamp_millis(),
+        )?;
+
+        self.update_pool(
+            doc! {"$set": doc!{"participants": to_bson(&pool.participants).map_err(bson_err)?}},
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
+    }
+
     async fn leave_pool(&self, user_id: &str, req: LeaveSurvivorRequest) -> Result<SurvivorPool> {
         let mut pool = self.pool_by_name(&req.pool_name).await?;
 
@@ -533,18 +561,38 @@ impl SurvivorService for MongoSurvivorService {
         user_id: &str,
         pool_name: &str,
         week: u16,
+        participant_id: Option<&str>,
     ) -> Result<SurvivorPickOptions> {
         let pool = self.pool_by_name(pool_name).await?;
-        self.pick_options(&pool, user_id, week).await
+        let target = participant_id.unwrap_or(user_id);
+
+        // Same rule as filing the pick, and for a sharper reason: this screen
+        // carries `current_pick`, so letting anybody read anybody's would hand
+        // them the field's picks before the date locks.
+        if target != user_id && !pool.has_assistant_rights(user_id) {
+            return Err(AppError::ForbiddenError {
+                msg: format!(
+                    "Only the owner of '{}' can see somebody else's picks.",
+                    pool.name
+                ),
+            });
+        }
+
+        self.pick_options(&pool, target, week).await
     }
 
     async fn make_pick(&self, user_id: &str, req: MakePickRequest) -> Result<SurvivorPickOptions> {
         let pool = self.pool_by_name(&req.pool_name).await?;
 
-        pool.validate_can_pick(user_id, req.week)?;
+        // Whose pick this is. A participant sends nothing and files their own;
+        // the organiser names one of the spots they keep on somebody's behalf,
+        // which have no account to file with.
+        let participant_id = req.participant_id.as_deref().unwrap_or(user_id);
+
+        pool.validate_can_pick_for(user_id, participant_id, req.week)?;
 
         let eligible = self.eligible_teams(&pool, req.week).await?;
-        let existing = self.participant_picks(&pool.name, user_id).await?;
+        let existing = self.participant_picks(&pool.name, participant_id).await?;
 
         let current = existing.iter().find(|pick| pick.week == req.week);
 
@@ -557,7 +605,7 @@ impl SurvivorService for MongoSurvivorService {
             if current.team_id == req.team_id {
                 // Already the pick on file; nothing to write.
                 return self
-                    .pick_options_from(&pool, user_id, req.week, eligible)
+                    .pick_options_from(&pool, participant_id, req.week, eligible)
                     .await;
             }
         }
@@ -599,7 +647,7 @@ impl SurvivorService for MongoSurvivorService {
             .find_one_and_update(
                 doc! {
                     "pool_name": &pool.name,
-                    "participant_id": user_id,
+                    "participant_id": participant_id,
                     "week": req.week as i32,
                 },
                 doc! {"$set": set, "$setOnInsert": doc!{"date_picked": now}},
@@ -621,7 +669,7 @@ impl SurvivorService for MongoSurvivorService {
                 mongo_err(e)
             })?;
 
-        self.pick_options_from(&pool, user_id, req.week, eligible)
+        self.pick_options_from(&pool, participant_id, req.week, eligible)
             .await
     }
 
