@@ -6,8 +6,9 @@ use crate::errors::Result;
 use crate::survivor::model::{SurvivorPool, SurvivorPoolShort, SurvivorStandings};
 use crate::survivor::picks::{SurvivorPickOptions, SurvivorPickView};
 use crate::survivor::requests::{
-    JoinSurvivorRequest, LeaveSurvivorRequest, MakePickRequest, SettleWeekRequest,
-    SurvivorCreationRequest, SurvivorDeletionRequest, UpdateSurvivorSettingsRequest,
+    AddSurvivorParticipantRequest, JoinSurvivorRequest, LeaveSurvivorRequest, MakePickRequest,
+    SettleWeekRequest, SurvivorCreationRequest, SurvivorDeletionRequest,
+    UpdateSurvivorSettingsRequest,
 };
 
 #[async_trait]
@@ -30,15 +31,28 @@ pub trait SurvivorService {
     ) -> Result<SurvivorPool>;
 
     async fn join_pool(&self, user_id: &str, req: JoinSurvivorRequest) -> Result<SurvivorPool>;
+
+    /// Add a spot the organiser keeps on somebody's behalf, for the pool of a
+    /// few friends where one person enters everybody.
+    async fn add_participant(
+        &self,
+        user_id: &str,
+        req: AddSurvivorParticipantRequest,
+    ) -> Result<SurvivorPool>;
     async fn leave_pool(&self, user_id: &str, req: LeaveSurvivorRequest) -> Result<SurvivorPool>;
 
     /// What a participant needs to pick for a date: the teams playing, the ones
     /// still open to them, and the pick they already have in.
+    /// `participant_id` is `None` for the caller's own screen. The owner and
+    /// the assistants may name somebody else, which is how they see what is
+    /// still open to a spot they keep on that person's behalf — and nobody
+    /// else may, because an open date's pick is on this screen.
     async fn get_pick_options(
         &self,
         user_id: &str,
         pool_name: &str,
         week: u16,
+        participant_id: Option<&str>,
     ) -> Result<SurvivorPickOptions>;
 
     async fn make_pick(&self, user_id: &str, req: MakePickRequest) -> Result<SurvivorPickOptions>;

@@ -1,5 +1,5 @@
 use axum::Router;
-use axum::extract::{Json, Path, State};
+use axum::extract::{Json, Path, Query, State};
 use axum::routing::{get, post};
 
 use poolnhl_infrastructure::services::ServiceRegistry;
@@ -7,8 +7,9 @@ use poolnhl_interface::errors::Result;
 use poolnhl_interface::survivor::model::{SurvivorPool, SurvivorPoolShort, SurvivorStandings};
 use poolnhl_interface::survivor::picks::{SurvivorPickOptions, SurvivorPickView};
 use poolnhl_interface::survivor::requests::{
-    JoinSurvivorRequest, LeaveSurvivorRequest, MakePickRequest, SettleWeekRequest,
-    SurvivorCreationRequest, SurvivorDeletionRequest, UpdateSurvivorSettingsRequest,
+    AddSurvivorParticipantRequest, JoinSurvivorRequest, LeaveSurvivorRequest, MakePickRequest,
+    PickOptionsQuery, SettleWeekRequest, SurvivorCreationRequest, SurvivorDeletionRequest,
+    UpdateSurvivorSettingsRequest,
 };
 use poolnhl_interface::survivor::service::SurvivorServiceHandle;
 use poolnhl_interface::users::model::UserEmailJwtPayload;
@@ -34,6 +35,7 @@ impl SurvivorRouter {
             .route("/delete-survivor-pool", post(Self::delete_pool))
             .route("/update-survivor-settings", post(Self::update_settings))
             .route("/join-survivor-pool", post(Self::join_pool))
+            .route("/add-survivor-participant", post(Self::add_participant))
             .route("/leave-survivor-pool", post(Self::leave_pool))
             .route("/survivor-pick", post(Self::make_pick))
             .route("/lock-survivor-week", post(Self::lock_week))
@@ -68,10 +70,11 @@ impl SurvivorRouter {
     async fn get_pick_options(
         token: UserEmailJwtPayload,
         Path((name, week)): Path<(String, u16)>,
+        Query(query): Query<PickOptionsQuery>,
         State(survivor_service): State<SurvivorServiceHandle>,
     ) -> Result<Json<SurvivorPickOptions>> {
         survivor_service
-            .get_pick_options(&token.sub, &name, week)
+            .get_pick_options(&token.sub, &name, week, query.participant_id.as_deref())
             .await
             .map(Json)
     }
@@ -142,6 +145,22 @@ impl SurvivorRouter {
         Json(body): Json<JoinSurvivorRequest>,
     ) -> Result<Json<SurvivorPool>> {
         survivor_service.join_pool(&token.sub, body).await.map(Json)
+    }
+
+    /// Add a spot the organiser keeps on somebody's behalf.
+    ///
+    /// The counterpart to self-serve joining, for the pool of a few friends
+    /// where one person enters everybody. The participant it creates has no
+    /// account, so the organiser files their picks too — see `make_pick`.
+    async fn add_participant(
+        token: UserEmailJwtPayload,
+        State(survivor_service): State<SurvivorServiceHandle>,
+        Json(body): Json<AddSurvivorParticipantRequest>,
+    ) -> Result<Json<SurvivorPool>> {
+        survivor_service
+            .add_participant(&token.sub, body)
+            .await
+            .map(Json)
     }
 
     async fn leave_pool(

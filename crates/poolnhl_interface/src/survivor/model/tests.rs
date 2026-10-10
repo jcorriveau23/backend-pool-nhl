@@ -231,6 +231,85 @@ fn a_name_longer_than_the_maximum_is_refused() {
     assert!(pool.add_participant(USER_2, &too_long, 0).is_err());
 }
 
+// --------------------------------------- spots kept on somebody's behalf
+
+#[test]
+fn the_organiser_can_add_a_spot_for_somebody_with_no_account() {
+    let mut pool = pool();
+
+    pool.add_managed_participant(OWNER, "generated-id", "Francis", 7)
+        .unwrap();
+
+    let managed = pool.participant("generated-id").unwrap();
+    assert_eq!(managed.name, "Francis");
+    assert!(managed.is_alive());
+    // What tells it apart from somebody who signed themselves up, and so what
+    // tells the UI the organiser has to pick for them.
+    assert!(!managed.is_owned);
+}
+
+#[test]
+fn somebody_who_signs_themselves_up_owns_their_spot() {
+    let mut pool = pool();
+    pool.add_participant(USER_2, "Raph", 0).unwrap();
+
+    assert!(pool.participant(USER_2).unwrap().is_owned);
+}
+
+#[test]
+fn an_assistant_may_add_a_spot_but_an_ordinary_participant_may_not() {
+    let mut pool_settings = settings();
+    pool_settings.assistants = vec![USER_2.to_string()];
+    let mut pool = SurvivorPool::new(
+        "survivor",
+        OWNER,
+        &pool_settings,
+        SEASON,
+        SEASON_START,
+        SEASON_END,
+    )
+    .unwrap();
+
+    pool.add_managed_participant(USER_2, "id-1", "Francis", 0)
+        .unwrap();
+    assert!(
+        pool.add_managed_participant(USER_3, "id-2", "Davis", 0)
+            .is_err()
+    );
+}
+
+#[test]
+fn a_managed_spot_goes_through_the_same_checks_as_a_join() {
+    let mut pool_settings = settings();
+    pool_settings.max_participants = 2;
+    let mut pool = SurvivorPool::new(
+        "survivor",
+        OWNER,
+        &pool_settings,
+        SEASON,
+        SEASON_START,
+        SEASON_END,
+    )
+    .unwrap();
+    pool.add_participant(OWNER, "jf", 0).unwrap();
+    pool.add_managed_participant(OWNER, "id-1", "Francis", 0)
+        .unwrap();
+
+    // Full.
+    assert!(
+        pool.add_managed_participant(OWNER, "id-2", "Davis", 0)
+            .is_err()
+    );
+
+    // And a name somebody already goes by is refused whichever way it arrives.
+    let mut roomy = pool_with_participants();
+    assert!(
+        roomy
+            .add_managed_participant(OWNER, "id-3", OWNER, 0)
+            .is_err()
+    );
+}
+
 // --------------------------------------------------------------- settings
 
 #[test]
@@ -367,6 +446,75 @@ fn an_eliminated_participant_may_not_pick() {
     assert!(!pool.participant(USER_2).unwrap().is_alive());
     assert!(pool.validate_can_pick(USER_2, 2).is_err());
     pool.validate_can_pick(OWNER, 2).unwrap();
+}
+
+/// Filing somebody else's pick.
+#[test]
+fn the_organiser_may_pick_for_a_spot_they_keep_and_a_participant_may_not() {
+    let mut pool = pool_with_participants();
+    pool.add_managed_participant(OWNER, "francis-id", "Francis", 0)
+        .unwrap();
+
+    // The organiser files for the spot they keep.
+    pool.validate_can_pick_for(OWNER, "francis-id", 1).unwrap();
+    // And still for themselves.
+    pool.validate_can_pick_for(OWNER, OWNER, 1).unwrap();
+    // An ordinary participant files only their own.
+    pool.validate_can_pick_for(USER_2, USER_2, 1).unwrap();
+    assert!(pool.validate_can_pick_for(USER_2, "francis-id", 1).is_err());
+    assert!(pool.validate_can_pick_for(USER_2, USER_3, 1).is_err());
+}
+
+#[test]
+fn an_assistant_may_pick_for_anybody() {
+    let mut pool_settings = settings();
+    pool_settings.assistants = vec![USER_2.to_string()];
+    let mut pool = SurvivorPool::new(
+        "survivor",
+        OWNER,
+        &pool_settings,
+        SEASON,
+        SEASON_START,
+        SEASON_END,
+    )
+    .unwrap();
+    for user in [OWNER, USER_2, USER_3] {
+        pool.add_participant(user, user, 0).unwrap();
+    }
+
+    pool.validate_can_pick_for(USER_2, USER_3, 1).unwrap();
+}
+
+#[test]
+fn picking_for_a_spot_that_is_out_says_whose_it_is() {
+    let mut pool = pool_with_participants();
+    pool.apply_week_results(
+        1,
+        &outcomes(&[
+            (OWNER, PickOutcome::Won),
+            (USER_2, PickOutcome::Lost),
+            (USER_3, PickOutcome::Won),
+        ]),
+        &blocked(&[]),
+        0,
+    )
+    .unwrap();
+
+    // The organiser is not the one who is out, so the message must not say
+    // "you have been eliminated".
+    let error = pool
+        .validate_can_pick_for(OWNER, USER_2, 2)
+        .expect_err("an eliminated participant cannot be picked for");
+    let message = error.to_string();
+    assert!(message.contains(USER_2), "{message}");
+    assert!(!message.contains("You have been"), "{message}");
+}
+
+#[test]
+fn picking_for_somebody_who_is_not_in_the_pool_is_refused() {
+    let pool = pool_with_participants();
+
+    assert!(pool.validate_can_pick_for(OWNER, "stranger", 1).is_err());
 }
 
 // -------------------------------------------------------------- settlement
