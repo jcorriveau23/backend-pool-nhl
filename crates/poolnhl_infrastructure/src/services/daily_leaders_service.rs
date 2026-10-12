@@ -1,11 +1,11 @@
 use async_trait::async_trait;
 
-use chrono::{Duration, Local, Timelike};
 use mongodb::bson::doc;
 use mongodb::options::IndexOptions;
 use mongodb::{Collection, IndexModel};
 use poolnhl_interface::errors::AppError;
 
+use poolnhl_interface::clock::current_game_day;
 use poolnhl_interface::daily_leaders::{model::DailyLeaders, service::DailyLeadersService};
 use poolnhl_interface::errors::Result;
 
@@ -42,16 +42,8 @@ impl DailyLeadersService for MongoDailyLeadersService {
         let mut formatted_date = date.to_string();
 
         if date == "now" {
-            let mut today = Local::now().date_naive();
-
-            let time = Local::now().time();
-
             // Before 12PM fetch games of yesterday.
-
-            if time.hour() < 12 {
-                today -= Duration::days(1);
-            }
-            formatted_date = today.format("%Y-%m-%d").to_string();
+            formatted_date = current_game_day().format("%Y-%m-%d").to_string();
         }
 
         let daily_leaders = self

@@ -1,4 +1,5 @@
 use crate::{
+    clock::{current_roster_move_date, pool_today},
     draft::model::RoomUser,
     errors::AppError,
     players::model::{PlayerInfo, Position},
@@ -6,7 +7,7 @@ use crate::{
     pool::scoring::DailyRosterPoints,
     pool::transactions::{PlayerDropSettings, RosterTransaction, drops_used_in_period},
 };
-use chrono::{Duration, Local, NaiveDate, Timelike, Utc};
+use chrono::{NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -20,10 +21,6 @@ pub const START_SEASON_DATE: &str = "2026-09-29";
 pub const END_SEASON_DATE: &str = "2027-04-10";
 pub const POOL_CREATION_SEASON: u32 = 20262027;
 pub const TRADE_DEADLINE_DATE: &str = "2027-03-01";
-
-// Past this hour a roster change is counted for the next day: the day's games
-// are already under way, so it is too late to change what is being scored.
-pub const ROSTER_CHANGE_CUTOFF_HOUR: u32 = 12;
 
 // Pooler names are displayed in every ranking, table and chart of the pool, a
 // name longer than this would be cut with an ellipsis everywhere it appears.
@@ -317,7 +314,7 @@ impl Pool {
     }
 
     pub fn create_trade(&mut self, trade: &mut Trade, user_id: &str) -> Result<(), AppError> {
-        self.create_trade_at(trade, user_id, Local::now().date_naive())
+        self.create_trade_at(trade, user_id, pool_today())
     }
 
     // Same as create_trade, with the current date injected so the trade
@@ -382,7 +379,7 @@ impl Pool {
         trade_id: u32,
         updated: &Trade,
     ) -> Result<(), AppError> {
-        self.update_trade_at(user_id, trade_id, updated, Local::now().date_naive())
+        self.update_trade_at(user_id, trade_id, updated, pool_today())
     }
 
     pub fn update_trade_at(
@@ -442,7 +439,7 @@ impl Pool {
 
     /// Sign a trade off: the players and the picks change hands now.
     pub fn confirm_trade(&mut self, user_id: &str, trade_id: u32) -> Result<(), AppError> {
-        self.confirm_trade_at(user_id, trade_id, Local::now().date_naive())
+        self.confirm_trade_at(user_id, trade_id, pool_today())
     }
 
     pub fn confirm_trade_at(
@@ -910,10 +907,7 @@ impl Pool {
     ) -> Result<String, AppError> {
         // Past noon a swap is counted for the next day, the same cutoff a
         // lineup change uses: the day's games are already under way.
-        let mut today = Local::now().date_naive();
-        if Local::now().time().hour() >= ROSTER_CHANGE_CUTOFF_HOUR {
-            today += Duration::days(1);
-        }
+        let today = current_roster_move_date();
 
         self.drop_add_player_at(
             user_id,
@@ -1162,12 +1156,8 @@ impl Pool {
         // end season on the days that the users are allowed to make roster modifications.
         // This is being hold in the variable self.settings.roster_modification_date
 
-        let mut today = Local::now().date_naive();
-
         // At 12PM we start to count the action for the next day.
-        if Local::now().time().hour() >= ROSTER_CHANGE_CUTOFF_HOUR {
-            today += Duration::days(1);
-        }
+        let today = current_roster_move_date();
 
         self.modify_roster_at(
             user_id,
@@ -1537,7 +1527,7 @@ impl Pool {
         user_id: &str,
         scores: &HashMap<String, HashMap<String, DailyRosterPoints>>,
     ) -> Result<(), AppError> {
-        self.mark_as_final_at(user_id, Local::now().date_naive(), scores)
+        self.mark_as_final_at(user_id, pool_today(), scores)
     }
 
     // Same as mark_as_final, with the current date injected so the
