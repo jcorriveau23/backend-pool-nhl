@@ -32,7 +32,9 @@ use poolnhl_interface::survivor::model::{
     SurvivorStandings, SurvivorState, UsedTeam, WeekStatus, available_team_ids, is_blocked,
     plan_pick,
 };
-use poolnhl_interface::survivor::picks::{SurvivorPick, SurvivorPickOptions, SurvivorPickView};
+use poolnhl_interface::survivor::picks::{
+    SurvivorGame, SurvivorGameState, SurvivorPick, SurvivorPickOptions, SurvivorPickView,
+};
 use poolnhl_interface::survivor::requests::{
     AddSurvivorParticipantRequest, JoinSurvivorRequest, LeaveSurvivorRequest, MakePickRequest,
     SettleWeekRequest, SurvivorCreationRequest, SurvivorDeletionRequest,
@@ -42,7 +44,7 @@ use poolnhl_interface::survivor::service::SurvivorService;
 
 use crate::database_connection::DatabaseConnection;
 use crate::database_connection::{bson_err, mongo_err};
-use crate::services::nhl_schedule_service::{NhlScheduleService, TeamResult};
+use crate::services::nhl_schedule_service::{DayGame, GameState, NhlScheduleService, TeamResult};
 
 /// Mongo's duplicate-key error. A pick that trips a unique index is a rule being
 /// enforced, not a failure, so it is turned into the message the participant
@@ -220,9 +222,21 @@ impl MongoSurvivorService {
             .find(|pick| pick.week == week)
             .map(|pick| pick.team_id);
 
+        // Best effort, and last: the matchups are only shown, so a feed that
+        // cannot be reached costs the screen its "who plays whom" rather than
+        // the whole pick. A locked date reads its legal teams from the pool
+        // document above and does not depend on this either.
+        let games = self
+            .schedule
+            .games_on(&week_entry.pick_date)
+            .await
+            .map(|games| games.iter().map(survivor_game).collect())
+            .unwrap_or_default();
+
         Ok(SurvivorPickOptions {
             week,
             pick_date: week_entry.pick_date.clone(),
+            games,
             available_team_ids: available_team_ids(&used, &eligible, league_team_count),
             used_team_ids: used.iter().map(|team| team.team_id).collect(),
             is_blocked: is_blocked(&used, &eligible, league_team_count),
@@ -230,6 +244,30 @@ impl MongoSurvivorService {
             eligible_team_ids: eligible,
             current_pick,
         })
+    }
+}
+
+/// A game as the pick screen receives it.
+///
+/// The conversion is here rather than a `From` on either type: the interface
+/// crate, where [`SurvivorGame`] lives, knows nothing of the schedule service.
+fn survivor_game(game: &DayGame) -> SurvivorGame {
+    SurvivorGame {
+        home_team_id: game.home_team_id,
+        away_team_id: game.away_team_id,
+        home_score: game.home_score,
+        away_score: game.away_score,
+        state: match game.state {
+            GameState::Upcoming => SurvivorGameState::Upcoming,
+            GameState::Live => SurvivorGameState::Live,
+            GameState::Final => SurvivorGameState::Final,
+            GameState::Abandoned => SurvivorGameState::Abandoned,
+        },
+        start_time_utc: game.start_time_utc.clone(),
+        period: game.period,
+        period_type: game.period_type.clone(),
+        time_remaining: game.time_remaining.clone(),
+        in_intermission: game.in_intermission,
     }
 }
 
