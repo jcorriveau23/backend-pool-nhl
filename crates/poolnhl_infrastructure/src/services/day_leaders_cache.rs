@@ -7,12 +7,12 @@
 //! cached with a long TTL; the current ("live") day is still being written by
 //! the ingest poller, so it gets a short TTL and is refreshed from Mongo.
 
-use chrono::{Duration, Local, Timelike};
 use mongodb::Collection;
 use mongodb::bson::doc;
 use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
 
+use poolnhl_interface::clock::current_game_day;
 use poolnhl_interface::daily_leaders::model::DailyLeaders;
 use poolnhl_interface::errors::{AppError, Result};
 use poolnhl_interface::pool::scoring::DayScores;
@@ -49,11 +49,7 @@ impl DayLeadersCache {
     /// The currently-live day. Matches `MongoDailyLeadersService`: before noon
     /// the games that finished after midnight still count as the previous day.
     fn live_date() -> String {
-        let mut today = Local::now().date_naive();
-        if Local::now().time().hour() < 12 {
-            today -= Duration::days(1);
-        }
-        today.format("%Y-%m-%d").to_string()
+        current_game_day().format("%Y-%m-%d").to_string()
     }
 
     /// Compact scoring lines for `date`, served read-through: Redis first, then

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use chrono::{Local, Utc};
+use chrono::Utc;
 use futures::stream::TryStreamExt;
 use mongodb::bson::doc;
 use mongodb::bson::{Document, to_bson};
@@ -9,6 +9,7 @@ use mongodb::options::{
     FindOneAndUpdateOptions, FindOneOptions, FindOptions, IndexOptions, ReturnDocument,
 };
 use mongodb::{Collection, IndexModel};
+use poolnhl_interface::clock::pool_today;
 use poolnhl_interface::errors::AppError;
 
 use poolnhl_interface::errors::Result;
@@ -161,8 +162,12 @@ impl MongoPoolService {
 // Today's date, used as the effective date of a lineup change. There is no
 // noon-lock / 12PM rule anymore: a change takes effect the day it is made, and
 // `roster_modification_date` still governs when changes are permitted.
+//
+// On the pool's clock, not the host's: the server runs in a container with no
+// timezone, so `Local` is `Utc` there and every evening in Montreal was already
+// tomorrow as far as this function was concerned.
 fn today() -> String {
-    Local::now().date_naive().format("%Y-%m-%d").to_string()
+    pool_today().format("%Y-%m-%d").to_string()
 }
 
 pub(crate) fn trade_update(pool: &mut Pool, effective_date: Option<&str>) -> Result<Document> {
