@@ -19,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use poolnhl_infrastructure::database_connection::{DatabaseConnection, DatabaseManager};
 use poolnhl_infrastructure::services::nhl_schedule_service::{
-    DayResults, NhlScheduleService, TeamResult,
+    DayGame, DayResults, GameState, NhlScheduleService, TeamResult,
 };
 use poolnhl_infrastructure::services::survivor_service::MongoSurvivorService;
 use poolnhl_interface::survivor::model::{
@@ -76,6 +76,13 @@ fn settings(max_participants: u16) -> SurvivorSettings {
 }
 
 /// A finished day where `winners` won, `losers` lost and nobody else played.
+///
+/// The matchups are made up: these tests assert on who went through and who
+/// went out, not on the fixture list, and the two sides are given as sets
+/// rather than as pairs. They are still built so that every team named appears
+/// in exactly one of them, because the team list a pick is validated against is
+/// derived from the games — a day whose games left somebody out would make them
+/// unpickable.
 fn day(winners: &[u32], losers: &[u32]) -> DayResults {
     let mut results = HashMap::new();
     let mut teams_playing = Vec::new();
@@ -91,9 +98,29 @@ fn day(winners: &[u32], losers: &[u32]) -> DayResults {
 
     teams_playing.sort_unstable();
 
+    // Each side cycled, so an uneven pair of lists still covers both whole.
+    let mut games = Vec::new();
+    if !winners.is_empty() && !losers.is_empty() {
+        for index in 0..winners.len().max(losers.len()) {
+            games.push(DayGame {
+                home_team_id: winners[index % winners.len()],
+                away_team_id: losers[index % losers.len()],
+                home_score: Some(3),
+                away_score: Some(1),
+                state: GameState::Final,
+                start_time_utc: None,
+                period: Some(3),
+                period_type: Some("REG".to_string()),
+                time_remaining: Some("00:00".to_string()),
+                in_intermission: false,
+            });
+        }
+    }
+
     DayResults {
         teams_playing,
         results,
+        games,
     }
 }
 
@@ -862,6 +889,18 @@ async fn a_day_with_a_game_left_to_play_cannot_be_recorded_as_finished() {
     let unfinished = DayResults {
         teams_playing: vec![8, 10],
         results: HashMap::from([(10, TeamResult::Unresolved), (8, TeamResult::Won)]),
+        games: vec![DayGame {
+            home_team_id: 10,
+            away_team_id: 8,
+            home_score: None,
+            away_score: None,
+            state: GameState::Live,
+            start_time_utc: None,
+            period: Some(2),
+            period_type: Some("REG".to_string()),
+            time_remaining: Some("08:12".to_string()),
+            in_intermission: false,
+        }],
     };
 
     assert!(!unfinished.is_complete());
