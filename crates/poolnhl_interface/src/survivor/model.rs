@@ -116,6 +116,20 @@ pub struct SurvivorSettings {
     /// Whether a participant may change their pick while the date is still open.
     pub allow_pick_change: bool,
 
+    /// Whether the date being played shows everybody's pick, or only your own.
+    ///
+    /// `false` is the classic game, and the default: a date's picks stay
+    /// private until it locks, because knowing what the field is on before you
+    /// pick is the one thing that would take the guesswork out of it. `true` is
+    /// for the pools that would rather watch each other all Saturday, and it
+    /// reveals the current date only — a pick filed ahead for a later date is
+    /// nobody else's business until that date is the one being played.
+    ///
+    /// Defaults to `false` so a pool created before the setting existed keeps
+    /// playing the way it was created.
+    #[serde(default)]
+    pub public_picks: bool,
+
     /// Teams in the league this pool runs over. Decides when a participant has
     /// been through them all and their used list resets.
     pub league_team_count: u16,
@@ -135,6 +149,7 @@ impl SurvivorSettings {
             strikes_allowed: 0,
             missed_pick_is_strike: true,
             allow_pick_change: true,
+            public_picks: false,
             league_team_count: DEFAULT_LEAGUE_TEAM_COUNT,
         }
     }
@@ -423,6 +438,39 @@ impl SurvivorPool {
         self.weeks
             .iter()
             .find(|week| !matches!(week.status, WeekStatus::Settled))
+    }
+
+    /// Whether `week`'s picks may be shown to the whole pool.
+    ///
+    /// A date past its deadline always may: its picks are in and can no longer
+    /// change. A date still open may only in a pool whose owner asked for it,
+    /// and then only while it is the date being played — a pick filed ahead for
+    /// a later Saturday stays private until that Saturday comes round, or
+    /// turning the setting on would hand the field everybody's plans for the
+    /// rest of the season.
+    pub fn picks_are_public(&self, week: u16) -> bool {
+        let Ok(entry) = self.week(week) else {
+            return false;
+        };
+
+        if !matches!(entry.status, WeekStatus::Open) {
+            return true;
+        }
+
+        self.settings.public_picks && self.current_week().map(|current| current.week) == Some(week)
+    }
+
+    /// The dates whose picks the standings may carry.
+    ///
+    /// The standings leaves a hidden date out of the payload entirely rather
+    /// than blanking it in the browser, so this is the list the response is
+    /// built from.
+    pub fn revealed_weeks(&self) -> Vec<u16> {
+        self.weeks
+            .iter()
+            .filter(|week| self.picks_are_public(week.week))
+            .map(|week| week.week)
+            .collect()
     }
 
     pub fn has_assistant_rights(&self, user_id: &str) -> bool {

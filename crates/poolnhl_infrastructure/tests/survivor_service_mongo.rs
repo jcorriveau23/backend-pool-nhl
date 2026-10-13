@@ -27,7 +27,7 @@ use poolnhl_interface::survivor::model::{
 };
 use poolnhl_interface::survivor::requests::{
     AddSurvivorParticipantRequest, JoinSurvivorRequest, MakePickRequest, SettleWeekRequest,
-    SurvivorCreationRequest, SurvivorDeletionRequest,
+    SurvivorCreationRequest, SurvivorDeletionRequest, UpdateSurvivorSettingsRequest,
 };
 use poolnhl_interface::survivor::service::SurvivorService;
 
@@ -1004,6 +1004,99 @@ async fn the_standings_count_the_field_and_hide_an_open_dates_picks() {
         settled.rows[1].status,
         ParticipantStatus::Eliminated
     ));
+
+    cleanup(&service, &pool.name).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a running mongo"]
+async fn a_public_pool_shows_the_open_dates_picks_to_everybody() {
+    let (service, schedule) = service().await;
+    let pool = pool_with_schedule(&service, &schedule, "public-picks", 10, &[10], &[8]).await;
+
+    let mut public = pool.settings.clone();
+    public.public_picks = true;
+    service
+        .update_settings(
+            OWNER,
+            UpdateSurvivorSettingsRequest {
+                pool_name: pool.name.clone(),
+                settings: public,
+            },
+        )
+        .await
+        .unwrap();
+
+    service
+        .join_pool(
+            "rival",
+            JoinSurvivorRequest {
+                pool_name: pool.name.clone(),
+                participant_name: "rival".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+    for (user, team_id) in [(OWNER, 10), ("rival", 8)] {
+        service
+            .make_pick(
+                user,
+                MakePickRequest {
+                    pool_name: pool.name.clone(),
+                    participant_id: None,
+                    week: 1,
+                    team_id,
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    // Week 1 is still open, and in this pool that is the whole point: both
+    // picks are in the standings before the deadline.
+    let standings = service.get_standings(&pool.name).await.unwrap();
+    assert_eq!(standings.revealed_weeks, vec![1]);
+    assert!(standings.rows.iter().all(|row| row.picks.contains_key(&1)));
+
+    // And the date's own endpoint agrees, rather than still answering with the
+    // caller's own pick alone.
+    let picks = service.get_week_picks(OWNER, &pool.name, 1).await.unwrap();
+    assert_eq!(picks.len(), 2);
+
+    // A pick filed ahead for a later date stays private, so turning the setting
+    // on does not publish the field's plans for the rest of the season.
+    schedule
+        .record_day(&pool.weeks[1].pick_date, day(&[12], &[14]))
+        .unwrap();
+    service
+        .make_pick(
+            "rival",
+            MakePickRequest {
+                pool_name: pool.name.clone(),
+                participant_id: None,
+                week: 2,
+                team_id: 12,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        service
+            .get_week_picks(OWNER, &pool.name, 2)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        service
+            .get_standings(&pool.name)
+            .await
+            .unwrap()
+            .revealed_weeks,
+        vec![1]
+    );
 
     cleanup(&service, &pool.name).await;
 }
