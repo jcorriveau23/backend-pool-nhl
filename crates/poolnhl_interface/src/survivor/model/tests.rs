@@ -803,3 +803,77 @@ fn a_pool_name_too_short_or_too_long_is_refused() {
     assert!(validate_pool_name(&"x".repeat(MAX_SURVIVOR_POOL_NAME_LENGTH + 1)).is_err());
     validate_pool_name("my survivor pool").unwrap();
 }
+
+// ----------------------------------------------------------- public picks
+
+/// A pool whose first `settled` weeks are settled, the next one locked when
+/// `locked`, and the rest left open.
+fn pool_with_week_statuses(settled: usize, locked: bool, public_picks: bool) -> SurvivorPool {
+    let mut pool_settings = settings();
+    pool_settings.public_picks = public_picks;
+    let mut pool = SurvivorPool::new(
+        "survivor",
+        OWNER,
+        &pool_settings,
+        SEASON,
+        SEASON_START,
+        SEASON_END,
+    )
+    .unwrap();
+
+    for week in pool.weeks.iter_mut().take(settled) {
+        week.status = WeekStatus::Settled;
+    }
+    if locked {
+        pool.weeks[settled].status = WeekStatus::Locked;
+    }
+    pool
+}
+
+#[test]
+fn a_private_pool_reveals_nothing_until_a_date_closes() {
+    let pool = pool_with_week_statuses(0, false, false);
+
+    assert!(pool.revealed_weeks().is_empty());
+    assert!(!pool.picks_are_public(1));
+}
+
+#[test]
+fn a_date_past_its_deadline_is_revealed_whatever_the_setting_says() {
+    for public_picks in [false, true] {
+        let pool = pool_with_week_statuses(2, true, public_picks);
+
+        // Two settled and the third locked: its picks are in either way.
+        assert!(pool.picks_are_public(1));
+        assert!(pool.picks_are_public(3));
+        assert_eq!(&pool.revealed_weeks()[..3], &[1, 2, 3]);
+    }
+}
+
+#[test]
+fn a_public_pool_also_reveals_the_date_being_played() {
+    let pool = pool_with_week_statuses(2, false, true);
+
+    // Week 3 is open and the one being played.
+    assert_eq!(pool.current_week().map(|week| week.week), Some(3));
+    assert!(pool.picks_are_public(3));
+    assert_eq!(pool.revealed_weeks(), vec![1, 2, 3]);
+}
+
+#[test]
+fn a_public_pool_keeps_a_pick_filed_ahead_private() {
+    let pool = pool_with_week_statuses(2, false, true);
+
+    // Any open date may be picked for, so somebody can be a month ahead. Their
+    // plans are nobody's business until that date is the one being played.
+    assert!(!pool.picks_are_public(4));
+    assert!(!pool.picks_are_public(5));
+}
+
+#[test]
+fn a_week_the_pool_does_not_have_is_not_public() {
+    let pool = pool_with_week_statuses(0, false, true);
+
+    assert!(!pool.picks_are_public(0));
+    assert!(!pool.picks_are_public(999));
+}

@@ -718,14 +718,19 @@ impl SurvivorService for MongoSurvivorService {
         week: u16,
     ) -> Result<Vec<SurvivorPickView>> {
         let pool = self.pool_by_name(pool_name).await?;
-        let week_entry = pool.week(week)?;
+        // Answers NotFound for a week the pool does not have, rather than an
+        // empty list that reads as "nobody picked".
+        pool.week(week)?;
 
         let picks = self.week_picks(pool_name, week).await?;
 
         // Until the date locks, the only pick anybody may see is their own.
         // Knowing what the field is on before picking is the one thing that
         // would take the guesswork — and so the game — out of a survivor pool.
-        if matches!(week_entry.status, WeekStatus::Open) {
+        // Unless this pool's owner asked for the opposite, which is the one
+        // rule both this and the standings read, so the two cannot disagree
+        // about what is public.
+        if !pool.picks_are_public(week) {
             return Ok(picks
                 .iter()
                 .filter(|pick| pick.participant_id == user_id)
@@ -868,15 +873,12 @@ impl SurvivorService for MongoSurvivorService {
     async fn get_standings(&self, pool_name: &str) -> Result<SurvivorStandings> {
         let pool = self.pool_by_name(pool_name).await?;
 
-        // Only the dates whose picks are public. An open date's picks are not
+        // Only the dates whose picks are public. A hidden date's picks are not
         // in the standings at all, rather than in it blanked out — a payload
         // that carried them would reveal them to anybody reading the response.
-        let revealed_weeks: Vec<u16> = pool
-            .weeks
-            .iter()
-            .filter(|week| !matches!(week.status, WeekStatus::Open))
-            .map(|week| week.week)
-            .collect();
+        // Which dates those are is the pool's rule, not this function's: a pool
+        // with `public_picks` on also reveals the date being played.
+        let revealed_weeks: Vec<u16> = pool.revealed_weeks();
 
         let mut picks_by_participant: HashMap<String, HashMap<u16, RevealedPick>> = HashMap::new();
         let mut wins: HashMap<String, u16> = HashMap::new();
