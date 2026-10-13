@@ -7,8 +7,8 @@ use crate::survivor::model::{SurvivorPool, SurvivorPoolShort, SurvivorStandings}
 use crate::survivor::picks::{SurvivorPickOptions, SurvivorPickView};
 use crate::survivor::requests::{
     AddSurvivorParticipantRequest, JoinSurvivorRequest, LeaveSurvivorRequest, MakePickRequest,
-    SettleWeekRequest, SurvivorCreationRequest, SurvivorDeletionRequest,
-    UpdateSurvivorSettingsRequest,
+    ParticipantLinkRequest, RequestParticipantLinkRequest, SettleWeekRequest,
+    SurvivorCreationRequest, SurvivorDeletionRequest, UpdateSurvivorSettingsRequest,
 };
 
 #[async_trait]
@@ -40,6 +40,45 @@ pub trait SurvivorService {
         req: AddSurvivorParticipantRequest,
     ) -> Result<SurvivorPool>;
     async fn leave_pool(&self, user_id: &str, req: LeaveSurvivorRequest) -> Result<SurvivorPool>;
+
+    /// Offer one of the pool's spots to whoever signs in with an address.
+    ///
+    /// The four below are the survivor pool's half of the roster pool's
+    /// pooler-link flow. A spot the organiser entered has no account behind it,
+    /// so that person cannot pick for themselves; the owner files an invitation
+    /// and the invitee turns it into the link, which moves the spot's id to
+    /// their account and takes its picks with it.
+    async fn request_participant_link(
+        &self,
+        user_id: &str,
+        req: RequestParticipantLinkRequest,
+    ) -> Result<SurvivorPool>;
+
+    /// Withdraw a pending invitation. The owner's.
+    async fn cancel_participant_link(
+        &self,
+        user_id: &str,
+        req: ParticipantLinkRequest,
+    ) -> Result<SurvivorPool>;
+
+    /// Take a spot over, as the account the invitation was filed against.
+    ///
+    /// `email` is the address Hanko verified and put in the caller's JWT: it is
+    /// what the invitation is matched against, so a caller cannot accept one
+    /// filed for somebody else.
+    async fn accept_participant_link(
+        &self,
+        user_id: &str,
+        email: &str,
+        req: ParticipantLinkRequest,
+    ) -> Result<SurvivorPool>;
+
+    /// Turn down an invitation filed against the caller's own address.
+    async fn decline_participant_link(
+        &self,
+        email: &str,
+        req: ParticipantLinkRequest,
+    ) -> Result<SurvivorPool>;
 
     /// What a participant needs to pick for a date: the teams playing, the ones
     /// still open to them, and the pick they already have in.

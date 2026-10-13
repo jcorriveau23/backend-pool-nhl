@@ -26,8 +26,9 @@ use poolnhl_interface::survivor::model::{
     ParticipantStatus, PickOutcome, SurvivorPool, SurvivorSettings, SurvivorState, WeekStatus,
 };
 use poolnhl_interface::survivor::requests::{
-    AddSurvivorParticipantRequest, JoinSurvivorRequest, MakePickRequest, SettleWeekRequest,
-    SurvivorCreationRequest, SurvivorDeletionRequest, UpdateSurvivorSettingsRequest,
+    AddSurvivorParticipantRequest, JoinSurvivorRequest, MakePickRequest, ParticipantLinkRequest,
+    RequestParticipantLinkRequest, SettleWeekRequest, SurvivorCreationRequest,
+    SurvivorDeletionRequest, UpdateSurvivorSettingsRequest,
 };
 use poolnhl_interface::survivor::service::SurvivorService;
 
@@ -1097,6 +1098,190 @@ async fn a_public_pool_shows_the_open_dates_picks_to_everybody() {
             .revealed_weeks,
         vec![1]
     );
+
+    cleanup(&service, &pool.name).await;
+}
+
+// ------------------------------------------------- handing a spot to an account
+
+#[tokio::test]
+#[ignore = "needs a running mongo"]
+async fn taking_a_spot_over_brings_its_picks_along() {
+    let (service, schedule) = service().await;
+    let pool = pool_with_schedule(&service, &schedule, "link", 10, &[10], &[8]).await;
+
+    // A spot the organiser keeps for somebody who has no account on it, which
+    // is the case the whole flow exists for.
+    let pool = service
+        .add_participant(
+            OWNER,
+            AddSurvivorParticipantRequest {
+                pool_name: pool.name.clone(),
+                participant_name: "vincent".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let spot_id = pool
+        .participants
+        .iter()
+        .find(|participant| participant.name == "vincent")
+        .unwrap()
+        .id
+        .clone();
+
+    // The organiser has been picking for them.
+    service
+        .make_pick(
+            OWNER,
+            MakePickRequest {
+                pool_name: pool.name.clone(),
+                participant_id: Some(spot_id.clone()),
+                week: 1,
+                team_id: 10,
+            },
+        )
+        .await
+        .unwrap();
+
+    service
+        .request_participant_link(
+            OWNER,
+            RequestParticipantLinkRequest {
+                pool_name: pool.name.clone(),
+                participant_id: spot_id.clone(),
+                email: "Vincent@Example.com".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let linked = service
+        .accept_participant_link(
+            "vincents-account",
+            "vincent@example.com",
+            ParticipantLinkRequest {
+                pool_name: pool.name.clone(),
+                participant_id: spot_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+
+    // The spot is now their account, by the same name.
+    assert!(linked.participant(&spot_id).is_none());
+    let taken = linked.participant("vincents-account").unwrap();
+    assert_eq!(taken.name, "vincent");
+    assert!(taken.is_owned);
+    assert!(
+        linked
+            .pending_participant_links
+            .as_ref()
+            .unwrap()
+            .is_empty()
+    );
+
+    /*
+    And the picks came with it. This is the half of the move that only the
+    database can show: the picks are their own documents keyed by the id that
+    changed, so a re-key that did not happen would leave this spot looking as
+    though it had never picked — and the team it spent free to pick again.
+    */
+    let theirs = service
+        .get_my_picks("vincents-account", &pool.name)
+        .await
+        .unwrap();
+    assert_eq!(theirs.len(), 1);
+    assert_eq!(theirs[0].team_id, 10);
+    assert!(
+        service
+            .get_my_picks(&spot_id, &pool.name)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // They can pick for themselves now, which they could not before.
+    service
+        .get_pick_options("vincents-account", &pool.name, 1, None)
+        .await
+        .unwrap();
+
+    cleanup(&service, &pool.name).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a running mongo"]
+async fn a_spot_cannot_be_taken_over_by_an_account_that_already_has_picks() {
+    let (service, schedule) = service().await;
+    let pool = pool_with_schedule(&service, &schedule, "link-dup", 10, &[10], &[8]).await;
+
+    let pool = service
+        .add_participant(
+            OWNER,
+            AddSurvivorParticipantRequest {
+                pool_name: pool.name.clone(),
+                participant_name: "vincent".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let spot_id = pool
+        .participants
+        .iter()
+        .find(|participant| participant.name == "vincent")
+        .unwrap()
+        .id
+        .clone();
+
+    // The owner picked for themselves, so their account already holds a pick
+    // here. Taking the spot over would have to merge two sets of picks under
+    // one id, which the unique indexes would refuse mid-write — so it is
+    // refused up front, with something readable.
+    service
+        .make_pick(
+            OWNER,
+            MakePickRequest {
+                pool_name: pool.name.clone(),
+                participant_id: None,
+                week: 1,
+                team_id: 10,
+            },
+        )
+        .await
+        .unwrap();
+
+    service
+        .request_participant_link(
+            OWNER,
+            RequestParticipantLinkRequest {
+                pool_name: pool.name.clone(),
+                participant_id: spot_id.clone(),
+                email: "owner@example.com".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        service
+            .accept_participant_link(
+                OWNER,
+                "owner@example.com",
+                ParticipantLinkRequest {
+                    pool_name: pool.name.clone(),
+                    participant_id: spot_id.clone(),
+                },
+            )
+            .await
+            .is_err()
+    );
+
+    // Nothing moved.
+    let unchanged = service.get_pool_by_name(&pool.name).await.unwrap();
+    assert!(unchanged.participant(&spot_id).is_some());
 
     cleanup(&service, &pool.name).await;
 }

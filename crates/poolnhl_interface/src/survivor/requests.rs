@@ -89,3 +89,25 @@ pub struct PickOptionsQuery {
     #[serde(default)]
     pub participant_id: Option<String>,
 }
+
+/// The owner inviting an email address to take one of the pool's spots over.
+///
+/// A spot the organiser entered by hand has no account behind it, so the person
+/// it stands for cannot pick for themselves; this is what offers it to them.
+#[derive(Debug, Deserialize, Clone)]
+pub struct RequestParticipantLinkRequest {
+    pub pool_name: String,
+    pub participant_id: String,
+    pub email: String,
+}
+
+/// The owner withdrawing a pending link, and the invitee accepting or turning
+/// one down.
+///
+/// The invitee is identified by the address in their JWT, so none of the three
+/// carries one.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ParticipantLinkRequest {
+    pub pool_name: String,
+    pub participant_id: String,
+}

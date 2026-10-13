@@ -23,6 +23,11 @@ use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use serde::{Deserialize, Serialize};
 
 use crate::errors::AppError;
+// The address helpers are shared with the roster pool's own invitations rather
+// than written twice: an address has to normalize and hash identically on both,
+// since the frontend hashes it the same way to recognize an invitation as its
+// own.
+use crate::pool::model::{hash_email, mask_email, normalize_email};
 
 /// Participant names are displayed in every standings row of the pool; a longer
 /// one would be cut with an ellipsis everywhere it appears.
@@ -327,6 +332,34 @@ pub struct SurvivorStandings {
     pub winners: Option<Vec<String>>,
 }
 
+/// An invitation, filed by the pool owner, for whoever signs in with a given
+/// email address to take one of the pool's spots over.
+///
+/// The counterpart of [`crate::pool::model::PendingPoolerLink`], and for the
+/// same reason: a spot the organiser entered by hand has no account behind it,
+/// so the person it stands for cannot pick for themselves. The organiser cannot
+/// attach an account on their own either — identity lives in Hanko and the app
+/// keeps no user directory, so an address cannot be resolved to an account, and
+/// taking a spot over should be the taker's call regardless.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct PendingParticipantLink {
+    /// The spot being handed over. Still carries its current id.
+    pub participant_id: String,
+
+    /// SHA-256 of the normalized invited address. See
+    /// [`crate::pool::model::hash_email`].
+    pub email_hash: String,
+
+    /// Redacted address, for the owner to recognize the invitation they filed
+    /// by. See [`crate::pool::model::mask_email`].
+    pub email_hint: String,
+
+    /// The owner who filed the invitation, kept for the audit trail.
+    pub requested_by: String,
+
+    pub date_requested: i64,
+}
+
 /// A survivor pool, without its picks.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SurvivorPool {
@@ -343,6 +376,11 @@ pub struct SurvivorPool {
     /// everybody still standing — they share it rather than the pool ending with
     /// nobody.
     pub winners: Option<Vec<String>>,
+
+    /// Invitations waiting on the person they name to sign in and accept them.
+    /// Absent on every pool that has never had one filed.
+    #[serde(default)]
+    pub pending_participant_links: Option<Vec<PendingParticipantLink>>,
 
     /// Doubles as the optimistic-locking version, the same way `Pool` uses it.
     pub date_updated: i64,
@@ -395,6 +433,7 @@ impl SurvivorPool {
             participants: Vec::new(),
             weeks,
             winners: None,
+            pending_participant_links: None,
             date_updated: 0,
             season,
             season_start: season_start.to_string(),
@@ -614,6 +653,191 @@ impl SurvivorPool {
         }
 
         Ok(())
+    }
+
+    /// File an invitation for whoever signs in with `email` to take the spot
+    /// `participant_id` over.
+    ///
+    /// Nothing moves here, exactly as in the roster pool: the invitation is
+    /// written down and waits for its target to sign in and accept it. The
+    /// organiser has no way to turn an address into an account, and a spot
+    /// should not be handed to somebody who never agreed to take it.
+    ///
+    /// The owner's alone, not the assistants'. They may *enter* a spot
+    /// (`add_managed_participant`), which creates somebody with no account;
+    /// deciding which account a spot answers to is the same class of call as
+    /// editing the settings, and that is owner-only too.
+    /// `now` is passed in rather than read here, like every other date this
+    /// model records: it keeps the model clock-free and its tests pinned.
+    pub fn request_participant_link(
+        &mut self,
+        user_id: &str,
+        participant_id: &str,
+        email: &str,
+        now: i64,
+    ) -> Result<(), AppError> {
+        self.validate_owner_rights(user_id)?;
+
+        let email = normalize_email(email)?;
+        let email_hash = hash_email(&email);
+
+        if self.participant(participant_id).is_none() {
+            return Err(AppError::NotFound {
+                msg: format!("'{participant_id}' is not in '{}'.", self.name),
+            });
+        }
+
+        let link = PendingParticipantLink {
+            participant_id: participant_id.to_string(),
+            email_hash,
+            email_hint: mask_email(&email),
+            requested_by: user_id.to_string(),
+            date_requested: now,
+        };
+
+        let links = self.pending_participant_links.get_or_insert_with(Vec::new);
+
+        // One invitation per spot: filing a second one for the same spot is the
+        // owner correcting the address they typed, not a second candidate.
+        links.retain(|pending| pending.participant_id != link.participant_id);
+        links.push(link);
+
+        Ok(())
+    }
+
+    /// Withdraw the invitation standing on `participant_id`.
+    pub fn cancel_participant_link(
+        &mut self,
+        user_id: &str,
+        participant_id: &str,
+    ) -> Result<(), AppError> {
+        self.validate_owner_rights(user_id)?;
+        self.drop_link(participant_id, None)
+    }
+
+    /// Turn down the invitation standing on `participant_id`.
+    ///
+    /// `email` is the address Hanko verified and put in the caller's JWT, so
+    /// only the person invited can decline, and only their own invitation.
+    pub fn decline_participant_link(
+        &mut self,
+        email: &str,
+        participant_id: &str,
+    ) -> Result<(), AppError> {
+        let email_hash = hash_email(&normalize_email(email)?);
+        self.drop_link(participant_id, Some(&email_hash))
+    }
+
+    /// Take the spot `participant_id` over, as the account `new_user_id`.
+    ///
+    /// `email` is the address in the caller's JWT, and an invitation standing on
+    /// the spot for that address is what authorizes this — the caller is
+    /// otherwise a stranger to the pool.
+    ///
+    /// Returns nothing: what the caller needs to know is that the id moved, and
+    /// the spot's picks are their own documents keyed by that id, so re-keying
+    /// them is the service's half of this and cannot be done from here.
+    pub fn accept_participant_link(
+        &mut self,
+        new_user_id: &str,
+        email: &str,
+        participant_id: &str,
+    ) -> Result<(), AppError> {
+        let email_hash = hash_email(&normalize_email(email)?);
+
+        let matched = self
+            .pending_participant_links
+            .as_ref()
+            .is_some_and(|links| {
+                links.iter().any(|pending| {
+                    pending.participant_id == participant_id && pending.email_hash == email_hash
+                })
+            });
+
+        if !matched {
+            return Err(AppError::CustomError {
+                msg: "No account link is waiting on you for this spot.".to_string(),
+            });
+        }
+
+        if new_user_id == participant_id {
+            return Err(AppError::CustomError {
+                msg: "This spot is already your account.".to_string(),
+            });
+        }
+
+        if self.participant(new_user_id).is_some() {
+            return Err(AppError::CustomError {
+                msg: format!("You already play '{}' under another spot.", self.name),
+            });
+        }
+
+        self.relink_participant(participant_id, new_user_id);
+        self.drop_link(participant_id, None)
+    }
+
+    /// Drop the invitation on `participant_id`, optionally only when it is the
+    /// one filed against `email_hash`.
+    ///
+    /// The address check is what keeps one invitee from declining another's.
+    fn drop_link(
+        &mut self,
+        participant_id: &str,
+        email_hash: Option<&str>,
+    ) -> Result<(), AppError> {
+        let not_found = || AppError::CustomError {
+            msg: "No account link is waiting on this spot.".to_string(),
+        };
+
+        let links = self
+            .pending_participant_links
+            .as_mut()
+            .ok_or_else(not_found)?;
+
+        let before = links.len();
+        links.retain(|pending| {
+            pending.participant_id != participant_id
+                || email_hash.is_some_and(|hash| pending.email_hash != hash)
+        });
+
+        if links.len() == before {
+            return Err(not_found());
+        }
+
+        Ok(())
+    }
+
+    /// Rewrite a spot's id everywhere the pool document keys anything by it.
+    ///
+    /// The picks are not here: they are their own collection, keyed by
+    /// `participant_id`, and the service re-keys them alongside this.
+    fn relink_participant(&mut self, old_id: &str, new_id: &str) {
+        fn swap(value: &mut String, old_id: &str, new_id: &str) {
+            if value == old_id {
+                *value = new_id.to_string();
+            }
+        }
+
+        // The pool changes hands along with the spot when the owner is the one
+        // moving accounts, the same as in the roster pool.
+        swap(&mut self.owner, old_id, new_id);
+
+        for participant in self.participants.iter_mut() {
+            if participant.id == old_id {
+                participant.id = new_id.to_string();
+                // Whatever it was before — a spot the organiser typed in, or
+                // another account — it answers to an app account now.
+                participant.is_owned = true;
+            }
+        }
+
+        for assistant in self.settings.assistants.iter_mut() {
+            swap(assistant, old_id, new_id);
+        }
+
+        for winner in self.winners.iter_mut().flatten() {
+            swap(winner, old_id, new_id);
+        }
     }
 
     /// Check a participant may pick for `week` at all, before the team itself is
