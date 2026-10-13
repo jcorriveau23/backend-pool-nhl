@@ -37,8 +37,8 @@ use poolnhl_interface::survivor::picks::{
 };
 use poolnhl_interface::survivor::requests::{
     AddSurvivorParticipantRequest, JoinSurvivorRequest, LeaveSurvivorRequest, MakePickRequest,
-    SettleWeekRequest, SurvivorCreationRequest, SurvivorDeletionRequest,
-    UpdateSurvivorSettingsRequest,
+    ParticipantLinkRequest, RequestParticipantLinkRequest, SettleWeekRequest,
+    SurvivorCreationRequest, SurvivorDeletionRequest, UpdateSurvivorSettingsRequest,
 };
 use poolnhl_interface::survivor::service::SurvivorService;
 
@@ -129,6 +129,23 @@ impl MongoSurvivorService {
                 }),
             },
         }
+    }
+
+    /// Write back the pool's pending invitations and nothing else.
+    ///
+    /// Filing, withdrawing and declining one all touch that single field, which
+    /// is why they share this. Accepting does not: it moves a spot's id, so it
+    /// writes the participant list too and re-keys the picks.
+    async fn write_links(&self, pool: &SurvivorPool) -> Result<SurvivorPool> {
+        self.update_pool(
+            doc! {"$set": doc!{
+                "pending_participant_links":
+                    to_bson(&pool.pending_participant_links).map_err(bson_err)?,
+            }},
+            &pool.name,
+            pool.date_updated,
+        )
+        .await
     }
 
     /// Every pick a participant has made in a pool.
@@ -592,6 +609,125 @@ impl SurvivorService for MongoSurvivorService {
             .map_err(mongo_err)?;
 
         Ok(updated)
+    }
+
+    async fn request_participant_link(
+        &self,
+        user_id: &str,
+        req: RequestParticipantLinkRequest,
+    ) -> Result<SurvivorPool> {
+        let mut pool = self.pool_by_name(&req.pool_name).await?;
+
+        pool.request_participant_link(
+            user_id,
+            &req.participant_id,
+            &req.email,
+            Utc::now().timestamp_millis(),
+        )?;
+
+        self.write_links(&pool).await
+    }
+
+    async fn cancel_participant_link(
+        &self,
+        user_id: &str,
+        req: ParticipantLinkRequest,
+    ) -> Result<SurvivorPool> {
+        let mut pool = self.pool_by_name(&req.pool_name).await?;
+
+        pool.cancel_participant_link(user_id, &req.participant_id)?;
+
+        self.write_links(&pool).await
+    }
+
+    async fn decline_participant_link(
+        &self,
+        email: &str,
+        req: ParticipantLinkRequest,
+    ) -> Result<SurvivorPool> {
+        let mut pool = self.pool_by_name(&req.pool_name).await?;
+
+        pool.decline_participant_link(email, &req.participant_id)?;
+
+        self.write_links(&pool).await
+    }
+
+    /*
+    Take a spot over, which moves its id to the caller's account.
+
+    The one mutation here that reaches both collections: the pool document holds
+    the participant list, and the spot's picks are their own documents keyed by
+    the id that is changing.
+
+    The picks are re-keyed **first**, and the order is the point. There is no
+    transaction, so one of the two writes can land alone, and this is the half
+    that can be retried: the invitation is only consumed by the pool write, so a
+    failure after the picks moved leaves the link standing and accepting again
+    finishes the job (the second re-key simply matches nothing). The other order
+    would consume the invitation and leave the picks orphaned with no way back —
+    and a spot whose picks have gone missing is worse than one still waiting,
+    because the teams it had spent would read as unspent and could be picked
+    twice.
+    */
+    async fn accept_participant_link(
+        &self,
+        user_id: &str,
+        email: &str,
+        req: ParticipantLinkRequest,
+    ) -> Result<SurvivorPool> {
+        let mut pool = self.pool_by_name(&req.pool_name).await?;
+
+        // Checks the invitation and the account before anything is written, so
+        // a refusal costs nothing.
+        pool.accept_participant_link(user_id, email, &req.participant_id)?;
+
+        /*
+        The picks are keyed by (pool, participant, week) and (pool, participant,
+        cycle, team) as unique indexes, so re-keying onto an account that
+        already holds picks here would fail the write halfway through. The model
+        refuses a caller who is already a participant, which covers the ordinary
+        case; this covers picks left behind by an earlier spot of theirs that
+        was removed, and says so rather than surfacing a duplicate-key error.
+        */
+        let already_held = self
+            .picks
+            .count_documents(
+                doc! {"pool_name": &req.pool_name, "participant_id": user_id},
+                None,
+            )
+            .await
+            .map_err(mongo_err)?;
+
+        if already_held > 0 {
+            return Err(AppError::CustomError {
+                msg: format!("Your account already has picks in '{}'.", req.pool_name),
+            });
+        }
+
+        self.picks
+            .update_many(
+                doc! {"pool_name": &req.pool_name, "participant_id": &req.participant_id},
+                doc! {"$set": doc!{"participant_id": user_id}},
+                None,
+            )
+            .await
+            .map_err(mongo_err)?;
+
+        // `owner` and the assistants move with the spot when it is one of
+        // theirs, so the whole of what `relink_participant` touches is written.
+        self.update_pool(
+            doc! {"$set": doc!{
+                "owner": &pool.owner,
+                "participants": to_bson(&pool.participants).map_err(bson_err)?,
+                "settings.assistants": to_bson(&pool.settings.assistants).map_err(bson_err)?,
+                "winners": to_bson(&pool.winners).map_err(bson_err)?,
+                "pending_participant_links":
+                    to_bson(&pool.pending_participant_links).map_err(bson_err)?,
+            }},
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
     }
 
     async fn get_pick_options(

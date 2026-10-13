@@ -877,3 +877,221 @@ fn a_week_the_pool_does_not_have_is_not_public() {
     assert!(!pool.picks_are_public(0));
     assert!(!pool.picks_are_public(999));
 }
+
+// ------------------------------------------------- handing a spot to an account
+
+const INVITEE: &str = "vincent@example.com";
+const VINCENTS_ACCOUNT: &str = "vincents-account";
+
+/// A pool with a managed spot the organiser keeps for somebody, which is the
+/// case the whole flow exists for: that person has no account on the spot, so
+/// they cannot pick for themselves.
+fn pool_with_a_managed_spot() -> SurvivorPool {
+    let mut pool = pool();
+    pool.add_participant(OWNER, "jf", 0).unwrap();
+    pool.add_managed_participant(OWNER, "spot-id", "vincent", 0)
+        .unwrap();
+    pool
+}
+
+#[test]
+fn the_owner_files_an_invitation_against_an_address() {
+    let mut pool = pool_with_a_managed_spot();
+
+    pool.request_participant_link(OWNER, "spot-id", INVITEE, 1234)
+        .unwrap();
+
+    let links = pool.pending_participant_links.as_ref().unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].participant_id, "spot-id");
+    assert_eq!(links[0].date_requested, 1234);
+    // The address itself is never stored: the pool is readable by anybody in
+    // it, and a hint is all the owner needs to recognize what they filed.
+    assert_eq!(links[0].email_hash, hash_email(INVITEE));
+    assert_eq!(links[0].email_hint, mask_email(INVITEE));
+    assert!(!links[0].email_hint.contains("vincent@"));
+}
+
+#[test]
+fn an_address_matches_however_it_was_typed() {
+    let mut pool = pool_with_a_managed_spot();
+
+    pool.request_participant_link(OWNER, "spot-id", "  Vincent@Example.COM ", 0)
+        .unwrap();
+
+    // The invitee signs in with the address Hanko holds, which need not match
+    // the owner's typing character for character.
+    pool.accept_participant_link(VINCENTS_ACCOUNT, INVITEE, "spot-id")
+        .unwrap();
+
+    assert!(pool.participant(VINCENTS_ACCOUNT).is_some());
+}
+
+#[test]
+fn only_the_owner_files_or_withdraws_an_invitation() {
+    let mut pool = pool_with_a_managed_spot();
+    pool.settings.assistants = vec![USER_2.to_string()];
+
+    // An assistant may enter a spot, but not decide which account it answers
+    // to — the same line settings and deletion sit on.
+    assert!(
+        pool.request_participant_link(USER_2, "spot-id", INVITEE, 0)
+            .is_err()
+    );
+
+    pool.request_participant_link(OWNER, "spot-id", INVITEE, 0)
+        .unwrap();
+    assert!(pool.cancel_participant_link(USER_2, "spot-id").is_err());
+    pool.cancel_participant_link(OWNER, "spot-id").unwrap();
+    assert!(pool.pending_participant_links.as_ref().unwrap().is_empty());
+}
+
+#[test]
+fn an_invitation_on_a_spot_that_is_not_in_the_pool_is_refused() {
+    let mut pool = pool_with_a_managed_spot();
+
+    assert!(
+        pool.request_participant_link(OWNER, "nobody", INVITEE, 0)
+            .is_err()
+    );
+}
+
+#[test]
+fn filing_a_second_invitation_replaces_the_first() {
+    let mut pool = pool_with_a_managed_spot();
+
+    pool.request_participant_link(OWNER, "spot-id", "typo@example.com", 0)
+        .unwrap();
+    pool.request_participant_link(OWNER, "spot-id", INVITEE, 0)
+        .unwrap();
+
+    // The owner correcting the address they typed, not a second candidate.
+    let links = pool.pending_participant_links.as_ref().unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].email_hash, hash_email(INVITEE));
+}
+
+#[test]
+fn accepting_moves_the_spot_to_the_account_and_marks_it_owned() {
+    let mut pool = pool_with_a_managed_spot();
+    pool.request_participant_link(OWNER, "spot-id", INVITEE, 0)
+        .unwrap();
+
+    pool.accept_participant_link(VINCENTS_ACCOUNT, INVITEE, "spot-id")
+        .unwrap();
+
+    assert!(pool.participant("spot-id").is_none());
+    let taken = pool.participant(VINCENTS_ACCOUNT).unwrap();
+    // It keeps its name, and with it everything the standings shows.
+    assert_eq!(taken.name, "vincent");
+    assert!(taken.is_owned);
+    // The invitation is spent.
+    assert!(pool.pending_participant_links.as_ref().unwrap().is_empty());
+}
+
+#[test]
+fn accepting_is_what_lets_that_person_finally_pick() {
+    let mut pool = pool_with_a_managed_spot();
+    pool.request_participant_link(OWNER, "spot-id", INVITEE, 0)
+        .unwrap();
+
+    // The whole point of the flow: before the link their account is a stranger
+    // to the pool and the pick screen has nothing for them.
+    assert!(pool.validate_can_pick(VINCENTS_ACCOUNT, 1).is_err());
+
+    pool.accept_participant_link(VINCENTS_ACCOUNT, INVITEE, "spot-id")
+        .unwrap();
+
+    pool.validate_can_pick(VINCENTS_ACCOUNT, 1).unwrap();
+}
+
+#[test]
+fn an_invitation_filed_for_somebody_else_cannot_be_accepted_or_declined() {
+    let mut pool = pool_with_a_managed_spot();
+    pool.request_participant_link(OWNER, "spot-id", INVITEE, 0)
+        .unwrap();
+
+    // The address comes from the caller's own verified JWT, so this is somebody
+    // else trying to claim the spot.
+    assert!(
+        pool.accept_participant_link(USER_3, "stranger@example.com", "spot-id")
+            .is_err()
+    );
+    assert!(
+        pool.decline_participant_link("stranger@example.com", "spot-id")
+            .is_err()
+    );
+
+    // And the invitation is still standing for the person it was filed for.
+    pool.accept_participant_link(VINCENTS_ACCOUNT, INVITEE, "spot-id")
+        .unwrap();
+}
+
+#[test]
+fn declining_drops_the_invitation_and_leaves_the_spot_alone() {
+    let mut pool = pool_with_a_managed_spot();
+    pool.request_participant_link(OWNER, "spot-id", INVITEE, 0)
+        .unwrap();
+
+    pool.decline_participant_link(INVITEE, "spot-id").unwrap();
+
+    assert!(pool.pending_participant_links.as_ref().unwrap().is_empty());
+    // The organiser keeps picking for them, as before.
+    let spot = pool.participant("spot-id").unwrap();
+    assert!(!spot.is_owned);
+}
+
+#[test]
+fn accepting_without_an_invitation_is_refused() {
+    let mut pool = pool_with_a_managed_spot();
+
+    assert!(
+        pool.accept_participant_link(VINCENTS_ACCOUNT, INVITEE, "spot-id")
+            .is_err()
+    );
+    assert!(pool.decline_participant_link(INVITEE, "spot-id").is_err());
+}
+
+#[test]
+fn an_account_already_in_the_pool_cannot_take_a_second_spot() {
+    let mut pool = pool_with_a_managed_spot();
+    pool.request_participant_link(OWNER, "spot-id", INVITEE, 0)
+        .unwrap();
+
+    // The organiser already plays their own spot; taking this one as well would
+    // give them two in the same pool.
+    assert!(
+        pool.accept_participant_link(OWNER, INVITEE, "spot-id")
+            .is_err()
+    );
+}
+
+#[test]
+fn a_spot_that_is_already_your_account_is_refused() {
+    let mut pool = pool_with_a_managed_spot();
+    pool.request_participant_link(OWNER, "spot-id", INVITEE, 0)
+        .unwrap();
+
+    assert!(
+        pool.accept_participant_link("spot-id", INVITEE, "spot-id")
+            .is_err()
+    );
+}
+
+#[test]
+fn the_pool_changes_hands_when_the_owner_moves_their_own_spot() {
+    let mut pool = pool_with_a_managed_spot();
+    pool.settings.assistants = vec![OWNER.to_string()];
+    pool.winners = Some(vec![OWNER.to_string()]);
+
+    pool.request_participant_link(OWNER, OWNER, INVITEE, 0)
+        .unwrap();
+    pool.accept_participant_link(VINCENTS_ACCOUNT, INVITEE, OWNER)
+        .unwrap();
+
+    // Everywhere the pool document keys anything by that id.
+    assert_eq!(pool.owner, VINCENTS_ACCOUNT);
+    assert_eq!(pool.settings.assistants, vec![VINCENTS_ACCOUNT.to_string()]);
+    assert_eq!(pool.winners, Some(vec![VINCENTS_ACCOUNT.to_string()]));
+    pool.validate_owner_rights(VINCENTS_ACCOUNT).unwrap();
+}

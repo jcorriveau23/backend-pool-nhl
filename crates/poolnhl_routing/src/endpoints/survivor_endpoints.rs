@@ -8,8 +8,8 @@ use poolnhl_interface::survivor::model::{SurvivorPool, SurvivorPoolShort, Surviv
 use poolnhl_interface::survivor::picks::{SurvivorPickOptions, SurvivorPickView};
 use poolnhl_interface::survivor::requests::{
     AddSurvivorParticipantRequest, JoinSurvivorRequest, LeaveSurvivorRequest, MakePickRequest,
-    PickOptionsQuery, SettleWeekRequest, SurvivorCreationRequest, SurvivorDeletionRequest,
-    UpdateSurvivorSettingsRequest,
+    ParticipantLinkRequest, PickOptionsQuery, RequestParticipantLinkRequest, SettleWeekRequest,
+    SurvivorCreationRequest, SurvivorDeletionRequest, UpdateSurvivorSettingsRequest,
 };
 use poolnhl_interface::survivor::service::SurvivorServiceHandle;
 use poolnhl_interface::users::model::UserEmailJwtPayload;
@@ -37,6 +37,24 @@ impl SurvivorRouter {
             .route("/join-survivor-pool", post(Self::join_pool))
             .route("/add-survivor-participant", post(Self::add_participant))
             .route("/leave-survivor-pool", post(Self::leave_pool))
+            // Handing a spot over to an account. Named after the roster pool's
+            // own invitations, which work the same way.
+            .route(
+                "/request-survivor-participant-link",
+                post(Self::request_participant_link),
+            )
+            .route(
+                "/cancel-survivor-participant-link",
+                post(Self::cancel_participant_link),
+            )
+            .route(
+                "/accept-survivor-participant-link",
+                post(Self::accept_participant_link),
+            )
+            .route(
+                "/decline-survivor-participant-link",
+                post(Self::decline_participant_link),
+            )
             .route("/survivor-pick", post(Self::make_pick))
             .route("/lock-survivor-week", post(Self::lock_week))
             .route("/settle-survivor-week", post(Self::settle_week))
@@ -170,6 +188,54 @@ impl SurvivorRouter {
     ) -> Result<Json<SurvivorPool>> {
         survivor_service
             .leave_pool(&token.sub, body)
+            .await
+            .map(Json)
+    }
+
+    /// Invite an address to take one of the pool's spots over. The owner's.
+    async fn request_participant_link(
+        token: UserEmailJwtPayload,
+        State(survivor_service): State<SurvivorServiceHandle>,
+        Json(body): Json<RequestParticipantLinkRequest>,
+    ) -> Result<Json<SurvivorPool>> {
+        survivor_service
+            .request_participant_link(&token.sub, body)
+            .await
+            .map(Json)
+    }
+
+    async fn cancel_participant_link(
+        token: UserEmailJwtPayload,
+        State(survivor_service): State<SurvivorServiceHandle>,
+        Json(body): Json<ParticipantLinkRequest>,
+    ) -> Result<Json<SurvivorPool>> {
+        survivor_service
+            .cancel_participant_link(&token.sub, body)
+            .await
+            .map(Json)
+    }
+
+    /// Take a spot over. The address comes from the JWT, never from the body:
+    /// it is what the pending invitation is matched against, so a caller that
+    /// could name their own address could claim any spot of any pool.
+    async fn accept_participant_link(
+        token: UserEmailJwtPayload,
+        State(survivor_service): State<SurvivorServiceHandle>,
+        Json(body): Json<ParticipantLinkRequest>,
+    ) -> Result<Json<SurvivorPool>> {
+        survivor_service
+            .accept_participant_link(&token.sub, &token.email.address, body)
+            .await
+            .map(Json)
+    }
+
+    async fn decline_participant_link(
+        token: UserEmailJwtPayload,
+        State(survivor_service): State<SurvivorServiceHandle>,
+        Json(body): Json<ParticipantLinkRequest>,
+    ) -> Result<Json<SurvivorPool>> {
+        survivor_service
+            .decline_participant_link(&token.email.address, body)
             .await
             .map(Json)
     }
