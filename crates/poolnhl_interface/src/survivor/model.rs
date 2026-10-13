@@ -22,6 +22,7 @@ use std::fmt;
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use serde::{Deserialize, Serialize};
 
+use crate::clock::current_game_day;
 use crate::errors::AppError;
 // The address helpers are shared with the roster pool's own invitations rather
 // than written twice: an address has to normalize and hash identically on both,
@@ -391,7 +392,8 @@ pub struct SurvivorPool {
 }
 
 impl SurvivorPool {
-    /// A new pool, with a week per Saturday of the season.
+    /// A new pool, with a week per Saturday from the next one coming to the end
+    /// of the season.
     pub fn new(
         name: &str,
         owner: &str,
@@ -400,10 +402,33 @@ impl SurvivorPool {
         season_start: &str,
         season_end: &str,
     ) -> Result<Self, AppError> {
+        Self::new_at(
+            name,
+            owner,
+            settings,
+            season,
+            season_start,
+            season_end,
+            current_game_day(),
+        )
+    }
+
+    /// The same, with the night of hockey in play handed in rather than read
+    /// from the clock, so the pick dates a pool opens with can be tested at a
+    /// date instead of on whatever day the suite runs.
+    pub fn new_at(
+        name: &str,
+        owner: &str,
+        settings: &SurvivorSettings,
+        season: u32,
+        season_start: &str,
+        season_end: &str,
+        game_day: NaiveDate,
+    ) -> Result<Self, AppError> {
         validate_pool_name(name)?;
         settings.validate()?;
 
-        let weeks = saturdays_between(season_start, season_end)?
+        let weeks = pick_dates_from(season_start, season_end, game_day)?
             .into_iter()
             .enumerate()
             .map(|(index, pick_date)| SurvivorWeek {
@@ -420,7 +445,8 @@ impl SurvivorPool {
         if weeks.is_empty() {
             return Err(AppError::CustomError {
                 msg: format!(
-                    "There is no Saturday between {season_start} and {season_end} to pick on."
+                    "There is no Saturday left to pick on between {} and the end of the season on {season_end}.",
+                    first_pick_date(season_start, game_day)?
                 ),
             });
         }
@@ -1052,6 +1078,67 @@ pub fn validate_participant_name(name: &str) -> Result<String, AppError> {
     }
 
     Ok(trimmed.to_string())
+}
+
+/// The pick dates of a pool created while `game_day` is the night in play:
+/// every Saturday from the one it opens on to the end of the season.
+///
+/// Empty when the season has no Saturday left, which is what makes a pool
+/// opened in April refuse to open rather than open with nothing to play.
+pub fn pick_dates_from(
+    season_start: &str,
+    season_end: &str,
+    game_day: NaiveDate,
+) -> Result<Vec<String>, AppError> {
+    let first = first_pick_date(season_start, game_day)?;
+    let end = NaiveDate::parse_from_str(season_end, "%Y-%m-%d")?;
+
+    if first > end {
+        return Ok(Vec::new());
+    }
+
+    saturdays_between(&first.format("%Y-%m-%d").to_string(), season_end)
+}
+
+/// The Saturday a pool created while `game_day` is the night in play plays its
+/// first week on.
+///
+/// The next Saturday coming, not the season's first. A pool opened in January
+/// used to be given a week per Saturday of the whole season, which left it
+/// opening on "week 1" of an October date three months gone: nothing can be
+/// picked for it, and the owner has to settle a dozen dead dates before the
+/// pool reaches the Saturday everybody joined to play. So the weeks start where
+/// the pool does.
+///
+/// Never earlier than the season's start, so a pool opened in the summer still
+/// begins on the season's first Saturday rather than on one with no hockey on
+/// it.
+pub fn first_pick_date(season_start: &str, game_day: NaiveDate) -> Result<NaiveDate, AppError> {
+    let start = NaiveDate::parse_from_str(season_start, "%Y-%m-%d")?;
+
+    // Both sides are Saturdays, so the later of the two is one too — and it is
+    // the same Saturday `saturdays_between` would start the list on.
+    Ok(next_saturday_after(game_day).max(saturday_on_or_after(start)))
+}
+
+/// The first Saturday strictly after `day`.
+///
+/// Strictly, because `day` is the night of hockey in play rather than the date
+/// on the wall: on Saturday it only becomes that Saturday at the noon cutoff,
+/// by which time the day's games are about to start. Before noon the pool is
+/// created in time to play that same afternoon; after it, the next one is the
+/// first one it can honestly offer.
+fn next_saturday_after(day: NaiveDate) -> NaiveDate {
+    saturday_on_or_after(day + Duration::days(1))
+}
+
+/// `day` itself when it is a Saturday, the one that follows otherwise.
+fn saturday_on_or_after(day: NaiveDate) -> NaiveDate {
+    let days_ahead = (Weekday::Sat.num_days_from_monday() as i64
+        - day.weekday().num_days_from_monday() as i64)
+        .rem_euclid(7);
+
+    day + Duration::days(days_ahead)
 }
 
 /// Every Saturday in `[start, end]`, as `yyyy-mm-dd`.
