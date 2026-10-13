@@ -403,6 +403,67 @@ fn a_managed_spot_goes_through_the_same_checks_as_a_join() {
     );
 }
 
+// ------------------------------------------------------ renaming a spot
+
+#[test]
+fn the_owner_renames_a_participant_without_touching_its_id() {
+    let mut pool = pool_with_participants();
+
+    pool.rename_participant(OWNER, USER_2, "  Raph  ").unwrap();
+
+    // The surrounding whitespace is dropped, and the id every pick of theirs is
+    // keyed by is the one it was.
+    let renamed = pool.participant(USER_2).unwrap();
+    assert_eq!(renamed.name, "Raph");
+    assert_eq!(renamed.id, USER_2);
+}
+
+#[test]
+fn renaming_a_participant_is_the_owner_call_alone() {
+    let mut pool = pool_with_participants();
+    pool.settings.assistants = vec![USER_2.to_string()];
+
+    // An assistant settles dates but does not rename: the names are how the
+    // standings are read, like the settings they also may not touch.
+    assert!(pool.rename_participant(USER_2, USER_3, "Raph").is_err());
+    assert!(pool.rename_participant(USER_3, USER_3, "Raph").is_err());
+    assert!(pool.rename_participant(OWNER, USER_3, "Raph").is_ok());
+}
+
+#[test]
+fn a_rename_goes_through_the_same_name_checks_as_a_join() {
+    let mut pool = pool_with_participants();
+
+    assert!(pool.rename_participant(OWNER, USER_2, "   ").is_err());
+    assert!(
+        pool.rename_participant(OWNER, USER_2, &"x".repeat(MAX_PARTICIPANT_NAME_LENGTH + 1))
+            .is_err()
+    );
+    // A name somebody else in the pool already goes by.
+    assert!(pool.rename_participant(OWNER, USER_2, USER_3).is_err());
+    // Their own name is not a clash with themselves.
+    assert!(pool.rename_participant(OWNER, USER_2, USER_2).is_ok());
+}
+
+#[test]
+fn a_participant_who_is_not_in_the_pool_cannot_be_renamed() {
+    let mut pool = pool_with_participants();
+
+    assert!(pool.rename_participant(OWNER, "stranger", "Raph").is_err());
+}
+
+#[test]
+fn a_settled_date_does_not_close_renaming() {
+    let mut pool = pool_with_participants();
+    pool.weeks[0].status = WeekStatus::Settled;
+
+    // Joining closes once a date has settled, because a latecomer would have
+    // missed it. A rename moves a display name and nothing else, so the board
+    // behind it reads exactly as it did.
+    pool.rename_participant(OWNER, USER_2, "Raph").unwrap();
+    assert_eq!(pool.participant(USER_2).unwrap().name, "Raph");
+}
+
 // --------------------------------------------------------------- settings
 
 #[test]

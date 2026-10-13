@@ -7,8 +7,9 @@ use crate::survivor::model::{SurvivorPool, SurvivorPoolShort, SurvivorStandings}
 use crate::survivor::picks::{SurvivorPickOptions, SurvivorPickView};
 use crate::survivor::requests::{
     AddSurvivorParticipantRequest, JoinSurvivorRequest, LeaveSurvivorRequest, MakePickRequest,
-    ParticipantLinkRequest, RequestParticipantLinkRequest, SettleWeekRequest,
-    SurvivorCreationRequest, SurvivorDeletionRequest, UpdateSurvivorSettingsRequest,
+    ParticipantLinkRequest, RenameSurvivorParticipantRequest, RequestParticipantLinkRequest,
+    SettleWeekRequest, SurvivorCreationRequest, SurvivorDeletionRequest,
+    UpdateSurvivorSettingsRequest,
 };
 
 #[async_trait]
@@ -40,6 +41,16 @@ pub trait SurvivorService {
         req: AddSurvivorParticipantRequest,
     ) -> Result<SurvivorPool>;
     async fn leave_pool(&self, user_id: &str, req: LeaveSurvivorRequest) -> Result<SurvivorPool>;
+
+    /// Rename a participant, as the owner.
+    ///
+    /// Display name only — nothing in either collection is keyed by it — so it
+    /// is allowed at any point of the season, settled dates included.
+    async fn rename_participant(
+        &self,
+        user_id: &str,
+        req: RenameSurvivorParticipantRequest,
+    ) -> Result<SurvivorPool>;
 
     /// Offer one of the pool's spots to whoever signs in with an address.
     ///

@@ -62,6 +62,17 @@ pub struct AddSurvivorParticipantRequest {
     pub participant_name: String,
 }
 
+/// The owner renaming one of the pool's participants.
+///
+/// Only the display name changes: the picks, the `winners` list and the pending
+/// links are all keyed by `participant_id`, which stays as it is.
+#[derive(Debug, Deserialize, Clone)]
+pub struct RenameSurvivorParticipantRequest {
+    pub pool_name: String,
+    pub participant_id: String,
+    pub new_name: String,
+}
+
 /// Closing a pick date and applying what the games did.
 ///
 /// Idempotent on purpose: it is the owner's button today and would be a

@@ -681,6 +681,54 @@ impl SurvivorPool {
         Ok(())
     }
 
+    /// Rename one of the pool's participants.
+    ///
+    /// Only the display name moves. Everything else is keyed by the
+    /// participant's id — the picks in their own collection, `winners`, the
+    /// pending links — so a rename touches one string and nothing it is read
+    /// with has to be re-keyed. That is what makes it safe at any point of the
+    /// season, settled dates included.
+    ///
+    /// The owner's alone, not the assistants'. The names on the board are how
+    /// the standings are read, and the same reasoning that keeps the settings
+    /// and the account links owner-only applies to them.
+    pub fn rename_participant(
+        &mut self,
+        user_id: &str,
+        participant_id: &str,
+        new_name: &str,
+    ) -> Result<(), AppError> {
+        self.validate_owner_rights(user_id)?;
+
+        let new_name = validate_participant_name(new_name)?;
+
+        // The standings grid and the pick screen tell participants apart by
+        // name, so two of them sharing one would make the board ambiguous to
+        // read. Checked against the others only: renaming somebody to the name
+        // they already carry is a no-op, not a clash.
+        if self
+            .participants
+            .iter()
+            .any(|participant| participant.id != participant_id && participant.name == new_name)
+        {
+            return Err(AppError::CustomError {
+                msg: format!("Somebody in '{}' already goes by '{new_name}'.", self.name),
+            });
+        }
+
+        let participant = self
+            .participants
+            .iter_mut()
+            .find(|participant| participant.id == participant_id)
+            .ok_or_else(|| AppError::NotFound {
+                msg: format!("'{participant_id}' is not in '{}'.", self.name),
+            })?;
+
+        participant.name = new_name;
+
+        Ok(())
+    }
+
     /// File an invitation for whoever signs in with `email` to take the spot
     /// `participant_id` over.
     ///
