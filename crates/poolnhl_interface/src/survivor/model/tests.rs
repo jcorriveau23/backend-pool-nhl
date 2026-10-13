@@ -13,14 +13,26 @@ fn settings() -> SurvivorSettings {
     SurvivorSettings::new()
 }
 
+fn date(date: &str) -> NaiveDate {
+    NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap()
+}
+
+/// The night in play when the pools below are created: before the season, so
+/// they hold a week per Saturday of it and nothing here is read against
+/// whatever day the suite happens to run on.
+fn before_the_season() -> NaiveDate {
+    date("2026-09-01")
+}
+
 fn pool() -> SurvivorPool {
-    SurvivorPool::new(
+    SurvivorPool::new_at(
         "survivor",
         OWNER,
         &settings(),
         SEASON,
         SEASON_START,
         SEASON_END,
+        before_the_season(),
     )
     .unwrap()
 }
@@ -113,15 +125,92 @@ fn a_new_pool_has_a_week_per_saturday_of_the_season() {
 }
 
 #[test]
+fn a_pool_opened_mid_season_starts_on_the_next_saturday() {
+    // A Tuesday in November, three months into the season.
+    let pool = SurvivorPool::new_at(
+        "survivor",
+        OWNER,
+        &settings(),
+        SEASON,
+        SEASON_START,
+        SEASON_END,
+        date("2026-11-10"),
+    )
+    .unwrap();
+
+    assert_eq!(pool.weeks[0].week, 1);
+    assert_eq!(pool.weeks[0].pick_date, "2026-11-14");
+    // Every Saturday left of the season, and not one of the six already gone.
+    assert_eq!(
+        pool.weeks.len(),
+        saturdays_between("2026-11-14", SEASON_END).unwrap().len()
+    );
+    assert_eq!(pool.weeks.last().unwrap().pick_date, "2027-04-10");
+}
+
+/// The night in play turns over at noon Eastern, so a pool created on Saturday
+/// morning is in time to play that afternoon and one created once the day's
+/// games are on is not.
+#[test]
+fn a_pool_created_on_a_saturday_plays_it_only_until_the_games_start() {
+    // Before noon the night in play is still Friday's.
+    assert_eq!(
+        first_pick_date(SEASON_START, date("2026-11-13")).unwrap(),
+        date("2026-11-14")
+    );
+    // From noon it is Saturday's own, and the pool opens on the one after.
+    assert_eq!(
+        first_pick_date(SEASON_START, date("2026-11-14")).unwrap(),
+        date("2026-11-21")
+    );
+}
+
+/// A pool opened in the summer still begins on the season's first Saturday:
+/// the next one coming has no hockey on it.
+#[test]
+fn a_pool_opened_before_the_season_starts_on_its_first_saturday() {
+    let saturdays = saturdays_between(SEASON_START, SEASON_END).unwrap();
+
+    assert_eq!(pool().weeks[0].pick_date, saturdays[0]);
+    assert_eq!(
+        first_pick_date(SEASON_START, before_the_season()).unwrap(),
+        date(&saturdays[0])
+    );
+}
+
+/// The season's Saturdays all being gone is the same refusal as a season with
+/// none in it: there is nothing left to play.
+#[test]
+fn a_pool_cannot_open_after_the_last_saturday_of_the_season() {
+    let error = SurvivorPool::new_at(
+        "survivor",
+        OWNER,
+        &settings(),
+        SEASON,
+        SEASON_START,
+        SEASON_END,
+        date("2027-04-12"),
+    );
+
+    assert!(error.is_err());
+    assert!(
+        pick_dates_from(SEASON_START, SEASON_END, date("2027-04-12"))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn a_pool_cannot_open_on_a_season_with_no_saturday_in_it() {
     // Monday to Friday of the same week.
-    let error = SurvivorPool::new(
+    let error = SurvivorPool::new_at(
         "survivor",
         OWNER,
         &settings(),
         SEASON,
         "2026-10-05",
         "2026-10-09",
+        before_the_season(),
     );
 
     assert!(error.is_err());
@@ -163,13 +252,14 @@ fn two_participants_cannot_share_a_name() {
 fn a_pool_does_not_take_more_than_its_maximum() {
     let mut pool_settings = settings();
     pool_settings.max_participants = 2;
-    let mut pool = SurvivorPool::new(
+    let mut pool = SurvivorPool::new_at(
         "survivor",
         OWNER,
         &pool_settings,
         SEASON,
         SEASON_START,
         SEASON_END,
+        before_the_season(),
     )
     .unwrap();
 
@@ -183,13 +273,14 @@ fn a_pool_does_not_take_more_than_its_maximum() {
 fn a_pool_takes_the_hundreds_of_participants_it_is_built_for() {
     let mut pool_settings = settings();
     pool_settings.max_participants = 500;
-    let mut pool = SurvivorPool::new(
+    let mut pool = SurvivorPool::new_at(
         "survivor",
         OWNER,
         &pool_settings,
         SEASON,
         SEASON_START,
         SEASON_END,
+        before_the_season(),
     )
     .unwrap();
 
@@ -260,13 +351,14 @@ fn somebody_who_signs_themselves_up_owns_their_spot() {
 fn an_assistant_may_add_a_spot_but_an_ordinary_participant_may_not() {
     let mut pool_settings = settings();
     pool_settings.assistants = vec![USER_2.to_string()];
-    let mut pool = SurvivorPool::new(
+    let mut pool = SurvivorPool::new_at(
         "survivor",
         OWNER,
         &pool_settings,
         SEASON,
         SEASON_START,
         SEASON_END,
+        before_the_season(),
     )
     .unwrap();
 
@@ -282,13 +374,14 @@ fn an_assistant_may_add_a_spot_but_an_ordinary_participant_may_not() {
 fn a_managed_spot_goes_through_the_same_checks_as_a_join() {
     let mut pool_settings = settings();
     pool_settings.max_participants = 2;
-    let mut pool = SurvivorPool::new(
+    let mut pool = SurvivorPool::new_at(
         "survivor",
         OWNER,
         &pool_settings,
         SEASON,
         SEASON_START,
         SEASON_END,
+        before_the_season(),
     )
     .unwrap();
     pool.add_participant(OWNER, "jf", 0).unwrap();
@@ -469,13 +562,14 @@ fn the_organiser_may_pick_for_a_spot_they_keep_and_a_participant_may_not() {
 fn an_assistant_may_pick_for_anybody() {
     let mut pool_settings = settings();
     pool_settings.assistants = vec![USER_2.to_string()];
-    let mut pool = SurvivorPool::new(
+    let mut pool = SurvivorPool::new_at(
         "survivor",
         OWNER,
         &pool_settings,
         SEASON,
         SEASON_START,
         SEASON_END,
+        before_the_season(),
     )
     .unwrap();
     for user in [OWNER, USER_2, USER_3] {
@@ -553,13 +647,14 @@ fn a_losing_pick_eliminates_when_no_strike_is_allowed() {
 fn an_allowed_strike_is_survived_and_the_next_one_is_not() {
     let mut pool_settings = settings();
     pool_settings.strikes_allowed = 1;
-    let mut pool = SurvivorPool::new(
+    let mut pool = SurvivorPool::new_at(
         "survivor",
         OWNER,
         &pool_settings,
         SEASON,
         SEASON_START,
         SEASON_END,
+        before_the_season(),
     )
     .unwrap();
     for user in [OWNER, USER_2, USER_3] {
@@ -629,13 +724,14 @@ fn a_missed_pick_can_be_set_to_eliminate_outright() {
     let mut pool_settings = settings();
     pool_settings.strikes_allowed = 2;
     pool_settings.missed_pick_is_strike = false;
-    let mut pool = SurvivorPool::new(
+    let mut pool = SurvivorPool::new_at(
         "survivor",
         OWNER,
         &pool_settings,
         SEASON,
         SEASON_START,
         SEASON_END,
+        before_the_season(),
     )
     .unwrap();
     for user in [OWNER, USER_2] {
@@ -732,13 +828,14 @@ fn the_field_still_standing_when_the_weeks_run_out_shares_the_pool() {
     let mut pool_settings = settings();
     pool_settings.missed_pick_is_strike = false;
     // A one-Saturday season, so the weeks run out immediately.
-    let mut pool = SurvivorPool::new(
+    let mut pool = SurvivorPool::new_at(
         "survivor",
         OWNER,
         &pool_settings,
         SEASON,
         "2026-10-04",
         "2026-10-10",
+        before_the_season(),
     )
     .unwrap();
     assert_eq!(pool.weeks.len(), 1);
@@ -778,13 +875,14 @@ fn current_week_is_the_first_one_not_settled() {
 fn the_owner_and_the_assistants_may_settle_a_date_and_nobody_else() {
     let mut pool_settings = settings();
     pool_settings.assistants = vec![USER_2.to_string()];
-    let pool = SurvivorPool::new(
+    let pool = SurvivorPool::new_at(
         "survivor",
         OWNER,
         &pool_settings,
         SEASON,
         SEASON_START,
         SEASON_END,
+        before_the_season(),
     )
     .unwrap();
 
@@ -811,13 +909,14 @@ fn a_pool_name_too_short_or_too_long_is_refused() {
 fn pool_with_week_statuses(settled: usize, locked: bool, public_picks: bool) -> SurvivorPool {
     let mut pool_settings = settings();
     pool_settings.public_picks = public_picks;
-    let mut pool = SurvivorPool::new(
+    let mut pool = SurvivorPool::new_at(
         "survivor",
         OWNER,
         &pool_settings,
         SEASON,
         SEASON_START,
         SEASON_END,
+        before_the_season(),
     )
     .unwrap();
 
