@@ -37,8 +37,9 @@ use poolnhl_interface::survivor::picks::{
 };
 use poolnhl_interface::survivor::requests::{
     AddSurvivorParticipantRequest, JoinSurvivorRequest, LeaveSurvivorRequest, MakePickRequest,
-    ParticipantLinkRequest, RequestParticipantLinkRequest, SettleWeekRequest,
-    SurvivorCreationRequest, SurvivorDeletionRequest, UpdateSurvivorSettingsRequest,
+    ParticipantLinkRequest, RenameSurvivorParticipantRequest, RequestParticipantLinkRequest,
+    SettleWeekRequest, SurvivorCreationRequest, SurvivorDeletionRequest,
+    UpdateSurvivorSettingsRequest,
 };
 use poolnhl_interface::survivor::service::SurvivorService;
 
@@ -577,6 +578,27 @@ impl SurvivorService for MongoSurvivorService {
             Utc::now().timestamp_millis(),
         )?;
 
+        self.update_pool(
+            doc! {"$set": doc!{"participants": to_bson(&pool.participants).map_err(bson_err)?}},
+            &req.pool_name,
+            pool.date_updated,
+        )
+        .await
+    }
+
+    async fn rename_participant(
+        &self,
+        user_id: &str,
+        req: RenameSurvivorParticipantRequest,
+    ) -> Result<SurvivorPool> {
+        let mut pool = self.pool_by_name(&req.pool_name).await?;
+
+        pool.rename_participant(user_id, &req.participant_id, &req.new_name)?;
+
+        // The whole list again rather than a positional `$set`: the clash check
+        // reads every name, so the write has to be the one the version lock
+        // covers. Nothing in `survivor_picks` carries the name, so a rename
+        // stops at this collection.
         self.update_pool(
             doc! {"$set": doc!{"participants": to_bson(&pool.participants).map_err(bson_err)?}},
             &req.pool_name,

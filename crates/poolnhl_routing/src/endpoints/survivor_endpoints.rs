@@ -8,8 +8,9 @@ use poolnhl_interface::survivor::model::{SurvivorPool, SurvivorPoolShort, Surviv
 use poolnhl_interface::survivor::picks::{SurvivorPickOptions, SurvivorPickView};
 use poolnhl_interface::survivor::requests::{
     AddSurvivorParticipantRequest, JoinSurvivorRequest, LeaveSurvivorRequest, MakePickRequest,
-    ParticipantLinkRequest, PickOptionsQuery, RequestParticipantLinkRequest, SettleWeekRequest,
-    SurvivorCreationRequest, SurvivorDeletionRequest, UpdateSurvivorSettingsRequest,
+    ParticipantLinkRequest, PickOptionsQuery, RenameSurvivorParticipantRequest,
+    RequestParticipantLinkRequest, SettleWeekRequest, SurvivorCreationRequest,
+    SurvivorDeletionRequest, UpdateSurvivorSettingsRequest,
 };
 use poolnhl_interface::survivor::service::SurvivorServiceHandle;
 use poolnhl_interface::users::model::UserEmailJwtPayload;
@@ -37,6 +38,10 @@ impl SurvivorRouter {
             .route("/join-survivor-pool", post(Self::join_pool))
             .route("/add-survivor-participant", post(Self::add_participant))
             .route("/leave-survivor-pool", post(Self::leave_pool))
+            .route(
+                "/rename-survivor-participant",
+                post(Self::rename_participant),
+            )
             // Handing a spot over to an account. Named after the roster pool's
             // own invitations, which work the same way.
             .route(
@@ -188,6 +193,22 @@ impl SurvivorRouter {
     ) -> Result<Json<SurvivorPool>> {
         survivor_service
             .leave_pool(&token.sub, body)
+            .await
+            .map(Json)
+    }
+
+    /// Rename a participant. The owner's.
+    ///
+    /// For the spot entered as an email address, or the one whose owner goes by
+    /// something else in this pool. The id does not move, so the picks already
+    /// filed under it stay where they are.
+    async fn rename_participant(
+        token: UserEmailJwtPayload,
+        State(survivor_service): State<SurvivorServiceHandle>,
+        Json(body): Json<RenameSurvivorParticipantRequest>,
+    ) -> Result<Json<SurvivorPool>> {
+        survivor_service
+            .rename_participant(&token.sub, body)
             .await
             .map(Json)
     }
