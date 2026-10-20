@@ -61,7 +61,6 @@ impl SurvivorRouter {
                 post(Self::decline_participant_link),
             )
             .route("/survivor-pick", post(Self::make_pick))
-            .route("/lock-survivor-week", post(Self::lock_week))
             .route("/settle-survivor-week", post(Self::settle_week))
             .with_state(service_registry)
     }
@@ -102,8 +101,8 @@ impl SurvivorRouter {
             .map(Json)
     }
 
-    /// A date's picks. Only the caller's own until the date locks — see
-    /// `get_week_picks` on the service for why.
+    /// A date's picks. Only the caller's own until its last game has started —
+    /// see `get_week_picks` on the service for why.
     async fn get_week_picks(
         token: UserEmailJwtPayload,
         Path((name, week)): Path<(String, u16)>,
@@ -261,8 +260,9 @@ impl SurvivorRouter {
             .map(Json)
     }
 
-    /// Name the team you are backing. Answers with the pick screen as it now
-    /// stands, so the client does not have to re-derive what is left open.
+    /// Name the team you are backing, which stands until that team's game
+    /// starts. Answers with the pick screen as it now stands, so the client
+    /// does not have to re-derive what is left open.
     async fn make_pick(
         token: UserEmailJwtPayload,
         State(survivor_service): State<SurvivorServiceHandle>,
@@ -271,19 +271,15 @@ impl SurvivorRouter {
         survivor_service.make_pick(&token.sub, body).await.map(Json)
     }
 
-    async fn lock_week(
-        token: UserEmailJwtPayload,
-        State(survivor_service): State<SurvivorServiceHandle>,
-        Json(body): Json<SettleWeekRequest>,
-    ) -> Result<Json<SurvivorPool>> {
-        survivor_service.lock_week(&token.sub, body).await.map(Json)
-    }
-
     /// Close a date and apply what the games did.
     ///
     /// Who won is read from the league's own scoreboard inside the service, not
     /// taken from this request: a caller who could report a result could report
     /// their own win.
+    ///
+    /// There is no companion route closing a date to picks. That deadline is
+    /// each game's own start time, read from the schedule, so there is nothing
+    /// for a client to announce.
     async fn settle_week(
         token: UserEmailJwtPayload,
         State(survivor_service): State<SurvivorServiceHandle>,

@@ -76,7 +76,21 @@ fn settings(max_participants: u16) -> SurvivorSettings {
     settings
 }
 
-/// A finished day where `winners` won, `losers` lost and nobody else played.
+/// A start time no test's clock will reach, so [`day`]'s games read as still
+/// to come however long the suite runs.
+const NEVER: &str = "2099-01-01T00:00:00Z";
+
+/// A day whose results are known but whose games have yet to start: `winners`
+/// will win, `losers` will lose, and nobody else is playing.
+///
+/// The two halves age differently, which is the point. A settlement reads the
+/// results, so they have to be final for `record_day` to accept the day at
+/// all; a pick is refused once its own game has started, so the games have to
+/// be upcoming for anything in these tests to be pickable. Put the other way
+/// round, this is a day the pool will settle one way while its deadline has
+/// not yet passed — which no real Saturday is, and which is what lets one
+/// fixture serve both ends of every test here. [`already_started`] is the
+/// other side of it.
 ///
 /// The matchups are made up: these tests assert on who went through and who
 /// went out, not on the fixture list, and the two sides are given as sets
@@ -106,13 +120,13 @@ fn day(winners: &[u32], losers: &[u32]) -> DayResults {
             games.push(DayGame {
                 home_team_id: winners[index % winners.len()],
                 away_team_id: losers[index % losers.len()],
-                home_score: Some(3),
-                away_score: Some(1),
-                state: GameState::Final,
-                start_time_utc: None,
-                period: Some(3),
-                period_type: Some("REG".to_string()),
-                time_remaining: Some("00:00".to_string()),
+                home_score: None,
+                away_score: None,
+                state: GameState::Upcoming,
+                start_time_utc: Some(NEVER.to_string()),
+                period: None,
+                period_type: None,
+                time_remaining: None,
                 in_intermission: false,
             });
         }
@@ -123,6 +137,24 @@ fn day(winners: &[u32], losers: &[u32]) -> DayResults {
         results,
         games,
     }
+}
+
+/// The same day with its games over, which is what closes the date to picks
+/// and publishes them.
+///
+/// Recording this in place of [`day`] is how a test reaches the far side of
+/// the deadline — it is what the owner's "lock the date" button used to do,
+/// before the deadline became each game's own start time.
+fn already_started(mut day: DayResults) -> DayResults {
+    for game in day.games.iter_mut() {
+        game.state = GameState::Final;
+        game.home_score = Some(3);
+        game.away_score = Some(1);
+        game.period = Some(3);
+        game.period_type = Some("REG".to_string());
+        game.time_remaining = Some("00:00".to_string());
+    }
+    day
 }
 
 /// A pool with its first pick date's games already known, so nothing in the
@@ -300,16 +332,14 @@ async fn an_organiser_runs_a_pool_of_spots_they_keep() {
 
     assert_eq!(options.current_pick, Some(6));
 
-    // And it lands against that spot, not against the organiser's own.
-    service
-        .lock_week(
-            OWNER,
-            SettleWeekRequest {
-                pool_name: pool.name.clone(),
-                week: 1,
-            },
+    // And it lands against that spot, not against the organiser's own. Read
+    // once the date's games have started, since until then a caller is shown
+    // nothing but their own pick — and the organiser made none of their own.
+    schedule
+        .record_day(
+            &pool.weeks[0].pick_date,
+            already_started(day(&[10, 6], &[8])),
         )
-        .await
         .unwrap();
 
     let picks = service.get_week_picks(OWNER, &pool.name, 1).await.unwrap();
@@ -626,17 +656,14 @@ async fn two_hundred_participants_pick_at_once_and_every_pick_lands() {
         &failures[..failures.len().min(5)]
     );
 
-    // Locked first, since an open date shows a caller nothing but their own
-    // pick — the owner, who never picked, would otherwise see none of these.
-    service
-        .lock_week(
-            OWNER,
-            SettleWeekRequest {
-                pool_name: pool.name.clone(),
-                week: 1,
-            },
+    // Past the deadline first, since a date still taking picks shows a caller
+    // nothing but their own — and the owner, who never picked, would otherwise
+    // see none of these.
+    schedule
+        .record_day(
+            &pool.weeks[0].pick_date,
+            already_started(day(&[10, 6, 14], &[8])),
         )
-        .await
         .unwrap();
 
     let picks = service.get_week_picks(OWNER, &pool.name, 1).await.unwrap();
@@ -687,45 +714,44 @@ async fn an_open_dates_picks_are_the_callers_own_and_nobody_elses() {
             .unwrap();
     }
 
-    // Still open: each of them sees only themselves. Seeing the field before
-    // picking is the one thing that would take the game out of the game.
+    // Still taking picks: each of them sees only themselves. Seeing the field
+    // before picking is the one thing that would take the game out of the game.
     let seen = service.get_week_picks(OWNER, &pool.name, 1).await.unwrap();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].participant_id, OWNER);
 
-    // Locked: everybody's is public, which is most of what people come for.
-    service
-        .lock_week(
-            OWNER,
-            SettleWeekRequest {
-                pool_name: pool.name.clone(),
-                week: 1,
-            },
+    // The games start, so nothing can change and everybody's pick is public —
+    // which is most of what people come to the page for. Nothing on the pool
+    // document moved to make that happen.
+    schedule
+        .record_day(
+            &pool.weeks[0].pick_date,
+            already_started(day(&[10, 6], &[8])),
         )
-        .await
         .unwrap();
 
     let revealed = service.get_week_picks(OWNER, &pool.name, 1).await.unwrap();
     assert_eq!(revealed.len(), 2);
+
+    assert!(matches!(
+        service.get_pool_by_name(&pool.name).await.unwrap().weeks[0].status,
+        WeekStatus::Open
+    ));
 
     cleanup(&service, &pool.name).await;
 }
 
 #[tokio::test]
 #[ignore = "needs a running mongo"]
-async fn a_locked_date_takes_no_more_picks() {
+async fn a_date_whose_games_have_started_takes_no_more_picks() {
     let (service, schedule) = service().await;
-    let pool = pool_with_schedule(&service, &schedule, "locked", 10, &[10, 6], &[8]).await;
+    let pool = pool_with_schedule(&service, &schedule, "deadline", 10, &[10, 6], &[8]).await;
 
-    service
-        .lock_week(
-            OWNER,
-            SettleWeekRequest {
-                pool_name: pool.name.clone(),
-                week: 1,
-            },
+    schedule
+        .record_day(
+            &pool.weeks[0].pick_date,
+            already_started(day(&[10, 6], &[8])),
         )
-        .await
         .unwrap();
 
     let late = service
@@ -741,6 +767,128 @@ async fn a_locked_date_takes_no_more_picks() {
         .await;
 
     assert!(late.is_err());
+
+    // And the screen says so before a tile is tapped, rather than only
+    // refusing afterwards.
+    let options = service
+        .get_pick_options(OWNER, &pool.name, 1, None)
+        .await
+        .unwrap();
+    assert!(options.pick_window_closed);
+    assert!(!options.can_pick);
+    assert_eq!(options.started_team_ids.len(), 3);
+
+    cleanup(&service, &pool.name).await;
+}
+
+/// The deadline is each game's own, not the date's: the evening games are
+/// still there to be picked once the afternoon ones have gone.
+#[tokio::test]
+#[ignore = "needs a running mongo"]
+async fn a_team_whose_game_has_started_is_closed_while_the_rest_of_the_date_is_open() {
+    let (service, schedule) = service().await;
+    let pool = pool_with_schedule(&service, &schedule, "per-game", 10, &[10, 6], &[8, 12]).await;
+
+    // Of the two games, only the first has started.
+    let mut partly_under_way = day(&[10, 6], &[8, 12]);
+    partly_under_way.games[0].state = GameState::Live;
+    schedule
+        .record_day(&pool.weeks[0].pick_date, partly_under_way)
+        .unwrap();
+
+    let options = service
+        .get_pick_options(OWNER, &pool.name, 1, None)
+        .await
+        .unwrap();
+
+    assert!(!options.pick_window_closed);
+    assert!(options.can_pick);
+    // Both sides of the live game, and neither side of the other.
+    assert_eq!(options.started_team_ids, vec![8, 10]);
+
+    // The game under way is refused and the one still to come is taken.
+    assert!(
+        service
+            .make_pick(
+                OWNER,
+                MakePickRequest {
+                    pool_name: pool.name.clone(),
+                    participant_id: None,
+                    week: 1,
+                    team_id: 10,
+                },
+            )
+            .await
+            .is_err()
+    );
+
+    let filed = service
+        .make_pick(
+            OWNER,
+            MakePickRequest {
+                pool_name: pool.name.clone(),
+                participant_id: None,
+                week: 1,
+                team_id: 6,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(filed.current_pick, Some(6));
+
+    cleanup(&service, &pool.name).await;
+}
+
+/// The loophole a per-game deadline has to close: watching your team go behind
+/// and moving onto a team playing later that evening.
+#[tokio::test]
+#[ignore = "needs a running mongo"]
+async fn a_pick_cannot_be_moved_once_its_own_game_has_started() {
+    let (service, schedule) = service().await;
+    let pool = pool_with_schedule(&service, &schedule, "no-bailing", 10, &[10, 6], &[8, 12]).await;
+
+    service
+        .make_pick(
+            OWNER,
+            MakePickRequest {
+                pool_name: pool.name.clone(),
+                participant_id: None,
+                week: 1,
+                team_id: 10,
+            },
+        )
+        .await
+        .unwrap();
+
+    // Their game starts; the other one has not.
+    let mut partly_under_way = day(&[10, 6], &[8, 12]);
+    partly_under_way.games[0].state = GameState::Live;
+    schedule
+        .record_day(&pool.weeks[0].pick_date, partly_under_way)
+        .unwrap();
+
+    // Team 6 is still open to a pick — it is this participant's own pick being
+    // in play, not the target, that refuses the change.
+    let bail = service
+        .make_pick(
+            OWNER,
+            MakePickRequest {
+                pool_name: pool.name.clone(),
+                participant_id: None,
+                week: 1,
+                team_id: 6,
+            },
+        )
+        .await;
+
+    assert!(bail.is_err());
+
+    let options = service
+        .get_pick_options(OWNER, &pool.name, 1, None)
+        .await
+        .unwrap();
+    assert_eq!(options.current_pick, Some(10));
 
     cleanup(&service, &pool.name).await;
 }

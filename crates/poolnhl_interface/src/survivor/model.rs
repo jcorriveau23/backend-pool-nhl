@@ -92,9 +92,19 @@ pub enum PickOutcome {
 /// Where a pick date stands.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub enum WeekStatus {
-    /// Still accepting picks.
+    /// Not settled yet. Whether it is still taking picks is a question for the
+    /// clock, not for this field: a team can be picked until its own game
+    /// starts, so the date closes when the last of its games does. See
+    /// [`crate::survivor::picks::pick_window_closed`].
     Open,
-    /// Past its deadline. Picks are revealed to everyone and no longer change.
+    /// Closed to picks by the owner, back when that was a button on the admin
+    /// screen.
+    ///
+    /// Nothing produces it any more — the deadline is read from the games
+    /// themselves, which is what a participant expects and what stops a pool
+    /// whose owner is away from taking picks all evening. It stays in the enum
+    /// because pools played under the old rule carry it, and it still reads as
+    /// what it meant: closed to picks, picks public.
     Locked,
     /// Results are in and eliminations have been applied.
     Settled,
@@ -508,17 +518,27 @@ impl SurvivorPool {
     /// Whether `week`'s picks may be shown to the whole pool.
     ///
     /// A date past its deadline always may: its picks are in and can no longer
-    /// change. A date still open may only in a pool whose owner asked for it,
+    /// change. That is what `pick_window_closed` carries — every game of the
+    /// date has started — and it is read from the league's schedule rather
+    /// than from this document, which is why it is a parameter instead of a
+    /// field. A settled date, and a date an owner locked by hand under the old
+    /// rule, are past it by definition.
+    ///
+    /// A date still taking picks may only in a pool whose owner asked for it,
     /// and then only while it is the date being played — a pick filed ahead for
     /// a later Saturday stays private until that Saturday comes round, or
     /// turning the setting on would hand the field everybody's plans for the
     /// rest of the season.
-    pub fn picks_are_public(&self, week: u16) -> bool {
+    pub fn picks_are_public(&self, week: u16, pick_window_closed: bool) -> bool {
         let Ok(entry) = self.week(week) else {
             return false;
         };
 
         if !matches!(entry.status, WeekStatus::Open) {
+            return true;
+        }
+
+        if pick_window_closed {
             return true;
         }
 
@@ -530,10 +550,15 @@ impl SurvivorPool {
     /// The standings leaves a hidden date out of the payload entirely rather
     /// than blanking it in the browser, so this is the list the response is
     /// built from.
-    pub fn revealed_weeks(&self) -> Vec<u16> {
+    ///
+    /// `closed_windows` holds the weeks whose deadline has passed, which the
+    /// caller resolves against the schedule. Only one date can be mid-deadline
+    /// at a time — the one being played — so in practice that is a single
+    /// reading of the feed however many weeks a season has.
+    pub fn revealed_weeks(&self, closed_windows: &HashSet<u16>) -> Vec<u16> {
         self.weeks
             .iter()
-            .filter(|week| self.picks_are_public(week.week))
+            .filter(|week| self.picks_are_public(week.week, closed_windows.contains(&week.week)))
             .map(|week| week.week)
             .collect()
     }
@@ -916,6 +941,11 @@ impl SurvivorPool {
 
     /// Check a participant may pick for `week` at all, before the team itself is
     /// looked at.
+    ///
+    /// Everything here is answerable from the pool document alone. The deadline
+    /// is not — a team can be picked until its own game starts — so that check
+    /// lives with the schedule, in the service, and passing this is not on its
+    /// own permission to file a pick.
     pub fn validate_can_pick(&self, user_id: &str, week: u16) -> Result<(), AppError> {
         self.validate_can_pick_for(user_id, user_id, week)
     }
@@ -973,8 +1003,9 @@ impl SurvivorPool {
 
         match self.week(week)?.status {
             WeekStatus::Open => Ok(()),
+            // Only a pool played under the old hand-locked rule can be here.
             WeekStatus::Locked => Err(AppError::CustomError {
-                msg: format!("Week {week} is locked, its picks are in."),
+                msg: format!("Week {week} is closed, its picks are in."),
             }),
             WeekStatus::Settled => Err(AppError::CustomError {
                 msg: format!("Week {week} has already been settled."),

@@ -29,11 +29,11 @@ use uuid::Uuid;
 use poolnhl_interface::errors::{AppError, Result};
 use poolnhl_interface::survivor::model::{
     PickOutcome, RevealedPick, SurvivorPool, SurvivorPoolShort, SurvivorStandingRow,
-    SurvivorStandings, SurvivorState, UsedTeam, WeekStatus, available_team_ids, is_blocked,
-    plan_pick,
+    SurvivorStandings, UsedTeam, WeekStatus, available_team_ids, is_blocked, plan_pick,
 };
 use poolnhl_interface::survivor::picks::{
     SurvivorGame, SurvivorGameState, SurvivorPick, SurvivorPickOptions, SurvivorPickView,
+    pick_window_closed, teams_closed_to_picks,
 };
 use poolnhl_interface::survivor::requests::{
     AddSurvivorParticipantRequest, JoinSurvivorRequest, LeaveSurvivorRequest, MakePickRequest,
@@ -190,8 +190,8 @@ impl MongoSurvivorService {
     async fn eligible_teams(&self, pool: &SurvivorPool, week: u16) -> Result<Vec<u32>> {
         let week_entry = pool.week(week)?;
 
-        // Once a date has been locked or settled its list is on the pool, and
-        // that copy is the authority: a settlement months later must not depend
+        // Once a date has been settled its list is on the pool, and that copy
+        // is the authority: a settlement read back months later must not depend
         // on the league's feed still being reachable, or still agreeing.
         if !week_entry.eligible_team_ids.is_empty() {
             return Ok(week_entry.eligible_team_ids.clone());
@@ -201,9 +201,60 @@ impl MongoSurvivorService {
         // Deliberately without writing it back to the pool: this is the read
         // path, and hundreds of people opening the pick screen on the same
         // morning would be hundreds of writers contending for one document's
-        // optimistic lock, almost all of them losing. `lock_week` persists the
-        // list instead, once, as the owner's action.
+        // optimistic lock, almost all of them losing. `settle_week` persists
+        // the list instead, once, as it applies the results.
         self.schedule.teams_playing_on(&week_entry.pick_date).await
+    }
+
+    /// The date's games, as the pool's own type.
+    ///
+    /// One reading of the schedule service's fixture cache, which is the same
+    /// read `eligible_teams` goes through — so asking for both on one pick
+    /// screen is still one call upstream.
+    async fn date_games(&self, pick_date: &str) -> Result<Vec<SurvivorGame>> {
+        Ok(self
+            .schedule
+            .games_on(pick_date)
+            .await?
+            .iter()
+            .map(survivor_game)
+            .collect())
+    }
+
+    /// Whether `week` has nothing left to pick.
+    ///
+    /// The deadline that replaced the owner locking a date by hand: a team can
+    /// be picked until its own game starts, so the date closes when the last of
+    /// its games does.
+    ///
+    /// Only the date being played can be part-way through that, and it is also
+    /// the one date whose games are already in the fixture cache from the pick
+    /// screen — so the standings can ask this of every week of a season and
+    /// still cost one reading of the feed. Every other date still taking picks
+    /// is a later Saturday, which has started nothing.
+    ///
+    /// Best effort on that reading, and the direction of the guess matters: a
+    /// feed we cannot reach leaves the date open, which withholds the field's
+    /// picks from somebody who has yet to make one. A late pick is refused
+    /// regardless, because `make_pick` requires the same answer and does not
+    /// settle for not having it.
+    async fn week_pick_window_closed(&self, pool: &SurvivorPool, week: u16) -> Result<bool> {
+        let entry = pool.week(week)?;
+
+        // Already closed to picks whatever the clock says: a settled date is
+        // done with, and a `Locked` one was closed by its owner back when that
+        // was a button.
+        if !matches!(entry.status, WeekStatus::Open) {
+            return Ok(true);
+        }
+
+        if pool.current_week().map(|current| current.week) != Some(week) {
+            return Ok(false);
+        }
+
+        let games = self.date_games(&entry.pick_date).await.unwrap_or_default();
+
+        Ok(pick_window_closed(&games, Utc::now()))
     }
 
     /// Build the pick screen's data for a participant.
@@ -240,27 +291,41 @@ impl MongoSurvivorService {
             .find(|pick| pick.week == week)
             .map(|pick| pick.team_id);
 
-        // Best effort, and last: the matchups are only shown, so a feed that
-        // cannot be reached costs the screen its "who plays whom" rather than
-        // the whole pick. A locked date reads its legal teams from the pool
-        // document above and does not depend on this either.
-        let games = self
-            .schedule
-            .games_on(&week_entry.pick_date)
+        // Best effort: a feed that cannot be reached costs the screen its "who
+        // plays whom" rather than the whole pick. A settled date reads its
+        // legal teams from the pool document above and does not depend on this
+        // either.
+        //
+        // What it now also carries is the deadline, and the same best-effort
+        // answer is the right one there. An empty list closes nothing, so the
+        // screen offers the pick and `make_pick` — which insists on the feed —
+        // is what refuses it. The alternative is a screen that greys out a
+        // whole date because one upstream call failed.
+        let games: Vec<SurvivorGame> = self
+            .date_games(&week_entry.pick_date)
             .await
-            .map(|games| games.iter().map(survivor_game).collect())
             .unwrap_or_default();
+
+        let now = Utc::now();
+        let started = teams_closed_to_picks(&games, now);
+        let window_closed = pick_window_closed(&games, now);
 
         Ok(SurvivorPickOptions {
             week,
             pick_date: week_entry.pick_date.clone(),
-            games,
             available_team_ids: available_team_ids(&used, &eligible, league_team_count),
             used_team_ids: used.iter().map(|team| team.team_id).collect(),
+            started_team_ids: eligible
+                .iter()
+                .copied()
+                .filter(|team_id| started.contains(team_id))
+                .collect(),
             is_blocked: is_blocked(&used, &eligible, league_team_count),
-            can_pick: pool.validate_can_pick(user_id, week).is_ok(),
+            can_pick: !window_closed && pool.validate_can_pick(user_id, week).is_ok(),
+            pick_window_closed: window_closed,
             eligible_team_ids: eligible,
             current_pick,
+            games,
         })
     }
 }
@@ -787,6 +852,19 @@ impl SurvivorService for MongoSurvivorService {
 
         pool.validate_can_pick_for(user_id, participant_id, req.week)?;
 
+        let pick_date = pool.week(req.week)?.pick_date.clone();
+
+        /*
+        The deadline, read from the league's own schedule.
+
+        Required here rather than best effort, unlike on the pick screen: a
+        pick accepted without knowing whether the puck had dropped is a pick
+        that could have been made on a result. This costs nothing an open date
+        did not already cost — `eligible_teams` reaches the same cache, and
+        through it the same upstream call, to find out who is playing at all.
+        */
+        let started = teams_closed_to_picks(&self.date_games(&pick_date).await?, Utc::now());
+
         let eligible = self.eligible_teams(&pool, req.week).await?;
         let existing = self.participant_picks(&pool.name, participant_id).await?;
 
@@ -804,6 +882,16 @@ impl SurvivorService for MongoSurvivorService {
                     .pick_options_from(&pool, participant_id, req.week, eligible)
                     .await;
             }
+            // A pick whose game has started is in. Letting it move afterwards
+            // would be the one thing a per-game deadline must not allow:
+            // watching your team go two down in the first and switching to a
+            // team playing later that evening.
+            if started.contains(&current.team_id) {
+                return Err(AppError::CustomError {
+                    msg: "Your pick's game has already started, so it can no longer be changed."
+                        .to_string(),
+                });
+            }
         }
 
         // The team is weighed against every pick but the one being replaced —
@@ -820,6 +908,15 @@ impl SurvivorService for MongoSurvivorService {
             pool.settings.league_team_count,
             req.team_id,
         )?;
+
+        // After `plan_pick`, so a team the participant has already spent is
+        // told that rather than told the time: the two refusals send them to
+        // different places, and the used-team one is the surprising half.
+        if started.contains(&req.team_id) {
+            return Err(AppError::CustomError {
+                msg: "That team's game has already started.".to_string(),
+            });
+        }
 
         let now = Utc::now().timestamp_millis();
 
@@ -882,13 +979,15 @@ impl SurvivorService for MongoSurvivorService {
 
         let picks = self.week_picks(pool_name, week).await?;
 
-        // Until the date locks, the only pick anybody may see is their own.
-        // Knowing what the field is on before picking is the one thing that
-        // would take the guesswork — and so the game — out of a survivor pool.
-        // Unless this pool's owner asked for the opposite, which is the one
-        // rule both this and the standings read, so the two cannot disagree
-        // about what is public.
-        if !pool.picks_are_public(week) {
+        // Until the date's last game has started, the only pick anybody may see
+        // is their own. Knowing what the field is on before picking is the one
+        // thing that would take the guesswork — and so the game — out of a
+        // survivor pool. Unless this pool's owner asked for the opposite, which
+        // is the one rule both this and the standings read, so the two cannot
+        // disagree about what is public.
+        let window_closed = self.week_pick_window_closed(&pool, week).await?;
+
+        if !pool.picks_are_public(week, window_closed) {
             return Ok(picks
                 .iter()
                 .filter(|pick| pick.participant_id == user_id)
@@ -902,35 +1001,6 @@ impl SurvivorService for MongoSurvivorService {
     async fn get_my_picks(&self, user_id: &str, pool_name: &str) -> Result<Vec<SurvivorPickView>> {
         let picks = self.participant_picks(pool_name, user_id).await?;
         Ok(picks.iter().map(SurvivorPickView::from).collect())
-    }
-
-    async fn lock_week(&self, user_id: &str, req: SettleWeekRequest) -> Result<SurvivorPool> {
-        let pool = self.pool_by_name(&req.pool_name).await?;
-        pool.validate_assistant_rights(user_id)?;
-
-        match pool.week(req.week)?.status {
-            WeekStatus::Open => {}
-            // Both are already closed to picks; nothing to do.
-            WeekStatus::Locked | WeekStatus::Settled => return Ok(pool),
-        }
-
-        // The fixture list is written down here, as one owner action, rather
-        // than by every reader of the pick screen. From this point the pool
-        // carries its own copy and a settlement does not depend on the league's
-        // feed still being reachable, or still agreeing about who played.
-        let eligible = self.eligible_teams(&pool, req.week).await?;
-
-        let index = week_index(&pool, req.week)?;
-        self.update_pool(
-            doc! {"$set": doc!{
-                format!("weeks.{index}.status"): to_bson(&WeekStatus::Locked).map_err(bson_err)?,
-                format!("weeks.{index}.eligible_team_ids"): to_bson(&eligible).map_err(bson_err)?,
-                "status": to_bson(&SurvivorState::InProgress).map_err(bson_err)?,
-            }},
-            &req.pool_name,
-            pool.date_updated,
-        )
-        .await
     }
 
     async fn settle_week(&self, user_id: &str, req: SettleWeekRequest) -> Result<SurvivorPool> {
@@ -1036,7 +1106,19 @@ impl SurvivorService for MongoSurvivorService {
         // that carried them would reveal them to anybody reading the response.
         // Which dates those are is the pool's rule, not this function's: a pool
         // with `public_picks` on also reveals the date being played.
-        let revealed_weeks: Vec<u16> = pool.revealed_weeks();
+        //
+        // The one thing the pool document cannot answer is whether a date still
+        // taking picks has run out of games to pick, so that is resolved here,
+        // per week. At most one week of a season reaches the schedule for it —
+        // see `week_pick_window_closed`.
+        let mut closed_windows: HashSet<u16> = HashSet::new();
+        for entry in &pool.weeks {
+            if self.week_pick_window_closed(&pool, entry.week).await? {
+                closed_windows.insert(entry.week);
+            }
+        }
+
+        let revealed_weeks: Vec<u16> = pool.revealed_weeks(&closed_windows);
 
         let mut picks_by_participant: HashMap<String, HashMap<u16, RevealedPick>> = HashMap::new();
         let mut wins: HashMap<String, u16> = HashMap::new();
