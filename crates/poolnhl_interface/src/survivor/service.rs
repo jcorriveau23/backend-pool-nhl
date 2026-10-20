@@ -110,8 +110,9 @@ pub trait SurvivorService {
     /// Every pick of a date, for the reveal.
     ///
     /// Answers with nothing but the caller's own pick while the date is still
-    /// open: seeing the field before you pick is the one thing that would break
-    /// the game.
+    /// taking them: seeing the field before you pick is the one thing that
+    /// would break the game. The reveal comes with the date's last puck drop,
+    /// after which nobody's pick can change.
     async fn get_week_picks(
         &self,
         user_id: &str,
@@ -123,13 +124,15 @@ pub trait SurvivorService {
     /// they have spent comes from.
     async fn get_my_picks(&self, user_id: &str, pool_name: &str) -> Result<Vec<SurvivorPickView>>;
 
-    /// Close a date to new picks, which is what reveals them to everybody.
-    ///
-    /// Separate from settling: the reveal belongs at the first puck drop, the
-    /// eliminations hours later when the last game ends. Idempotent.
-    async fn lock_week(&self, user_id: &str, req: SettleWeekRequest) -> Result<SurvivorPool>;
-
     /// Close a date and apply what the games did. Idempotent.
+    ///
+    /// The one date-level action left. Closing a date to picks used to be a
+    /// second one, pressed at the first puck drop to reveal the picks; the
+    /// deadline is read from the games themselves now, so what is left here is
+    /// the half no clock can derive — reading the results and eliminating
+    /// whoever ran out of strikes. It refuses a date with a game still to
+    /// finish, and running it twice changes nothing, so it would suit a
+    /// scheduled job as well as the owner's button.
     async fn settle_week(&self, user_id: &str, req: SettleWeekRequest) -> Result<SurvivorPool>;
 
     /// The standings, aggregated server-side so a pool of hundreds does not ship
