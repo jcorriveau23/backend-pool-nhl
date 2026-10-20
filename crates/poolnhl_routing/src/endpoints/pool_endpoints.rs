@@ -39,6 +39,7 @@ impl PoolRouter {
             )
             .route("/pools/:season", get(Self::get_pools))
             .route("/season-info", get(Self::get_season_info))
+            .route("/seasons", get(Self::get_seasons))
             .route("/create-pool", post(Self::create_pool))
             .route("/delete-pool", post(Self::delete_pool))
             .route("/add-player", post(Self::add_player))
@@ -105,6 +106,14 @@ impl PoolRouter {
     /// trade deadline) the front end needs to render the current season.
     async fn get_season_info() -> Result<Json<SeasonInfo>> {
         Ok(Json(SeasonInfo::current()))
+    }
+
+    /// Return every season the pool holds data for, oldest first.
+    ///
+    /// The scraper reads this to cumulate a past season's totals, and the
+    /// player table to offer the stats of a season other than the current one.
+    async fn get_seasons() -> Result<Json<Vec<SeasonInfo>>> {
+        Ok(Json(SeasonInfo::all()))
     }
 
     async fn create_pool(

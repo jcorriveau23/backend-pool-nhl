@@ -2,14 +2,14 @@ use async_trait::async_trait;
 
 use futures::TryStreamExt;
 use mongodb::Collection;
-use mongodb::bson::doc;
+use mongodb::bson::{Bson, Document, doc, from_document};
 use mongodb::options::FindOptions;
 use mongodb::{IndexModel, options::IndexOptions};
 use poolnhl_interface::errors::AppError;
 
 use poolnhl_interface::errors::Result;
 use poolnhl_interface::players::{
-    model::{GetPlayerQuery, PlayerInfo},
+    model::{GetPlayerQuery, PlayerInfo, resolve_stats_season},
     service::PlayersService,
 };
 
@@ -19,7 +19,13 @@ use crate::database_connection::mongo_err;
 #[derive(Clone)]
 pub struct MongoPlayersService {
     collection: Collection<PlayerInfo>,
+    season_stats: Collection<Document>,
 }
+
+// One document per (player, season), written by the scraper's cumulator. Only
+// the counting stats live here; who the player is -- team, age, cap hit,
+// contract -- stays on the single `players` document and is always current.
+const PLAYER_SEASON_STATS: &str = "player_season_stats";
 
 const DEFAULT_LIMIT: i64 = 20;
 const MAX_LIMIT: i64 = 100;
@@ -55,6 +61,31 @@ fn sortable_field(field: &str) -> Result<&'static str> {
         })
 }
 
+// Every stat field a `players` document carries. A past-season read blanks
+// these before merging that season's row in, so a player with no row for the
+// season asked for reads as "did not play" rather than carrying this season's
+// numbers under last season's heading.
+const STAT_FIELDS: [&str; 11] = [
+    "game_played",
+    "goals",
+    "assists",
+    "points",
+    "points_per_game",
+    "goal_against_average",
+    "save_percentage",
+    "saves",
+    "shots",
+    "wins",
+    "ot",
+];
+
+fn blank_stats() -> Document {
+    STAT_FIELDS
+        .into_iter()
+        .map(|field| (field.to_string(), Bson::Null))
+        .collect()
+}
+
 // Turn a search term into a regex that matches it literally.
 fn escape_regex(term: &str) -> String {
     let mut escaped = String::with_capacity(term.len());
@@ -70,7 +101,78 @@ fn escape_regex(term: &str) -> String {
 impl MongoPlayersService {
     pub fn new(db: DatabaseConnection) -> Self {
         let collection = db.collection::<PlayerInfo>("players");
-        Self { collection }
+        let season_stats = db.collection::<Document>(PLAYER_SEASON_STATS);
+        Self {
+            collection,
+            season_stats,
+        }
+    }
+
+    /// Read players with the stats recorded for `season` instead of the
+    /// current ones.
+    ///
+    /// Identity is deliberately not swapped: a draft held after opening day
+    /// wants each player's team, cap hit and contract as they are today, with
+    /// the numbers he put up last season. Only the stat fields change.
+    ///
+    /// `players` is the collection driving the pipeline rather than
+    /// `player_season_stats` so that the position and `active` filters, and a
+    /// sort on an identity field like `salary_cap`, keep working on one
+    /// document per player.
+    async fn find_for_season(
+        &self,
+        filter: Document,
+        season: u32,
+        sort: Option<Document>,
+        skip: u64,
+        limit: i64,
+    ) -> Result<Vec<PlayerInfo>> {
+        let mut pipeline = vec![
+            doc! { "$match": filter },
+            doc! { "$lookup": {
+                "from": PLAYER_SEASON_STATS,
+                "let": { "player_id": "$id" },
+                "pipeline": [
+                    { "$match": { "$expr": { "$and": [
+                        { "$eq": ["$id", "$$player_id"] },
+                        { "$eq": ["$season", season as i64] },
+                    ] } } },
+                    // Left in, `_id`, `id` and `season` would be merged over
+                    // the player's own fields below.
+                    { "$project": { "_id": 0, "id": 0, "season": 0 } },
+                ],
+                "as": "season_stats",
+            } },
+            doc! { "$replaceWith": { "$mergeObjects": [
+                "$$ROOT",
+                blank_stats(),
+                { "$ifNull": [{ "$first": "$season_stats" }, {}] },
+            ] } },
+            doc! { "$unset": "season_stats" },
+        ];
+
+        // Sorting after the merge, so a sort on `points` orders by the season
+        // asked for and not by the current one.
+        if let Some(sort) = sort {
+            pipeline.push(doc! { "$sort": sort });
+        }
+        pipeline.push(doc! { "$skip": skip as i64 });
+        pipeline.push(doc! { "$limit": limit });
+
+        let mut cursor = self
+            .collection
+            .aggregate(pipeline, None)
+            .await
+            .map_err(mongo_err)?;
+
+        let mut players = Vec::new();
+        while let Some(document) = cursor.try_next().await.map_err(mongo_err)? {
+            players.push(
+                from_document(document).map_err(|e| AppError::BsonError { msg: e.to_string() })?,
+            );
+        }
+
+        Ok(players)
     }
 }
 
@@ -110,10 +212,27 @@ impl PlayersService for MongoPlayersService {
                 .await
                 .map_err(mongo_err)?;
         }
+
+        // One row per player per season, which is also the index the
+        // past-season lookup matches on. Unique so a cumulator run that is
+        // interrupted and restarted updates its rows instead of doubling them.
+        let season_stats_index = IndexModel::builder()
+            .keys(doc! { "id": 1, "season": 1 })
+            .options(IndexOptions::builder().unique(true).build())
+            .build();
+
+        self.season_stats
+            .create_index(season_stats_index, None)
+            .await
+            .map_err(mongo_err)?;
+
         Ok(())
     }
 
     async fn get_players(&self, params: GetPlayerQuery) -> Result<Vec<PlayerInfo>> {
+        // Rejects an unknown season before any of the work below.
+        let stats_season = resolve_stats_season(params.season)?;
+
         let mut filter = doc! {};
         if let Some(active) = params.active {
             filter.insert("active", active);
@@ -142,6 +261,12 @@ impl PlayersService for MongoPlayersService {
         let skip = params.skip.unwrap_or(0);
         let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
+        if let Some(season) = stats_season {
+            return self
+                .find_for_season(filter, season, Some(sort_order), skip, limit)
+                .await;
+        }
+
         let find_options = FindOptions::builder()
             .sort(sort_order)
             .skip(Some(skip))
@@ -160,7 +285,13 @@ impl PlayersService for MongoPlayersService {
         Ok(players)
     }
 
-    async fn get_players_with_name(&self, name: &str) -> Result<Vec<PlayerInfo>> {
+    async fn get_players_with_name(
+        &self,
+        name: &str,
+        season: Option<u32>,
+    ) -> Result<Vec<PlayerInfo>> {
+        let stats_season = resolve_stats_season(season)?;
+
         if name.len() > MAX_NAME_SEARCH_LEN {
             return Err(AppError::CustomError {
                 msg: format!("A player search is limited to {MAX_NAME_SEARCH_LEN} characters."),
@@ -176,6 +307,12 @@ impl PlayersService for MongoPlayersService {
             doc! { "$regex": escape_regex(name), "$options": "i" },
         );
         let limit = 10;
+
+        if let Some(season) = stats_season {
+            // Unsorted, like the plain read below: the five matches of a name
+            // search are ordered by whatever the collection gives back.
+            return self.find_for_season(filter, season, None, 0, limit).await;
+        }
 
         let find_options = FindOptions::builder().limit(limit).build();
 
