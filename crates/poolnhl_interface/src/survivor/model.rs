@@ -327,6 +327,23 @@ pub struct SurvivorStandingRow {
     pub picks: HashMap<u16, RevealedPick>,
 }
 
+/// The date being played, and how far the clock has got through it.
+///
+/// Only one date can be part-way through at a time: every earlier one has been
+/// played out and every later one has not begun. So the grid needs this for
+/// one column, and it is what lets that column tell a pick that can no longer
+/// move from one its owner is still free to change.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CurrentDateClock {
+    pub week: u16,
+    /// Teams whose game has started. A pick on one of these is locked.
+    ///
+    /// Empty before the first puck drop, and empty if the league's feed could
+    /// not be reached — in which case the grid marks nothing rather than
+    /// guessing, which is the side that never calls a pick final early.
+    pub started_team_ids: Vec<u32>,
+}
+
 /// The standings, counted server-side.
 ///
 /// A pool of hundreds would otherwise ship every pick of every date to the
@@ -341,6 +358,8 @@ pub struct SurvivorStandings {
     pub revealed_weeks: Vec<u16>,
     pub rows: Vec<SurvivorStandingRow>,
     pub winners: Option<Vec<String>>,
+    /// Absent once every date has been settled, which is a pool that is over.
+    pub current_date: Option<CurrentDateClock>,
 }
 
 /// An invitation, filed by the pool owner, for whoever signs in with a given
@@ -517,19 +536,25 @@ impl SurvivorPool {
 
     /// Whether `week`'s picks may be shown to the whole pool.
     ///
-    /// A date past its deadline always may: its picks are in and can no longer
-    /// change. That is what `pick_window_closed` carries — every game of the
-    /// date has started — and it is read from the league's schedule rather
-    /// than from this document, which is why it is a parameter instead of a
-    /// field. A settled date, and a date an owner locked by hand under the old
-    /// rule, are past it by definition.
+    /// A date that has begun always may: the first puck has dropped, and the
+    /// reveal is most of what people come to the page for. That is what
+    /// `date_has_begun` carries, and it is read from the league's schedule
+    /// rather than from this document, which is why it is a parameter instead
+    /// of a field. A settled date, and a date an owner locked by hand under
+    /// the old rule, are past it by definition.
     ///
-    /// A date still taking picks may only in a pool whose owner asked for it,
+    /// Note the reveal is the date's **first** game, while the deadline is its
+    /// last — see [`crate::survivor::picks::date_has_begun`]. In between, the
+    /// field's picks are public while the teams yet to play can still be
+    /// picked, so somebody who has not committed can see what the rest are on.
+    /// That is deliberate, and the screens say so.
+    ///
+    /// A date that has not begun may only in a pool whose owner asked for it,
     /// and then only while it is the date being played — a pick filed ahead for
     /// a later Saturday stays private until that Saturday comes round, or
     /// turning the setting on would hand the field everybody's plans for the
     /// rest of the season.
-    pub fn picks_are_public(&self, week: u16, pick_window_closed: bool) -> bool {
+    pub fn picks_are_public(&self, week: u16, date_has_begun: bool) -> bool {
         let Ok(entry) = self.week(week) else {
             return false;
         };
@@ -538,7 +563,7 @@ impl SurvivorPool {
             return true;
         }
 
-        if pick_window_closed {
+        if date_has_begun {
             return true;
         }
 
@@ -551,14 +576,14 @@ impl SurvivorPool {
     /// than blanking it in the browser, so this is the list the response is
     /// built from.
     ///
-    /// `closed_windows` holds the weeks whose deadline has passed, which the
-    /// caller resolves against the schedule. Only one date can be mid-deadline
-    /// at a time — the one being played — so in practice that is a single
-    /// reading of the feed however many weeks a season has.
-    pub fn revealed_weeks(&self, closed_windows: &HashSet<u16>) -> Vec<u16> {
+    /// `begun_weeks` holds the weeks whose first game has started, which the
+    /// caller resolves against the schedule. Only one date can be part-way
+    /// through at a time — the one being played — so in practice that is a
+    /// single reading of the feed however many weeks a season has.
+    pub fn revealed_weeks(&self, begun_weeks: &HashSet<u16>) -> Vec<u16> {
         self.weeks
             .iter()
-            .filter(|week| self.picks_are_public(week.week, closed_windows.contains(&week.week)))
+            .filter(|week| self.picks_are_public(week.week, begun_weeks.contains(&week.week)))
             .map(|week| week.week)
             .collect()
     }
