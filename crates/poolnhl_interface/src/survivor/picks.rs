@@ -159,24 +159,44 @@ pub fn teams_closed_to_picks(games: &[SurvivorGame], now: DateTime<Utc>) -> Hash
         .collect()
 }
 
+/// Whether a date has begun: the puck has dropped on at least one of its
+/// games.
+///
+/// This is the **reveal**, and it is a different line from the deadline below.
+/// A Saturday's picks go public with its first game, not its last: the reveal
+/// is most of what people come to the page for, and holding it back until a
+/// 10pm game on the west coast starts would keep it off screen for the whole
+/// evening the pool is actually watching.
+///
+/// It does mean somebody who has not picked yet can see the field before they
+/// commit, on the teams they have left. That is the price of a per-game
+/// deadline, and it is paid knowingly — the alternative is a pool that sits
+/// through an afternoon of hockey with nothing to look at. The screens say so
+/// rather than leaving it to be discovered.
+///
+/// False when `games` is empty, the league's feed being unreachable included:
+/// nothing is published on the strength of an answer we never got.
+pub fn date_has_begun(games: &[SurvivorGame], now: DateTime<Utc>) -> bool {
+    games.iter().any(|game| game.has_started(now))
+}
+
 /// Whether a date has nothing left to pick, because every game on it has
 /// started.
 ///
-/// This is the pool's deadline, and it is derived rather than declared: a pick
-/// stands until its own game starts, so the date as a whole closes when the
-/// last of its games does. It used to be a button the owner pressed, which
+/// This is the pool's **deadline**, and it is derived rather than declared: a
+/// pick stands until its own game starts, so the date as a whole closes when
+/// the last of its games does. It used to be a button the owner pressed, which
 /// meant a pool whose owner was away either stayed open past puck drop or shut
 /// hours early.
 ///
-/// It is also the moment the date's picks become everybody's to see. Nothing
-/// can change once it has passed, so there is nothing left for the secrecy to
-/// protect — and the reveal is most of what people come to the page for.
+/// Between [`date_has_begun`] and this one a date is in its middle state: the
+/// picks are public, some of them can no longer move, and the teams yet to
+/// play are still there to be picked.
 ///
 /// False for a date with no games at all, and false when `games` is empty
 /// because the league's feed could not be reached. A date is not closed on the
 /// strength of an answer we never got: the open side of that guess refuses a
-/// late pick (the pick path requires the feed) rather than publishing the
-/// field's picks to somebody who has yet to make one.
+/// late pick, because the pick path requires the feed.
 pub fn pick_window_closed(games: &[SurvivorGame], now: DateTime<Utc>) -> bool {
     !games.is_empty() && games.iter().all(|game| game.has_started(now))
 }
@@ -208,8 +228,16 @@ pub struct SurvivorPickOptions {
     /// pick, and only the second is forgiven when the date settles.
     pub is_blocked: bool,
     pub can_pick: bool,
-    /// True once every game of the date has started: nothing is left to pick
-    /// and the date's picks are public. See [`pick_window_closed`].
+    /// True once the date's first game has started, which is when its picks go
+    /// public. See [`date_has_begun`].
+    ///
+    /// With `pick_window_closed` still false it marks the middle of a date:
+    /// the field's picks are on show, this participant's own is either locked
+    /// or not depending on whether their team has taken the ice, and the teams
+    /// yet to play are still open.
+    pub date_has_begun: bool,
+    /// True once every game of the date has started: nothing is left to pick.
+    /// See [`pick_window_closed`].
     pub pick_window_closed: bool,
     /// The date's games, so the screen can show who plays whom.
     ///
@@ -295,6 +323,29 @@ mod tests {
         let closed = teams_closed_to_picks(&games, at("2026-10-17T18:00:00Z"));
 
         assert_eq!(closed, HashSet::from([8, 10]));
+    }
+
+    #[test]
+    fn the_date_begins_with_the_first_game_of_it() {
+        let games = vec![
+            upcoming(8, 10, Some("2026-10-17T17:00:00Z")),
+            upcoming(12, 14, Some("2026-10-18T00:00:00Z")),
+        ];
+
+        // The reveal, and it is the opposite end of the date from the deadline
+        // below: one game under way publishes everybody's pick, and the
+        // evening game is still there to be picked.
+        assert!(!date_has_begun(&games, at("2026-10-17T16:59:00Z")));
+        assert!(date_has_begun(&games, at("2026-10-17T17:00:00Z")));
+        assert!(!pick_window_closed(&games, at("2026-10-17T17:00:00Z")));
+    }
+
+    #[test]
+    fn a_date_with_no_games_has_not_begun() {
+        // Which is also the answer when the league's feed could not be
+        // reached: nothing is published on the strength of an answer we never
+        // got, and that is the side that keeps the field's picks private.
+        assert!(!date_has_begun(&[], at("2026-10-17T18:00:00Z")));
     }
 
     #[test]

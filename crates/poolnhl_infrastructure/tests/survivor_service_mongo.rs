@@ -720,18 +720,32 @@ async fn an_open_dates_picks_are_the_callers_own_and_nobody_elses() {
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].participant_id, OWNER);
 
-    // The games start, so nothing can change and everybody's pick is public —
-    // which is most of what people come to the page for. Nothing on the pool
-    // document moved to make that happen.
+    /*
+    The **first** game starts, and that alone publishes everybody's pick —
+    which is most of what people come to the page for, and why it is not held
+    back until the last game of the night. The second game has not started, so
+    the date is still taking picks on it.
+
+    Nothing on the pool document moved to make either happen.
+    */
+    let mut first_game_under_way = day(&[10, 6], &[8]);
+    first_game_under_way.games[0].state = GameState::Live;
     schedule
-        .record_day(
-            &pool.weeks[0].pick_date,
-            already_started(day(&[10, 6], &[8])),
-        )
+        .record_day(&pool.weeks[0].pick_date, first_game_under_way)
         .unwrap();
 
     let revealed = service.get_week_picks(OWNER, &pool.name, 1).await.unwrap();
     assert_eq!(revealed.len(), 2);
+
+    // And the date is genuinely still open: team 6 plays the game that has
+    // not started, so it can still be taken.
+    let still_open = service
+        .get_pick_options("rival", &pool.name, 1, None)
+        .await
+        .unwrap();
+    assert!(still_open.date_has_begun);
+    assert!(!still_open.pick_window_closed);
+    assert!(still_open.can_pick);
 
     assert!(matches!(
         service.get_pool_by_name(&pool.name).await.unwrap().weeks[0].status,
@@ -803,6 +817,9 @@ async fn a_team_whose_game_has_started_is_closed_while_the_rest_of_the_date_is_o
 
     assert!(!options.pick_window_closed);
     assert!(options.can_pick);
+    // Begun but not closed, which is the middle of a date: the picks are
+    // public and the evening game is still there to be picked.
+    assert!(options.date_has_begun);
     // Both sides of the live game, and neither side of the other.
     assert_eq!(options.started_team_ids, vec![8, 10]);
 

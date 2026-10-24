@@ -968,11 +968,11 @@ fn a_pool_name_too_short_or_too_long_is_refused() {
 
 // ----------------------------------------------------------- public picks
 
-/// The deadlines, as a pool with nothing of the schedule to hand sees them:
-/// none passed. The caller of `revealed_weeks` resolves the real answer
-/// against the league's fixture list, so these tests hand in the two cases
-/// rather than deriving either.
-fn no_closed_windows() -> HashSet<u16> {
+/// The dates, as a pool with nothing of the schedule to hand sees them: none
+/// begun. The caller of `revealed_weeks` resolves the real answer against the
+/// league's fixture list, so these tests hand in the two cases rather than
+/// deriving either.
+fn nothing_begun() -> HashSet<u16> {
     HashSet::new()
 }
 
@@ -1005,17 +1005,18 @@ fn pool_with_week_statuses(settled: usize, locked: bool, public_picks: bool) -> 
 fn a_private_pool_reveals_nothing_until_a_date_closes() {
     let pool = pool_with_week_statuses(0, false, false);
 
-    assert!(pool.revealed_weeks(&no_closed_windows()).is_empty());
+    assert!(pool.revealed_weeks(&nothing_begun()).is_empty());
     assert!(!pool.picks_are_public(1, false));
 }
 
 #[test]
-fn a_date_whose_last_game_has_started_is_revealed() {
+fn a_date_that_has_begun_is_revealed() {
     let pool = pool_with_week_statuses(0, false, false);
 
-    // The reveal the owner used to press a button for. Nothing on the pool
-    // changed — week 1 is still taking picks as far as this document knows —
-    // and the deadline having passed is what publishes it.
+    // The reveal the owner used to press a button for, and at the same moment
+    // they used to press it: the date's first puck drop. Nothing on the pool
+    // changed — week 1 is still taking picks as far as this document knows,
+    // and on the teams yet to play it really still is.
     assert!(pool.picks_are_public(1, true));
     assert_eq!(pool.revealed_weeks(&HashSet::from([1])), vec![1]);
 }
@@ -1029,7 +1030,7 @@ fn a_date_past_its_deadline_is_revealed_whatever_the_setting_says() {
         // picks are in either way, and without the schedule being consulted.
         assert!(pool.picks_are_public(1, false));
         assert!(pool.picks_are_public(3, false));
-        assert_eq!(&pool.revealed_weeks(&no_closed_windows())[..3], &[1, 2, 3]);
+        assert_eq!(&pool.revealed_weeks(&nothing_begun())[..3], &[1, 2, 3]);
     }
 }
 
@@ -1040,7 +1041,7 @@ fn a_public_pool_also_reveals_the_date_being_played() {
     // Week 3 is the one being played, and still taking picks.
     assert_eq!(pool.current_week().map(|week| week.week), Some(3));
     assert!(pool.picks_are_public(3, false));
-    assert_eq!(pool.revealed_weeks(&no_closed_windows()), vec![1, 2, 3]);
+    assert_eq!(pool.revealed_weeks(&nothing_begun()), vec![1, 2, 3]);
 }
 
 #[test]
