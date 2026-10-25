@@ -1395,6 +1395,27 @@ pub fn plan_pick(
 /// It happens when every team playing that day is one they have already used
 /// and they have not yet been through the whole league for the list to reset —
 /// and on a date the league scheduled nothing on, where nobody can pick at all.
+/// How many of the league's teams this participant has not yet spent in the
+/// pass through it they are on.
+///
+/// The pressure a participant actually feels deep into a season, and it is not
+/// derivable from the pick screen's `used_team_ids`: that list is every team
+/// they have ever picked, across every pass, so counting it against the league
+/// would go negative in a pool that has been round once.
+///
+/// Answers with the whole league at the moment the list is exhausted, which is
+/// the same reset [`available_team_ids`] applies — the pick that follows opens
+/// a new pass, so nothing is closed to them any more.
+pub fn teams_left_in_cycle(used: &[UsedTeam], league_team_count: u16) -> u16 {
+    let spent = used_in_current_cycle(used).len() as u16;
+
+    if spent >= league_team_count {
+        league_team_count
+    } else {
+        league_team_count - spent
+    }
+}
+
 pub fn is_blocked(used: &[UsedTeam], eligible_team_ids: &[u32], league_team_count: u16) -> bool {
     available_team_ids(used, eligible_team_ids, league_team_count).is_empty()
 }

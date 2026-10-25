@@ -31,6 +31,7 @@ use poolnhl_interface::errors::{AppError, Result};
 use poolnhl_interface::survivor::model::{
     DateClock, PickOutcome, RevealedPick, SurvivorPool, SurvivorPoolShort, SurvivorStandingRow,
     SurvivorStandings, UsedTeam, WeekStatus, available_team_ids, is_blocked, plan_pick,
+    teams_left_in_cycle,
 };
 use poolnhl_interface::survivor::picks::{
     SurvivorGame, SurvivorGameState, SurvivorPick, SurvivorPickOptions, SurvivorPickView,
@@ -397,6 +398,7 @@ impl MongoSurvivorService {
                 .copied()
                 .filter(|team_id| started.contains(team_id))
                 .collect(),
+            teams_left_in_cycle: teams_left_in_cycle(&used, league_team_count),
             is_blocked: is_blocked(&used, &eligible, league_team_count),
             can_pick: !window_closed && pool.validate_can_pick(user_id, week).is_ok(),
             date_has_begun: has_begun,
