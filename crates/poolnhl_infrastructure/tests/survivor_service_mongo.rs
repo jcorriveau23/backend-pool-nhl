@@ -17,11 +17,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use chrono::{Datelike, Duration, NaiveDate, Utc, Weekday};
 use poolnhl_infrastructure::database_connection::{DatabaseConnection, DatabaseManager};
 use poolnhl_infrastructure::services::nhl_schedule_service::{
     DayGame, DayResults, GameState, NhlScheduleService, TeamResult,
 };
 use poolnhl_infrastructure::services::survivor_service::MongoSurvivorService;
+use poolnhl_interface::clock::current_game_day;
+use poolnhl_interface::pool::model::SeasonInfo;
 use poolnhl_interface::survivor::model::{
     ParticipantStatus, PickOutcome, SurvivorPool, SurvivorSettings, SurvivorState, WeekStatus,
 };
@@ -182,6 +185,59 @@ async fn pool_with_schedule(
     schedule
         .record_day(&pool.weeks[0].pick_date, day(winners, losers))
         .expect("could not record the day's games");
+
+    pool
+}
+
+/// The most recent Saturday before the night of hockey in play.
+fn last_saturday() -> NaiveDate {
+    let mut day = current_game_day() - Duration::days(1);
+    while day.weekday() != Weekday::Sat {
+        day -= Duration::days(1);
+    }
+    day
+}
+
+/// A two-date pool whose Saturdays are both behind us, inserted directly.
+///
+/// Nothing reachable through the service can produce one: a pool opens on the
+/// next Saturday coming, so every date a created pool has is still to come.
+/// The dates are then written over with two concrete past Saturdays rather
+/// than taken from wherever today happens to fall, so the test reads the same
+/// whatever day the suite runs on.
+///
+/// Both participants are in it from the start, since `join_pool` closes once a
+/// date has been settled and these dates are in the past.
+///
+/// The pick indexes it is played through are the ones [`service`] created.
+async fn pool_over_past_saturdays(prefix: &str) -> SurvivorPool {
+    let season = SeasonInfo::current();
+    let now = Utc::now().timestamp_millis();
+
+    let mut pool = SurvivorPool::new_at(
+        &unique_pool_name(prefix),
+        OWNER,
+        &settings(10),
+        season.season,
+        &season.start_season_date,
+        &season.end_season_date,
+        current_game_day(),
+    )
+    .expect("could not build the pool");
+
+    pool.add_participant(OWNER, "owner", now).unwrap();
+    pool.add_participant("rival", "rival", now).unwrap();
+
+    pool.weeks.truncate(2);
+    pool.weeks[0].pick_date = (last_saturday() - Duration::days(7)).to_string();
+    pool.weeks[1].pick_date = last_saturday().to_string();
+
+    database()
+        .await
+        .collection::<SurvivorPool>("survivor_pools")
+        .insert_one(&pool, None)
+        .await
+        .expect("could not insert the pool");
 
     pool
 }
@@ -1170,6 +1226,164 @@ async fn the_standings_count_the_field_and_hide_an_open_dates_picks() {
         settled.rows[1].status,
         ParticipantStatus::Eliminated
     ));
+
+    cleanup(&service, &pool.name).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a running mongo"]
+async fn the_standings_show_a_finished_dates_results_before_it_is_settled() {
+    let (service, schedule) = service().await;
+    let pool = pool_with_schedule(&service, &schedule, "unsettled-results", 10, &[10], &[8]).await;
+
+    service
+        .join_pool(
+            "rival",
+            JoinSurvivorRequest {
+                pool_name: pool.name.clone(),
+                participant_name: "rival".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+    for (user, team_id) in [(OWNER, 10), ("rival", 8)] {
+        service
+            .make_pick(
+                user,
+                MakePickRequest {
+                    pool_name: pool.name.clone(),
+                    participant_id: None,
+                    week: 1,
+                    team_id,
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    // The games are over. Nobody has settled the date — which is the ordinary
+    // Saturday evening, since settling is a button somebody has to press.
+    schedule
+        .record_day(&pool.weeks[0].pick_date, already_started(day(&[10], &[8])))
+        .unwrap();
+
+    let standings = service.get_standings(&pool.name).await.unwrap();
+
+    // The date says what its games did: the picks are public and each column
+    // carries the result beside them.
+    assert_eq!(standings.revealed_weeks, vec![1]);
+    assert_eq!(standings.date_clocks.len(), 1);
+    let clock = &standings.date_clocks[0];
+    assert_eq!(clock.week, 1);
+    assert_eq!(clock.won_team_ids, vec![10]);
+    assert_eq!(clock.lost_team_ids, vec![8]);
+    assert!(clock.pick_window_closed);
+    // Every pick on the date is in: the grid marks none of them as movable.
+    assert_eq!(clock.started_team_ids, vec![8, 10]);
+
+    // And it has cost nobody anything. What a pick is worth is the
+    // settlement's to decide, so until it runs both are alive, on no wins, and
+    // every pick is still pending.
+    assert_eq!(standings.alive_count, 2);
+    assert_eq!(standings.eliminated_count, 0);
+    assert!(standings.rows.iter().all(|row| row.wins == 0));
+    assert!(
+        standings
+            .rows
+            .iter()
+            .all(|row| matches!(row.picks[&1].outcome, PickOutcome::Pending))
+    );
+
+    // Settling turns the same results into the record, and the date stops
+    // needing a clock at all: its picks carry their own outcome now.
+    service
+        .settle_week(
+            OWNER,
+            SettleWeekRequest {
+                pool_name: pool.name.clone(),
+                week: 1,
+            },
+        )
+        .await
+        .unwrap();
+
+    let settled = service.get_standings(&pool.name).await.unwrap();
+    assert!(settled.date_clocks.is_empty());
+    assert_eq!(settled.alive_count, 1);
+    assert_eq!(settled.rows[0].wins, 1);
+    assert!(matches!(
+        settled.rows[0].picks[&1].outcome,
+        PickOutcome::Won
+    ));
+
+    cleanup(&service, &pool.name).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a running mongo"]
+async fn a_date_left_unsettled_does_not_cost_the_next_one_its_results() {
+    // The organiser who is a week behind. Two dates are then waiting at once,
+    // and the one being played is not the first of them — which is what a
+    // single clock for "the current date" could not describe: the newer date
+    // showed no results and none of its picks as locked, though its games were
+    // being played.
+    let (service, schedule) = service().await;
+    let pool = pool_over_past_saturdays("two-dates-waiting").await;
+
+    let (first, second) = (
+        pool.weeks[0].pick_date.clone(),
+        pool.weeks[1].pick_date.clone(),
+    );
+
+    // Recorded as still to come, so the picks below can be filed at all.
+    schedule.record_day(&first, day(&[10], &[8])).unwrap();
+    schedule.record_day(&second, day(&[12], &[14])).unwrap();
+
+    for (user, week, team_id) in [
+        (OWNER, 1, 10),
+        ("rival", 1, 8),
+        (OWNER, 2, 12),
+        ("rival", 2, 14),
+    ] {
+        service
+            .make_pick(
+                user,
+                MakePickRequest {
+                    pool_name: pool.name.clone(),
+                    participant_id: None,
+                    week,
+                    team_id,
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    // Both Saturdays have now been played, and neither has been settled.
+    schedule
+        .record_day(&first, already_started(day(&[10], &[8])))
+        .unwrap();
+    schedule
+        .record_day(&second, already_started(day(&[12], &[14])))
+        .unwrap();
+
+    let standings = service.get_standings(&pool.name).await.unwrap();
+
+    assert_eq!(standings.revealed_weeks, vec![1, 2]);
+    assert_eq!(standings.date_clocks.len(), 2);
+
+    let first_clock = &standings.date_clocks[0];
+    assert_eq!(first_clock.week, 1);
+    assert_eq!(first_clock.won_team_ids, vec![10]);
+    assert_eq!(first_clock.lost_team_ids, vec![8]);
+
+    // The one that used to come back empty.
+    let second_clock = &standings.date_clocks[1];
+    assert_eq!(second_clock.week, 2);
+    assert_eq!(second_clock.won_team_ids, vec![12]);
+    assert_eq!(second_clock.lost_team_ids, vec![14]);
+    assert_eq!(second_clock.started_team_ids, vec![12, 14]);
 
     cleanup(&service, &pool.name).await;
 }

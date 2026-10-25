@@ -148,6 +148,75 @@ impl SurvivorGame {
             .and_then(|start| DateTime::parse_from_rfc3339(start).ok())
             .is_some_and(|start| start.with_timezone(&Utc) <= now)
     }
+
+    /// Which side won, or `None` while that is not yet a question with an
+    /// answer.
+    ///
+    /// Display only, like the rest of this type, and that is the whole reason
+    /// it may be read before a settlement. A settlement reads the league's
+    /// feed through the schedule service's own `outcome_of`, which reaches the
+    /// same verdict from the same rule — a game is decided when it is `Final`,
+    /// both sides carry a score, and the two differ — so the result shown the
+    /// moment a game ends is the one the settlement goes on to record. What it
+    /// must never do is *be* that record: who lost a strike is decided once,
+    /// in `settle_week`, from the feed.
+    ///
+    /// `None` for anything but a finished game, so a team two goals up at the
+    /// second intermission has won nothing. `None` too for a finished game the
+    /// feed left level: hockey settles a tie in overtime or a shootout, so
+    /// that is a feed not telling the whole story rather than a draw.
+    pub fn winner(&self) -> Option<u32> {
+        if !matches!(self.state, SurvivorGameState::Final) {
+            return None;
+        }
+
+        let (home, away) = (self.home_score?, self.away_score?);
+
+        match home.cmp(&away) {
+            std::cmp::Ordering::Greater => Some(self.home_team_id),
+            std::cmp::Ordering::Less => Some(self.away_team_id),
+            std::cmp::Ordering::Equal => None,
+        }
+    }
+}
+
+/// The teams a date has decided so far: the ones that have won their game and
+/// the ones that have lost it.
+///
+/// Both sets are empty for a date yet to produce a result, and a team whose
+/// game was called off or is still being played is in neither — the standings
+/// marks only what has actually happened, and leaves the rest reading as the
+/// date still being played.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DecidedTeams {
+    pub won: HashSet<u32>,
+    pub lost: HashSet<u32>,
+}
+
+/// What a date's games have decided, for the standings to show before the date
+/// has been settled.
+///
+/// A survivor pool's result is the one thing people want the moment the game
+/// ends, and the settlement that records it is a button somebody has to press.
+/// This is what fills the gap between the two: it says what the games did,
+/// while the strikes and the eliminations wait for the settlement.
+pub fn decided_teams(games: &[SurvivorGame]) -> DecidedTeams {
+    let mut decided = DecidedTeams::default();
+
+    for game in games {
+        let Some(winner) = game.winner() else {
+            continue;
+        };
+
+        decided.won.insert(winner);
+        decided.lost.insert(if winner == game.home_team_id {
+            game.away_team_id
+        } else {
+            game.home_team_id
+        });
+    }
+
+    decided
 }
 
 /// The teams whose game has begun, and so can no longer be picked.
@@ -368,5 +437,76 @@ mod tests {
         // reached: nothing is closed on the strength of an answer we never
         // got, because that is the side that keeps the field's picks private.
         assert!(!pick_window_closed(&[], at("2026-10-17T18:00:00Z")));
+    }
+
+    /// A finished game between `away` and `home`, as the feed left it.
+    fn played(away: (u32, u32), home: (u32, u32)) -> SurvivorGame {
+        let mut game = upcoming(away.0, home.0, Some("2026-10-17T17:00:00Z"));
+        game.state = SurvivorGameState::Final;
+        game.away_score = Some(away.1);
+        game.home_score = Some(home.1);
+        game
+    }
+
+    #[test]
+    fn a_finished_game_names_the_side_that_outscored_the_other() {
+        assert_eq!(played((8, 2), (10, 4)).winner(), Some(10));
+        assert_eq!(played((8, 5), (10, 1)).winner(), Some(8));
+    }
+
+    #[test]
+    fn a_game_still_being_played_has_decided_nothing() {
+        // The leader at the second intermission has won nothing, which is the
+        // whole reason this is asked of `state` and not of the score.
+        let mut live = played((8, 0), (10, 3));
+        live.state = SurvivorGameState::Live;
+        assert_eq!(live.winner(), None);
+
+        let mut called_off = played((8, 0), (10, 3));
+        called_off.state = SurvivorGameState::Abandoned;
+        assert_eq!(called_off.winner(), None);
+
+        assert_eq!(upcoming(8, 10, Some("2026-10-17T17:00:00Z")).winner(), None);
+    }
+
+    #[test]
+    fn a_finished_game_the_feed_left_level_decides_nothing() {
+        // Hockey settles a tie, so this is a feed not telling the whole story.
+        // Reading it as a loss for both sides would take out everybody who
+        // picked either.
+        assert_eq!(played((8, 3), (10, 3)).winner(), None);
+    }
+
+    #[test]
+    fn a_finished_game_with_no_score_decides_nothing() {
+        let mut scoreless = played((8, 2), (10, 4));
+        scoreless.home_score = None;
+        assert_eq!(scoreless.winner(), None);
+    }
+
+    #[test]
+    fn a_date_decides_both_sides_of_every_game_it_has_finished() {
+        let games = vec![
+            played((8, 1), (10, 4)),
+            played((12, 6), (14, 2)),
+            // Still on, so neither of its sides is decided yet.
+            upcoming(20, 22, Some("2026-10-18T00:00:00Z")),
+        ];
+
+        let decided = decided_teams(&games);
+
+        assert_eq!(decided.won, HashSet::from([10, 12]));
+        assert_eq!(decided.lost, HashSet::from([8, 14]));
+    }
+
+    #[test]
+    fn a_date_with_nothing_finished_decides_nothing() {
+        // Which is also what an unreachable feed answers with, and it is the
+        // side that marks no pick rather than calling one before its time.
+        assert_eq!(decided_teams(&[]), DecidedTeams::default());
+        assert_eq!(
+            decided_teams(&[upcoming(8, 10, Some("2026-10-17T17:00:00Z"))]),
+            DecidedTeams::default()
+        );
     }
 }
