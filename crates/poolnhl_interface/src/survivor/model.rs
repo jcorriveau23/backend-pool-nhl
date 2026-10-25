@@ -327,14 +327,20 @@ pub struct SurvivorStandingRow {
     pub picks: HashMap<u16, RevealedPick>,
 }
 
-/// The date being played, and how far the clock has got through it.
+/// A date whose picks are public but whose results have not been applied, and
+/// how far the clock has got through it.
 ///
-/// Only one date can be part-way through at a time: every earlier one has been
-/// played out and every later one has not begun. So the grid needs this for
-/// one column, and it is what lets that column tell a pick that can no longer
-/// move from one its owner is still free to change.
+/// One per such date rather than one for the pool. Usually that *is* one — the
+/// Saturday being played — but a settlement is a button somebody has to press,
+/// and an organiser who is a week behind leaves two: the date nobody settled
+/// and the date being played. Keyed by week so the grid can mark each column
+/// for itself instead of the one date the pool happened to be waiting on.
+///
+/// What it carries is everything about a column that the pool document cannot
+/// answer, because it comes from the league's schedule: which picks can still
+/// move, and which of them the games have already decided.
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct CurrentDateClock {
+pub struct DateClock {
     pub week: u16,
     /// Teams whose game has started. A pick on one of these is locked.
     ///
@@ -342,6 +348,29 @@ pub struct CurrentDateClock {
     /// not be reached — in which case the grid marks nothing rather than
     /// guessing, which is the side that never calls a pick final early.
     pub started_team_ids: Vec<u32>,
+    /// Teams that have won their game on this date, and teams that have lost
+    /// it, as the feed reads now.
+    ///
+    /// This is the result *before the settlement*, and it is why this type
+    /// exists at all: a date's games are over hours before anybody presses
+    /// the button, and until these were sent the standings showed a column of
+    /// picks with nothing to say about any of them. A team in neither list has
+    /// not finished its game — or finished it without a result the feed could
+    /// be read from — see [`crate::survivor::picks::decided_teams`].
+    ///
+    /// Display only. What a pick *cost* — a strike, an elimination — is
+    /// decided once, by `settle_week`, from the feed rather than from here,
+    /// and until it runs the standings' counts are untouched.
+    pub won_team_ids: Vec<u32>,
+    pub lost_team_ids: Vec<u32>,
+    /// Whether every game of the date has started, so nothing on it is left to
+    /// pick. See [`crate::survivor::picks::pick_window_closed`].
+    ///
+    /// The grid does not need it to render a cell; what reads it is the page
+    /// deciding whether the date is still moving and so worth refetching. A
+    /// date whose window is closed and whose games are all decided has nothing
+    /// left to say until it is settled.
+    pub pick_window_closed: bool,
 }
 
 /// The standings, counted server-side.
@@ -358,8 +387,12 @@ pub struct SurvivorStandings {
     pub revealed_weeks: Vec<u16>,
     pub rows: Vec<SurvivorStandingRow>,
     pub winners: Option<Vec<String>>,
-    /// Absent once every date has been settled, which is a pool that is over.
-    pub current_date: Option<CurrentDateClock>,
+    /// The revealed dates still waiting to be settled, in week order.
+    ///
+    /// Empty once every revealed date has been settled, and empty for a pool
+    /// that is over. Everything a column of the grid shows beyond the pick
+    /// itself comes from here.
+    pub date_clocks: Vec<DateClock>,
 }
 
 /// An invitation, filed by the pool owner, for whoever signs in with a given
