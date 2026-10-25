@@ -515,6 +515,36 @@ fn available_teams_are_the_playing_ones_the_participant_has_not_spent() {
 }
 
 #[test]
+fn the_teams_left_in_a_cycle_count_down_as_they_are_spent() {
+    // The pressure a participant actually feels deep into a season, and the
+    // reason it is counted here rather than on the pick screen: that screen's
+    // `used_team_ids` spans every pass through the league.
+    assert_eq!(teams_left_in_cycle(&[], 32), 32);
+    assert_eq!(teams_left_in_cycle(&used(&[(0, 8), (0, 6)]), 32), 30);
+}
+
+#[test]
+fn the_teams_left_only_count_the_pass_being_played() {
+    // Two passes, three picks: one team is spent in the pass they are on, so
+    // counting every pick would say 29 when the answer is 31.
+    let spent = used(&[(0, 8), (0, 6), (1, 10)]);
+
+    assert_eq!(teams_left_in_cycle(&spent, 32), 31);
+}
+
+#[test]
+fn an_exhausted_list_reads_as_the_whole_league_again() {
+    // The same reset `available_team_ids` applies: the pick that follows opens
+    // a new pass, so nothing is closed to them any more. Counting down would
+    // have reached zero and said the season was over.
+    let spent: Vec<UsedTeam> = (0..32)
+        .map(|team_id| UsedTeam { cycle: 0, team_id })
+        .collect();
+
+    assert_eq!(teams_left_in_cycle(&spent, 32), 32);
+}
+
+#[test]
 fn going_through_the_whole_league_reopens_every_team_in_a_new_cycle() {
     // 32 teams used, so the list resets.
     let spent: Vec<UsedTeam> = (0..32)

@@ -290,6 +290,15 @@ pub struct SurvivorPickOptions {
     /// the cycle, a started one was closed by the clock.
     pub started_team_ids: Vec<u32>,
     pub current_pick: Option<u32>,
+    /// How many of the league's teams are still open to them in the pass
+    /// through it they are on. See
+    /// [`crate::survivor::model::teams_left_in_cycle`].
+    ///
+    /// Sent rather than left to the screen because `used_team_ids` above spans
+    /// every pass, so counting it against the league would be wrong the moment
+    /// a pool has been round once — and because the reset at the end of a pass
+    /// is a rule, which belongs on this side.
+    pub teams_left_in_cycle: u16,
     /// True when nothing is open to them and the date costs them nothing.
     ///
     /// The used-team rule only. A team whose game has started is not in this:
